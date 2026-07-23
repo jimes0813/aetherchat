@@ -1,0 +1,88 @@
+{
+  "name": "aetherchat-frontend",
+  "version": "0.2.0",
+  "description": "AetherChat 多模型协作桌面工作台",
+  "desktopName": "aetherchat.desktop",
+  "homepage": "https://github.com/jimes0813/AetherChat",
+  "author": {
+    "name": "AetherChat Maintainers",
+    "email": "jimes0813@users.noreply.github.com"
+  },
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "electron:dev": "npm run build && electron electron/main.cjs",
+    "dist:win": "npm run build && electron-builder --win nsis --x64",
+    "dist:linux": "npm run build && electron-builder --linux AppImage",
+    "test:electron": "node --test electron/*.test.cjs",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:headed": "playwright test --headed"
+  },
+  "dependencies": {
+    "lucide-react": "^0.400.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "^4.5.4"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.12.1",
+    "@playwright/test": "^1.48.0",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "6.0.3",
+    "autoprefixer": "^10.4.19",
+    "electron": "43.1.1",
+    "electron-builder": "26.15.3",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.4",
+    "typescript": "^5.5.3",
+    "vite": "8.1.5"
+  },
+  "main": "electron/main.cjs",
+  "build": {
+    "appId": "com.aetherchat.desktop",
+    "productName": "AetherChat",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "!electron/*.test.cjs",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "backend",
+        "to": "backend"
+      }
+    ],
+    "win": {
+      "signAndEditExecutable": true,
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "AetherChat-Setup-${version}.${ext}"
+    },
+    "linux": {
+      "syncDesktopName": true,
+      "target": [
+        "AppImage"
+      ],
+      "category": "Utility",
+      "artifactName": "AetherChat-${version}-linux-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}

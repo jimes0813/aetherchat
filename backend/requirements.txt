@@ -1,0 +1,35 @@
+# Runtime and release dependencies are intentionally pinned for auditable builds.
+fastapi[standard]==0.139.0
+uvicorn[standard]==0.51.0
+pydantic==2.13.4
+pydantic-settings==2.14.2
+sqlalchemy[asyncio]==2.0.51
+asyncpg==0.31.0
+alembic==1.18.5
+redis==8.0.1
+httpx==0.28.1
+openai==2.45.0
+anthropic==0.116.0
+python-dotenv==1.2.2
+gitpython==3.1.51
+docker==7.2.0
+websockets==16.1
+python-multipart==0.0.32
+python-jose[cryptography]==3.5.0
+cryptography==49.0.0
+passlib[bcrypt]==1.7.4
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pyinstaller==6.21.0
+pywin32==311; sys_platform == "win32"
+pywinauto==0.6.9; sys_platform == "win32"
+psutil==7.0.0
+python-docx==1.2.0
+openpyxl==3.1.5
+python-pptx==1.0.2
+pypdf==6.14.2
+reportlab==5.0.0
+Pillow==12.3.0
+keyring==25.7.0
+SecretStorage==3.5.0; sys_platform == "linux"
+mcp==1.28.1

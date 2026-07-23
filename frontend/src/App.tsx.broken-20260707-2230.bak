@@ -1,0 +1,976 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Activity,
+  Archive,
+  Bot,
+  Check,
+  ChevronRight,
+  CircleDollarSign,
+  FileCode2,
+  FileText,
+  GitBranch,
+  GitMerge,
+  LayoutList,
+  Maximize2,
+  MessageSquare,
+  Minus,
+  PanelRight,
+  Play,
+  Plus,
+  PackageCheck,
+  Radio,
+  Search,
+  Settings,
+  ShieldCheck,
+  SquareTerminal,
+  Trash2,
+  Users,
+  Wrench,
+  X,
+  Cpu,
+} from 'lucide-react';
+import { Composer } from './components/Composer';
+import { TaskBoard } from './components/TaskBoard';
+import { UnifiedFeed } from './components/UnifiedFeed';
+import { useSessionStore } from './stores/sessionStore';
+import { connectWS } from './ws/client';
+import type { MergeProposal, ModelConfig, Task, ToolItem, ToolRun, WorkspaceSettings, WSMessage } from './types';
+
+const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
+
+declare global {
+  interface Window {
+    aetherWindow?: {
+      minimize: () => void;
+      toggleMaximize: () => void;
+      close: () => void;
+    };
+  }
+}
+
+function App() {
+  const {
+    sessionId,
+    conversations,
+    providers,
+    budget,
+    connection,
+    activePanel,
+    setActivePanel,
+    selectedArtifactPath,
+    setSelectedArtifactPath,
+    setConnection,
+    addMessage,
+    addDelta,
+    finishStream,
+    setBudget,
+    setTasks,
+    updateTask,
+    setArtifacts,
+    setMergeProposals,
+    updateMergeProposal,
+    setTools,
+    upsertTool,
+    removeTool,
+    setToolRuns,
+    addToolRun,
+    setModelConfigs,
+    upsertModelConfig,
+    removeModelConfig,
+    settings: workspaceSettings,
+    updateSettings,
+  } = useSessionStore();
+  const wsClient = useRef<ReturnType<typeof connectWS> | null>(null);
+
+  const loadTasks = () => {
+    fetch(`${API_BASE}/tasks/?session_id=${sessionId}`).then((res) => res.json()).then(setTasks).catch(() => setTasks([]));
+  };
+
+  const loadArtifacts = () => {
+    fetch(`${API_BASE}/artifacts/?session_id=${sessionId}`).then((res) => res.json()).then(setArtifacts).catch(() => setArtifacts([]));
+  };
+
+  const loadMerges = () => {
+    fetch(`${API_BASE}/artifacts/merge/proposals?session_id=${sessionId}`).then((res) => res.json()).then(setMergeProposals).catch(() => setMergeProposals([]));
+  };
+
+  const loadTools = () => {
+    fetch(`${API_BASE}/tools/`).then((res) => res.json()).then(setTools).catch(() => setTools([]));
+    fetch(`${API_BASE}/tools/runs`).then((res) => res.json()).then(setToolRuns).catch(() => setToolRuns([]));
+  };
+
+  const loadModels = () => {
+    fetch(`${API_BASE}/models/`).then((res) => res.json()).then(setModelConfigs).catch(() => setModelConfigs([]));
+  };
+
+  const exportSession = async (fmt: 'markdown' | 'json' = 'markdown') => {
+    try {
+      const res = await fetch(`${API_BASE}/export/session/${sessionId}?format=${fmt}`);
+      if (fmt === 'json') {
+        const data = await res.json();
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `session_${sessionId}.json`;
+        a.click();
+      } else {
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `session_${sessionId}.md`;
+        a.click();
+      }
+    } catch (e) {
+      alert('Export failed (demo)');
+    }
+  };
+
+  const [authToken, setAuthToken] = useState('');
+  const [currentMode, setCurrentMode] = useState<'casual' | 'roundtable' | 'project'>('project');
+  const [lang, setLang] = useState<'zh' | 'en'>('zh');
+  const fetchToken = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/auth/token?username=demo`, { method: 'POST' });
+      const data = await res.json();
+      setAuthToken(data.access_token || 'demo-token');
+      alert('Token fetched: ' + (data.access_token || '').slice(0, 20) + '... (WS will use it on reconnect)');
+    } catch (e) {
+      setAuthToken('demo-token-for-dev');
+    }
+  };
+
+  useEffect(() => {
+    setConnection('connecting');
+    wsClient.current = connectWS(sessionId, (event: WSMessage) => {
+      if (event.type === 'delta' && event.model && event.delta) addDelta(event.model, event.delta);
+      if (event.type === 'message_complete' && event.message) {
+        addMessage(event.message);
+        if (event.message.author_model !== 'user') finishStream(event.message.author_model);
+      }
+      if (event.type === 'task_update' && event.task) updateTask(event.task);
+      if (event.type === 'tool_update' && event.tool) upsertTool(event.tool);
+      if (event.type === 'tool_run' && event.run) addToolRun(event.run);
+      if (event.type === 'cost_update' && typeof event.budget_remaining === 'number') setBudget(event.budget_remaining);
+      if (event.type === 'ack' || (event.type === 'system' && event.content === 'Connected')) setConnection('online');
+      if (event.type === 'system' && event.content === 'Disconnected') setConnection('offline');
+    }, authToken || undefined);
+    loadTasks();
+    loadArtifacts();
+    loadMerges();
+    loadTools();
+    loadModels();
+    return () => wsClient.current?.close();
+  }, [sessionId, authToken]);
+
+  const spent = useMemo(() => budget.total - budget.remaining, [budget]);
+  const spendPct = Math.min(100, Math.max(0, (spent / budget.total) * 100));
+
+  const sendMessage = (content: string, targets: string[]) => {
+    const sent = wsClient.current?.sendAction({ type: 'post_message', content, targets, mode: currentMode });
+    if (!sent) {
+      addMessage({
+        id: crypto.randomUUID(),
+        session_id: sessionId,
+        author_model: '系统',
+        role: 'system',
+        content: '后端未连接，消息已保留在本地工作台。',
+        created_at: new Date().toISOString(),
+      });
+    }
+  };
+
+  const createTask = async (title: string) => {
+    const res = await fetch(`${API_BASE}/tasks/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId, title, description: '由中文工作台创建', priority: 1 }),
+    });
+    updateTask(await res.json());
+  };
+
+  const patchTask = async (task: Task, patch: Partial<Task>) => {
+    const res = await fetch(`${API_BASE}/tasks/${task.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    updateTask(await res.json());
+  };
+
+  const createMerge = async (artifactPath: string, rationale: string) => {
+    const res = await fetch(`${API_BASE}/artifacts/merge/proposals`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId, artifact_path: artifactPath, proposer: 'facilitator', rationale }),
+    });
+    updateMergeProposal(await res.json());
+    setActivePanel('合并');
+  };
+
+  const voteMerge = async (proposal: MergeProposal, approve: boolean) => {
+    const res = await fetch(`${API_BASE}/artifacts/merge/proposals/${proposal.id}/vote`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ voter: 'user', approve }),
+    });
+    updateMergeProposal(await res.json());
+  };
+
+  const createTool = async (payload: Partial<ToolItem>) => {
+    const res = await fetch(`${API_BASE}/tools/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    upsertTool(await res.json());
+  };
+
+  const deleteTool = async (tool: ToolItem) => {
+    await fetch(`${API_BASE}/tools/${tool.id}`, { method: 'DELETE' });
+    removeTool(tool.id);
+  };
+
+  const invokeTool = async (tool: ToolItem, caller = 'user') => {
+    const res = await fetch(`${API_BASE}/tools/${tool.id}/invoke`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ caller, arguments: { session_id: sessionId, path: selectedArtifactPath, text: '来自工具仓的中文调用' } }),
+    });
+    addToolRun(await res.json());
+  };
+
+  const createModel = async (payload: Partial<ModelConfig> & { api_key?: string }) => {
+    const res = await fetch(`${API_BASE}/models/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    upsertModelConfig(await res.json());
+  };
+
+  const deleteModel = async (model: ModelConfig) => {
+    await fetch(`${API_BASE}/models/${model.name}`, { method: 'DELETE' });
+    removeModelConfig(model.name);
+  };
+
+  return (
+    <div className="flex h-screen flex-col overflow-hidden bg-[#e9e1d6] text-[#2f2a24]">
+      <DesktopTitleBar onExportSession={exportSession} onShowRunPanel={() => setActivePanel('运行')} />
+
+      <main className="aether-main-grid grid min-h-0 flex-1 grid-cols-[3.5rem_15rem_minmax(0,1fr)] border-t border-[#cfc4b7]">
+        <ActivityRail activePanel={activePanel} setActivePanel={setActivePanel} />
+
+        <WorkspaceSidebar conversations={conversations} />
+
+        <section className="flex min-h-0 min-w-0 flex-col border-x border-[#d8cfc3] bg-[#fbfaf7]">
+          <CommandHeader
+            connection={connection}
+            providerCount={providers.length}
+            budgetRemaining={budget.remaining}
+            spendPct={spendPct}
+            mode={workspaceSettings.mode}
+            mergeRule={workspaceSettings.mergeRule}
+          />
+          <div className="flex items-center gap-2 border-b bg-[#f5efe7] p-2 text-xs">
+            <span className="font-medium">模式:</span>
+            {(['casual', 'roundtable', 'project'] as const).map(m => (
+              <button 
+                key={m}
+                onClick={() => setCurrentMode(m)}
+                className={`rounded px-2 py-0.5 ${currentMode === m ? 'bg-[#8d5f35] text-white' : 'hover:bg-[#e6ded4]'}`}
+              >
+                {m === 'casual' ? '休闲' : m === 'roundtable' ? '圆桌' : '项目'}
+              </button>
+            ))}
+            <span className="ml-auto text-[#8b8176]">当前: {currentMode}</span>
+          </div>
+          <UnifiedFeed />
+          <Composer 
+            onSend={sendMessage} 
+            providers={providers.map((provider) => provider.name)} 
+            onInterrupt={(scope) => wsClient.current?.sendAction({ type: 'interrupt', scope })}
+          />
+        </section>
+
+      </main>
+
+      {activePanel && (
+        <div className="aether-modal-backdrop" onClick={() => setActivePanel(null)}>
+          <div className="aether-modal-panel" onClick={(event) => event.stopPropagation()}>
+            <InspectorPanel
+              apiBase={API_BASE}
+              sessionId={sessionId}
+              selectedArtifactPath={selectedArtifactPath}
+              onSelectArtifact={setSelectedArtifactPath}
+              onCreateTask={createTask}
+              onPatchTask={patchTask}
+              onCreateMerge={createMerge}
+              onVoteMerge={voteMerge}
+              onReloadArtifacts={loadArtifacts}
+              onUpdateSettings={updateSettings}
+              onCreateTool={createTool}
+              onDeleteTool={deleteTool}
+              onInvokeTool={invokeTool}
+              onExportSession={exportSession}
+              onCreateModel={createModel}
+              onDeleteModel={deleteModel}
+              onClose={() => setActivePanel(null)}
+            />
+          </div>
+        </div>
+      )}
+
+      <DesktopStatusBar
+        connection={connection}
+        budgetRemaining={budget.remaining}
+        lang={lang}
+        onToggleLang={() => setLang(lang === 'zh' ? 'en' : 'zh')}
+      />
+    </div>
+  );
+}
+
+interface DesktopTitleBarProps {
+  onExportSession: (fmt: 'markdown' | 'json') => void;
+  onShowRunPanel: () => void;
+}
+
+function DesktopTitleBar({ onExportSession, onShowRunPanel }: DesktopTitleBarProps) {
+  const menuActions: Record<string, () => void> = {
+    文件: () => onExportSession('json'),
+    编辑: () => document.execCommand('copy'),
+    视图: () => window.location.reload(),
+    运行: onShowRunPanel,
+    帮助: () => onShowRunPanel(),
+  };
+
+  const windowActions = [
+    { label: '最小化', icon: Minus, action: () => window.aetherWindow?.minimize() },
+    { label: '最大化', icon: Maximize2, action: () => window.aetherWindow?.toggleMaximize() },
+    { label: '关闭', icon: X, action: () => window.aetherWindow?.close() ?? window.close() },
+  ];
+
+  return (
+    <header className="grid h-10 grid-cols-[auto_minmax(0,1fr)_auto] items-center bg-[#f5efe7] text-[#4a4037]">
+      <div className="flex h-full items-center gap-2 px-3">
+        <div className="flex h-6 w-6 items-center justify-center rounded-md bg-[#2f2a24] text-white">
+          <Radio size={13} />
+        </div>
+        <span className="text-xs font-semibold">AetherChat Desktop</span>
+        <span className="ml-2 text-[11px] text-[#8b8176]">Windows</span>
+      </div>
+      <nav className="flex h-full items-center gap-1 text-[12px] text-[#6d6258]">
+        {['文件', '编辑', '视图', '运行', '帮助'].map((item) => (
+          <button key={item} onClick={menuActions[item]} className="h-7 rounded-md px-3 hover:bg-[#e6ded4]">{item}</button>
+        ))}
+      </nav>
+      <div className="flex h-full items-center">
+        {windowActions.map(({ label, icon: Icon, action }) => (
+          <button key={label} title={label} onClick={action} className="flex h-10 w-11 items-center justify-center text-[#6d6258] hover:bg-[#e2d9ce]">
+            <Icon size={14} />
+          </button>
+        ))}
+      </div>
+    </header>
+  );
+}
+
+interface ActivityRailProps {
+  activePanel: ReturnType<typeof useSessionStore.getState>['activePanel'];
+  setActivePanel: ReturnType<typeof useSessionStore.getState>['setActivePanel'];
+}
+
+function ActivityRail({ activePanel, setActivePanel }: ActivityRailProps) {
+  const items = [
+    { label: '对话', icon: MessageSquare, panel: null },
+    { label: '任务', icon: LayoutList, panel: '任务' },
+    { label: '文件', icon: FileCode2, panel: '工件' },
+    { label: '变更', icon: GitMerge, panel: '合并' },
+    { label: '工具', icon: Wrench, panel: '工具' },
+    { label: '模型', icon: Cpu, panel: '模型' },
+    { label: '运行', icon: SquareTerminal, panel: '运行' },
+    { label: '设置', icon: Settings, panel: '设置' },
+  ] as const;
+
+  return (
+    <aside className="flex min-h-0 flex-col items-center border-r border-[#d8cfc3] bg-[#2f2a24] py-3 text-[#d8cfc3]">
+      <div className="mb-4 flex h-9 w-9 items-center justify-center rounded-lg bg-[#f5efe7] text-[#2f2a24]">
+        <Bot size={17} />
+      </div>
+      <div className="flex flex-1 flex-col gap-2">
+        {items.map((item) => {
+          const Icon = item.icon;
+          const selected = item.panel === activePanel;
+          return (
+            <button
+              key={item.label}
+              title={item.label}
+              onClick={() => item.panel ? setActivePanel(item.panel) : document.querySelector<HTMLTextAreaElement>('[data-aether-composer]')?.focus()}
+              className={`flex h-10 w-10 items-center justify-center rounded-lg transition ${selected ? 'bg-[#8d5f35] text-white' : 'hover:bg-[#443b32]'}`}
+            >
+              <Icon size={18} />
+            </button>
+          );
+        })}
+      </div>
+      <button title="检查器" onClick={() => setActivePanel('运行')} className="flex h-10 w-10 items-center justify-center rounded-lg hover:bg-[#443b32]">
+        <PanelRight size={18} />
+      </button>
+    </aside>
+  );
+}
+
+interface WorkspaceSidebarProps {
+  conversations: ReturnType<typeof useSessionStore.getState>['conversations'];
+}
+
+function WorkspaceSidebar({ conversations }: WorkspaceSidebarProps) {
+  return (
+    <aside className="flex min-h-0 flex-col bg-[#eee7de]">
+      <div className="border-b border-[#d8cfc3] px-3 py-3">
+        <div className="mb-3 flex items-center justify-between">
+          <div>
+            <div className="text-sm font-semibold">AetherChat</div>
+            <div className="text-xs text-[#7a7065]">Claude + Codex 框架</div>
+          </div>
+          <button disabled title="多会话创建尚未启用" className="flex h-8 w-8 cursor-not-allowed items-center justify-center rounded-lg border border-[#d8cfc3] bg-[#fbfaf7] opacity-60">
+            <Plus size={15} />
+          </button>
+        </div>
+        <div className="flex h-9 items-center gap-2 rounded-lg border border-[#d8cfc3] bg-[#fbfaf7] px-3 text-sm text-[#7a7065]">
+          <Search size={15} />
+          搜索会话、文件或命令
+        </div>
+      </div>
+
+      <div className="border-b border-[#d8cfc3] p-3">
+        <div className="rounded-lg bg-[#2f2a24] p-3 text-white">
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <GitBranch size={15} />
+            aetherchat/main
+          </div>
+          <div className="mt-2 text-xs leading-5 text-[#d8cfc3]">项目协作 · 中文优先 · Docker 严格沙箱</div>
+        </div>
+      </div>
+
+      <div className="px-3 pt-3 text-xs font-semibold text-[#8b8176]">最近会话</div>
+      <div className="min-h-0 flex-1 overflow-auto p-3">
+        {conversations.map((conversation) => (
+              <button
+                onClick={submitModel}
+                className="col-span-2 flex h-9 items-center justify-center gap-1 rounded-lg bg-[#2f2a24] px-3 text-sm font-medium text-white"
+              >
+                <Plus size={15} />
+                {editingModelName ? '?????' : '?????'}
+              </button>
+              {modelVerifyStatus && (
+                <div className="col-span-2 rounded-md bg-[#ebe3d8] px-3 py-2 text-xs text-[#6d6258]">
+                  {modelVerifyStatus}
+                </div>
+              )}
+          ))}
+          </div>
+          {props.onClose && (
+            <button onClick={props.onClose} className="h-8 rounded-md border border-[#d6cbbd] px-3 text-xs text-[#6d6258]">
+              关闭
+            </button>
+          )}
+        </div>
+      </div>
+
+      {activePanel === '任务' && (
+        <div className="flex-1 overflow-auto p-4">
+          <div className="mb-3 flex gap-2">
+            <input
+              value={taskTitle}
+              onChange={(event) => setTaskTitle(event.target.value)}
+              placeholder="新建任务"
+              className="h-10 min-w-0 flex-1 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none"
+            />
+            <button
+              onClick={() => {
+                if (!taskTitle.trim()) return;
+                props.onCreateTask(taskTitle.trim());
+                setTaskTitle('');
+              }}
+              className="flex h-10 items-center gap-1 rounded-lg bg-[#2f2a24] px-3 text-sm font-medium text-white"
+            >
+              <Plus size={15} />
+              添加
+            </button>
+          </div>
+          <TaskBoard onPatchTask={props.onPatchTask} />
+        </div>
+      )}
+
+      {activePanel === '工件' && (
+        <div className="grid min-h-0 flex-1 grid-rows-[13rem_minmax(0,1fr)]">
+          <div className="overflow-auto border-b border-[#ded6ca] p-4">
+            <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
+              <Archive size={16} />
+              文件树
+            </div>
+            <div className="space-y-2">
+              {artifacts.map((artifact) => (
+                <button
+                  key={artifact.path}
+                  onClick={() => props.onSelectArtifact(artifact.path)}
+                  className={`w-full rounded-lg border p-3 text-left text-sm ${props.selectedArtifactPath === artifact.path ? 'border-[#8d5f35] bg-white' : 'border-[#e1d9cd] bg-[#fbfaf7]'}`}
+                >
+                  <div className="flex items-center gap-2 font-medium">
+                    <FileText size={14} />
+                    {artifact.path}
+                  </div>
+                  <div className="mt-1 text-xs text-[#7a7065]">{artifact.kind} · {artifact.current_hash.slice(0, 7)}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex min-h-0 flex-col p-4">
+            <div className="mb-2 flex items-center justify-between">
+              <div className="truncate text-sm font-semibold">{props.selectedArtifactPath}</div>
+              <button onClick={() => props.onCreateMerge(props.selectedArtifactPath, '请求根据两票规则合并当前工件更新。')} className="rounded-md border border-[#ded6ca] px-2 py-1 text-xs">
+                提交变更
+              </button>
+            </div>
+            <textarea value={artifactContent} onChange={(event) => setArtifactContent(event.target.value)} className="min-h-0 flex-1 resize-none rounded-lg border border-[#ded6ca] bg-[#fffdf9] p-3 font-mono text-xs leading-5 outline-none" />
+            <div className="mt-2 flex gap-2">
+              <input value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} className="h-9 min-w-0 flex-1 rounded-lg border border-[#ded6ca] bg-white px-3 text-xs outline-none" />
+              <button onClick={saveArtifact} className="rounded-lg bg-[#2f2a24] px-3 text-sm font-medium text-white">保存</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activePanel === '合并' && (
+        <div className="flex-1 overflow-auto p-4">
+          <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
+            <GitMerge size={16} />
+            变更与合并
+          </div>
+          <div className="space-y-3">
+            {mergeProposals.map((proposal) => (
+              <div key={proposal.id} className="rounded-lg border border-[#ded6ca] bg-[#fbfaf7] p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium">{proposal.artifact_path}</div>
+                    <div className="mt-1 text-xs leading-5 text-[#7a7065]">{proposal.rationale}</div>
+                  </div>
+                  <span className="rounded-md bg-[#ebe3d8] px-2 py-1 text-xs">{proposal.status}</span>
+                </div>
+                <div className="mt-3 flex items-center justify-between">
+                  <div className="text-xs text-[#7a7065]">赞成 {Object.values(proposal.votes).filter(Boolean).length} / 2</div>
+                  <div className="flex gap-2">
+                    <button onClick={() => props.onVoteMerge(proposal, false)} className="rounded-md border border-[#ded6ca] px-2 py-1 text-xs">拒绝</button>
+                    <button onClick={() => props.onVoteMerge(proposal, true)} className="rounded-md bg-[#2f2a24] px-2 py-1 text-xs text-white">赞成</button>
+                  </div>
+                </div>
+              </div>
+            ))}
+            {mergeProposals.length === 0 && <div className="rounded-lg border border-dashed border-[#d6cbbd] p-6 text-center text-sm text-[#7a7065]">暂无合并提案</div>}
+          </div>
+        </div>
+      )}
+
+      {activePanel === '工具' && (
+        <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)_12rem]">
+          <div className="border-b border-[#ded6ca] p-4">
+            <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
+              <PackageCheck size={16} />
+              工具仓
+            </div>
+            <div className="space-y-2">
+              <input
+                value={toolName}
+                onChange={(event) => setToolName(event.target.value)}
+                placeholder="工具名称，例如：生成周报"
+                className="h-9 w-full rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none"
+              />
+              <input
+                value={toolDescription}
+                onChange={(event) => setToolDescription(event.target.value)}
+                placeholder="工具说明"
+                className="h-9 w-full rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none"
+              />
+              <textarea
+                value={toolTemplate}
+                onChange={(event) => setToolTemplate(event.target.value)}
+                className="h-20 w-full resize-none rounded-lg border border-[#ded6ca] bg-white px-3 py-2 text-xs leading-5 outline-none"
+              />
+              <button
+                onClick={() => {
+                  if (!toolName.trim()) return;
+                  props.onCreateTool({
+                    name: toolName.trim(),
+                    description: toolDescription || '用户创建的内部工具',
+                    category: 'custom',
+                    owner: 'user',
+                    kind: 'template',
+                    input_schema: { type: 'object', properties: { input: { type: 'string' } } },
+                    output_template: toolTemplate,
+                    enabled: true,
+                  });
+                  setToolName('');
+                  setToolDescription('');
+                }}
+                className="flex h-9 items-center gap-1 rounded-lg bg-[#2f2a24] px-3 text-sm font-medium text-white"
+              >
+                <Plus size={15} />
+                添加到工具仓
+              </button>
+            </div>
+          </div>
+
+          <div className="overflow-auto p-4">
+            <div className="mb-2 text-xs font-semibold text-[#7a7065]">所有模型可调用的工具</div>
+            <div className="space-y-2">
+              {tools.map((tool) => (
+                <div key={tool.id} className="rounded-lg border border-[#ded6ca] bg-[#fbfaf7] p-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-semibold">{tool.name}</div>
+                      <div className="mt-1 text-xs leading-5 text-[#7a7065]">{tool.description}</div>
+                    </div>
+                    <span className="rounded-md bg-[#ebe3d8] px-2 py-1 text-[11px]">{tool.owner}</span>
+                  </div>
+                  <div className="mt-3 flex items-center justify-between text-xs text-[#7a7065]">
+                    <span>{tool.category} · {tool.kind}</span>
+                    <div className="flex gap-2">
+                      <button onClick={() => props.onInvokeTool(tool, 'user')} className="rounded-md bg-[#2f2a24] px-2 py-1 text-white">调用</button>
+                      {tool.owner !== 'system' && (
+                        <button onClick={() => props.onDeleteTool(tool)} className="rounded-md border border-[#d6cbbd] px-2 py-1 text-[#7a3b2e]">
+                          <Trash2 size={13} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="overflow-auto border-t border-[#ded6ca] p-4">
+            <div className="mb-2 text-xs font-semibold text-[#7a7065]">最近调用</div>
+            <div className="space-y-2">
+              {toolRuns.slice(0, 5).map((run) => (
+                <div key={run.id} className="rounded-lg border border-[#ded6ca] bg-[#fffdf9] p-2">
+                  <div className="flex items-center justify-between text-xs font-medium">
+                    <span>{run.tool_name}</span>
+                    <span>{run.caller}</span>
+                  </div>
+                  <div className="mt-1 line-clamp-2 text-xs leading-5 text-[#7a7065]">{run.output}</div>
+                </div>
+              ))}
+              {toolRuns.length === 0 && <div className="text-xs text-[#8b8176]">暂无调用记录</div>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activePanel === '模型' && (
+        <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)]">
+          <div className="border-b border-[#ded6ca] p-4">
+            <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
+              <Cpu size={16} />
+              模型接入
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <input value={modelName} onChange={(event) => setModelName(event.target.value)} placeholder="名称，如：my-gpt" className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none" />
+              <select value={modelType} onChange={(event) => setModelType(event.target.value as ModelConfig['type'])} className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none">
+                <option value="openai_compat">OpenAI 兼容</option>
+                <option value="anthropic">Anthropic / Claude</option>
+                <option value="xai">xAI</option>
+                <option value="local">本地模型</option>
+              </select>
+              <input value={modelId} onChange={(event) => setModelId(event.target.value)} placeholder="模型 ID，如：gpt-4.1" className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none" />
+              <input value={modelBaseUrl} onChange={(event) => setModelBaseUrl(event.target.value)} placeholder="Base URL，可空" className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none" />
+              <input value={modelApiKey} onChange={(event) => setModelApiKey(event.target.value)} placeholder="API Key，仅存入本地 vault" type="password" className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none" />
+              <select value={modelPolicy} onChange={(event) => setModelPolicy(event.target.value as ModelConfig['participation_policy'])} className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none">
+                <option value="always">总是参与</option>
+                <option value="mentioned">被 @ 时参与</option>
+                <option value="project_autonomous">项目模式自主参与</option>
+              </select>
+              <input value={modelPersona} onChange={(event) => setModelPersona(event.target.value)} placeholder="角色，如：代码审查 / 产品经理" className="col-span-2 h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none" />
+              <button
+                onClick={() => {
+                  if (!modelName.trim() || !modelId.trim()) return;
+                  props.onCreateModel({
+                    name: modelName.trim(),
+                    type: modelType,
+                    model: modelId.trim(),
+                    base_url: modelBaseUrl || undefined,
+                    api_key: modelApiKey || undefined,
+                    persona: modelPersona || undefined,
+                    participation_policy: modelPolicy,
+                    max_tokens: 8192,
+                    token_limit: 128000,
+                  });
+                  setModelName('');
+                  setModelId('');
+                  setModelBaseUrl('');
+                  setModelApiKey('');
+                  setModelPersona('');
+                }}
+                className="col-span-2 flex h-9 items-center justify-center gap-1 rounded-lg bg-[#2f2a24] px-3 text-sm font-medium text-white"
+              >
+                <Plus size={15} />
+                添加模型
+              </button>
+            </div>
+          </div>
+          <div className="overflow-auto p-4">
+            <div className="mb-2 text-xs font-semibold text-[#7a7065]">已接入模型</div>
+            <div className="space-y-2">
+              {modelConfigs.map((model) => (
+                <div key={model.name} className="rounded-lg border border-[#ded6ca] bg-[#fbfaf7] p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-semibold">{model.name}</div>
+                      <div className="mt-1 text-xs leading-5 text-[#7a7065]">{model.type} · {model.model}</div>
+                      <div className="mt-1 text-xs leading-5 text-[#7a7065]">{model.persona || '未设置角色'} · {model.participation_policy}</div>
+                    </div>
+                    <span className={`rounded-md px-2 py-1 text-[11px] ${model.has_api_key ? 'bg-[#dcebd7] text-[#326022]' : 'bg-[#ebe3d8] text-[#7a7065]'}`}>
+                      {model.has_api_key ? 'Key 已接入' : 'Demo'}
+                    </span>
+                  </div>
+                  <div className="mt-3 flex items-center justify-between text-xs text-[#7a7065]">
+                    <span>{model.base_url || '默认端点'}</span>
+                    <div className="flex gap-2">
+                      <button onClick={() => editModel(model)} className="rounded-md border border-[#d6cbbd] px-2 py-1">
+                        ??
+                      </button>
+                      <button
+                        onClick={async () => {
+                          try {
+                            setModelVerifyStatus('???...');
+                            const models = await fetch(`${props.apiBase}/models/`).then((res) => res.json());
+                            const matched = Array.isArray(models) && models.some((item: ModelConfig) => item.name === model.name && item.model === model.model);
+                            setModelVerifyStatus(matched ? '???????????????' : '????????????????');
+                          } catch (error) {
+                            setModelVerifyStatus(`?????${String(error)}`);
+                          }
+                        }}
+                        className="rounded-md border border-[#d6cbbd] px-2 py-1"
+                      >
+                        ??
+                      </button>
+                      <button onClick={() => props.onDeleteModel(model)} className="rounded-md border border-[#d6cbbd] px-2 py-1 text-[#7a3b2e]">
+                        ??
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {modelConfigs.length === 0 && <div className="rounded-lg border border-dashed border-[#d6cbbd] p-6 text-center text-sm text-[#7a7065]">暂无模型配置</div>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activePanel === '运行' && <RunPanel onExportSession={props.onExportSession} />}
+
+      {activePanel === '设置' && (
+        <div className="flex-1 overflow-auto p-4">
+          <div className="mb-4 flex items-center gap-2 text-sm font-semibold">
+            <ShieldCheck size={16} />
+            协作设置
+          </div>
+          {([
+            ['mode', '协作模式', ['日常讨论', '圆桌评审', '项目协作']],
+            ['mergeRule', '合并规则', ['两票通过', '主持人通过', '人工确认']],
+            ['sandbox', '沙箱策略', ['Docker 严格沙箱', '只读预览', '关闭执行']],
+            ['language', '语言策略', ['中文优先', '中英双语']],
+          ] as Array<[keyof WorkspaceSettings, string, string[]]>).map(([key, label, options]) => (
+            <label key={String(key)} className="mb-4 block">
+              <span className="mb-1 block text-xs font-semibold text-[#7a7065]">{String(label)}</span>
+              <select
+                value={workspaceSettings[key]}
+                onChange={(event) => props.onUpdateSettings({ [key]: event.target.value } as Partial<WorkspaceSettings>)}
+                className="h-10 w-full rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none"
+              >
+                {(options as string[]).map((option) => <option key={option}>{option}</option>)}
+              </select>
+            </label>
+          ))}
+          <div className="mt-5 text-xs font-semibold text-[#7a7065]">模型角色</div>
+          <div className="mt-2 space-y-2">
+            {providers.map((provider) => (
+              <div key={provider.name} className="rounded-lg border border-[#ded6ca] bg-[#fbfaf7] p-3">
+                <div className="flex items-center justify-between text-sm font-medium">
+                  <span>{provider.name}</span>
+                  <span className={`status-dot status-${provider.status}`} />
+                </div>
+                <div className="mt-1 text-xs text-[#7a7065]">{provider.role} · {provider.persona}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </aside>
+  );
+}
+
+interface RunPanelProps {
+  onExportSession: (fmt: 'markdown' | 'json') => void;
+}
+
+type RunCheckTone = 'neutral' | 'ok' | 'warn' | 'bad';
+
+type RunCheckRow = {
+  name: string;
+  detail: string;
+  status: string;
+  tone: RunCheckTone;
+};
+
+function RunPanel({ onExportSession }: RunPanelProps) {
+  const { connection } = useSessionStore();
+  const [checking, setChecking] = useState(false);
+  const [lastChecked, setLastChecked] = useState<string>('尚未检查');
+  const [rows, setRows] = useState<RunCheckRow[]>([
+    { name: '后端 API', detail: API_BASE, status: '未检查', tone: 'neutral' },
+    { name: '桌面前端', detail: typeof window === 'undefined' ? 'Electron 窗口' : window.location.href, status: '已加载', tone: 'ok' },
+    { name: '模型配置', detail: `${API_BASE}/models/`, status: '未检查', tone: 'neutral' },
+    { name: '工具仓', detail: `${API_BASE}/tools/`, status: '未检查', tone: 'neutral' },
+    { name: 'WebSocket', detail: '/ws/sessions/:id', status: connection === 'online' ? '已连接' : '未连接', tone: connection === 'online' ? 'ok' : 'warn' },
+  ]);
+
+  const runCheck = async () => {
+    setChecking(true);
+    const nextRows: RunCheckRow[] = [
+      { name: '桌面前端', detail: typeof window === 'undefined' ? 'Electron 窗口' : window.location.href, status: '已加载', tone: 'ok' },
+      {
+        name: 'WebSocket',
+        detail: '/ws/sessions/:id',
+        status: connection === 'online' ? '已连接' : connection === 'connecting' ? '连接中' : '未连接',
+        tone: connection === 'online' ? 'ok' : connection === 'connecting' ? 'warn' : 'bad',
+      },
+    ];
+
+    try {
+      const health = await fetch(`${API_BASE}/health`).then((res) => res.json());
+      nextRows.unshift({
+        name: '后端 API',
+        detail: `${API_BASE} · Redis ${health.redis ? '可用' : '未启用'}`,
+        status: health.status === 'ok' ? '正常' : '异常',
+        tone: health.status === 'ok' ? 'ok' : 'bad',
+      });
+    } catch (error) {
+      nextRows.unshift({ name: '后端 API', detail: `${API_BASE} · ${String(error)}`, status: '不可用', tone: 'bad' });
+    }
+
+    try {
+      const models = await fetch(`${API_BASE}/models/`).then((res) => res.json());
+      nextRows.push({
+        name: '模型配置',
+        detail: Array.isArray(models) ? `已加载 ${models.length} 个模型` : '返回格式异常',
+        status: Array.isArray(models) ? '正常' : '异常',
+        tone: Array.isArray(models) ? 'ok' : 'bad',
+      });
+    } catch (error) {
+      nextRows.push({ name: '模型配置', detail: String(error), status: '不可用', tone: 'bad' });
+    }
+
+    try {
+      const tools = await fetch(`${API_BASE}/tools/`).then((res) => res.json());
+      nextRows.push({
+        name: '工具仓',
+        detail: Array.isArray(tools) ? `已加载 ${tools.length} 个工具` : '返回格式异常',
+        status: Array.isArray(tools) ? '正常' : '异常',
+        tone: Array.isArray(tools) ? 'ok' : 'bad',
+      });
+    } catch (error) {
+      nextRows.push({ name: '工具仓', detail: String(error), status: '不可用', tone: 'bad' });
+    }
+
+    setRows(nextRows);
+    setLastChecked(new Date().toLocaleTimeString());
+    setChecking(false);
+  };
+
+  useEffect(() => {
+    runCheck();
+  }, []);
+
+  const toneClass: Record<RunCheckTone, string> = {
+    neutral: 'bg-[#ebe3d8] text-[#6d6258]',
+    ok: 'bg-[#dfead7] text-[#3f6c3a]',
+    warn: 'bg-[#f2e3c4] text-[#855f18]',
+    bad: 'bg-[#ead5d1] text-[#8a3b31]',
+  };
+
+  return (
+    <div className="flex-1 overflow-auto p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="flex items-center gap-2 text-sm font-semibold">
+          <SquareTerminal size={16} />
+          运行与沙箱
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={runCheck} disabled={checking} className="flex items-center gap-1 rounded-md bg-[#2f2a24] px-2 py-1 text-xs text-white disabled:cursor-not-allowed disabled:opacity-60">
+            <Play size={13} />
+            {checking ? '检查中' : '运行检查'}
+          </button>
+          <button onClick={() => onExportSession('markdown')} className="flex items-center gap-1 rounded-md bg-[#8d5f35] px-2 py-1 text-xs text-white">
+            导出 MD
+          </button>
+          <button onClick={() => onExportSession('json')} className="flex items-center gap-1 rounded-md bg-[#8d5f35] px-2 py-1 text-xs text-white">
+            导出 JSON
+          </button>
+        </div>
+      </div>
+      <div className="rounded-lg border border-[#1f1b17] bg-[#2f2a24] p-3 font-mono text-xs text-[#f5efe7]">
+        <div>$ AetherChat runtime check</div>
+        <div className="mt-1 text-[#b8d8af]">最后检查：{lastChecked}</div>
+        <div className="mt-1 text-[#d7c9b6]">按钮会实时请求本机后端、模型配置和工具仓接口。</div>
+      </div>
+      <div className="mt-4 space-y-2">
+        {rows.map(({ name, detail, status, tone }) => (
+          <div key={name} className="rounded-lg border border-[#ded6ca] bg-[#fbfaf7] p-3">
+            <div className="flex items-center justify-between text-sm font-medium">
+              <span>{name}</span>
+              <span className={`rounded-md px-2 py-1 text-xs ${toneClass[tone]}`}>{status}</span>
+            </div>
+            <div className="mt-1 text-xs text-[#7a7065]">{detail}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+interface DesktopStatusBarProps {
+  connection: ReturnType<typeof useSessionStore.getState>['connection'];
+  budgetRemaining: number;
+  lang: 'zh' | 'en';
+  onToggleLang: () => void;
+}
+
+function DesktopStatusBar({ connection, budgetRemaining, lang, onToggleLang }: DesktopStatusBarProps) {
+  const fetchAndSetToken = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/auth/token?username=demo`, { method: 'POST' });
+      const data = await res.json();
+      const token = data.access_token || 'demo-token';
+      // This would need to be lifted up, but for demo we can alert and suggest paste
+      alert('Token: ' + token.slice(0, 30) + '... (copy to use in WS)');
+      // In real, set in parent state
+    } catch {}
+  };
+
+  return (
+    <footer className="flex h-7 items-center gap-4 border-t border-[#cfc4b7] bg-[#2f2a24] px-3 text-[11px] text-[#e7dfd3]">
+      <span className="flex items-center gap-1"><GitBranch size={12} /> main</span>
+      <span>沙箱 Docker 严格模式</span>
+      <span>WS {connection === 'online' ? 'connected' : 'offline'}</span>
+      <span>预算 ${budgetRemaining.toFixed(2)}</span>
+      <button onClick={fetchAndSetToken} className="rounded bg-[#8d5f35] px-1.5 py-0.5 text-[10px] text-white">获取Token</button>
+      <button onClick={onToggleLang} className="rounded bg-[#8d5f35] px-1.5 py-0.5 text-[10px] text-white">{lang.toUpperCase()}</button>
+      <span className="ml-auto">AetherChat Desktop · Claude/Codex style framework</span>
+    </footer>
+  );
+}
+
+export default App;

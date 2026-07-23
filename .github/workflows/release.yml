@@ -1,0 +1,210 @@
+name: build-test-release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: 22.22.0
+  PYTHON_VERSION: '3.12'
+  SOURCE_DATE_EPOCH: '1784160000'
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            os: ubuntu-24.04
+            platform: linux
+            arch: x64
+          - target: linux-arm64
+            os: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
+          - target: windows-x64
+            os: windows-2025
+            platform: windows
+            arch: x64
+    runs-on: ${{ matrix.os }}
+    env:
+      AETHERCHAT_ALLOW_UNAUTHENTICATED: '1'
+      CSC_LINK: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.WINDOWS_CSC_LINK || '' }}
+      CSC_KEY_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.WINDOWS_CSC_KEY_PASSWORD || '' }}
+      AETHERCHAT_REQUIRE_CODE_SIGNING: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '0' }}
+      AETHERCHAT_RELEASE_PUBLIC_KEY_B64: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.AETHERCHAT_RELEASE_PUBLIC_KEY_B64 || '' }}
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Python dependencies
+        run: python -m pip install --requirement backend/requirements.txt
+      - name: Install backend lint/type tooling
+        if: matrix.target == 'linux-x64'
+        run: python -m pip install --requirement backend/requirements-dev.txt
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Install Playwright browser
+        working-directory: frontend
+        run: npx playwright install chromium
+      - name: Install Playwright Linux system dependencies
+        if: matrix.platform == 'linux'
+        working-directory: frontend
+        run: npx playwright install-deps chromium
+
+      - name: Backend lint (ruff)
+        if: matrix.target == 'linux-x64'
+        working-directory: backend
+        run: ruff check app
+      - name: Backend type check (mypy, non-blocking)
+        if: matrix.target == 'linux-x64'
+        continue-on-error: true
+        working-directory: backend
+        run: mypy
+      - name: Backend tests
+        run: python -m pytest -q
+      - name: Electron supply-chain tests
+        working-directory: frontend
+        run: npm run test:electron
+      - name: Frontend production build
+        working-directory: frontend
+        run: npm run build
+      - name: Frontend E2E
+        working-directory: frontend
+        run: npm run test:e2e
+
+      - name: Embed release verification public key (Linux)
+        if: matrix.platform == 'linux' && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          test -n "$AETHERCHAT_RELEASE_PUBLIC_KEY_B64"
+          printf '%s' "$AETHERCHAT_RELEASE_PUBLIC_KEY_B64" | base64 --decode > frontend/electron/update-public-key.pem
+      - name: Embed release verification public key (Windows)
+        if: matrix.platform == 'windows' && startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: |
+          if (-not $env:AETHERCHAT_RELEASE_PUBLIC_KEY_B64) { throw "Release public key secret is missing" }
+          [IO.File]::WriteAllBytes("frontend/electron/update-public-key.pem", [Convert]::FromBase64String($env:AETHERCHAT_RELEASE_PUBLIC_KEY_B64))
+
+      - name: Build Linux packages
+        if: matrix.platform == 'linux'
+        working-directory: frontend
+        run: ./build-linux.sh
+      - name: Verify Linux package layout and Chromium sandbox
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          deb=$(find frontend/release -maxdepth 1 -name '*.deb' -print -quit)
+          appimage=$(find frontend/release -maxdepth 1 -name '*.AppImage' -print -quit)
+          test -n "$deb" && test -n "$appimage"
+          dpkg-deb --info "$deb" >/dev/null
+          dpkg-deb --contents "$deb" | grep -- '-rwsr-xr-x root/root .*chrome-sandbox'
+          chmod +x "$appimage"
+          "$appimage" --appimage-extract >/dev/null
+          test -x squashfs-root/aetherchat-frontend
+      - name: Build Windows NSIS package
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: frontend/build-windows.ps1
+      - name: Windows install/upgrade/uninstall smoke
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem frontend/release/AetherChat-Setup-*.exe | Select-Object -First 1
+          scripts/smoke_windows_install.ps1 $installer.FullName
+
+      - name: Generate CycloneDX SBOM
+        shell: bash
+        run: |
+          version=$(node -p "require('./frontend/package.json').version")
+          python scripts/release_security.py sbom --npm-lock frontend/package-lock.json --requirements backend/requirements.txt --version "$version" --timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --output "release-meta/AetherChat-$version-${{ matrix.target }}.cdx.json"
+      - name: Generate Linux build metadata
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          version=$(node -p "require('./frontend/package.json').version")
+          args=()
+          while IFS= read -r file; do args+=(--artifact "$file"); done < <(find frontend/release -maxdepth 1 \( -name '*.AppImage' -o -name '*.deb' \) -type f)
+          python scripts/release_security.py metadata --version "$version" --platform linux --arch "${{ matrix.arch }}" --timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${args[@]}" --output "release-meta/AetherChat-$version-${{ matrix.target }}.build.json"
+      - name: Generate Windows build metadata
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $version = node -p "require('./frontend/package.json').version"
+          $installer = Get-ChildItem frontend/release/AetherChat-Setup-*.exe | Select-Object -First 1
+          python scripts/release_security.py metadata --version $version --platform windows --arch x64 --timestamp (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ") --artifact $installer.FullName --output "release-meta/AetherChat-$version-windows-x64.build.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AetherChat-${{ matrix.target }}
+          if-no-files-found: error
+          path: |
+            frontend/release/*.AppImage
+            frontend/release/*.deb
+            frontend/release/AetherChat-Setup-*.exe
+            frontend/release/*.blockmap
+            release-meta/*.json
+
+  signed-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      AETHERCHAT_RELEASE_PRIVATE_KEY_B64: ${{ secrets.AETHERCHAT_RELEASE_PRIVATE_KEY_B64 }}
+      AETHERCHAT_RELEASE_PUBLIC_KEY_B64: ${{ secrets.AETHERCHAT_RELEASE_PUBLIC_KEY_B64 }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: python -m pip install cryptography==49.0.0
+      - uses: actions/download-artifact@v5
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Create and verify signed update manifest
+        shell: bash
+        run: |
+          test -n "$AETHERCHAT_RELEASE_PRIVATE_KEY_B64"
+          test -n "$AETHERCHAT_RELEASE_PUBLIC_KEY_B64"
+          version="${GITHUB_REF_NAME#v}"
+          linux_x64=$(find release-assets -name '*linux-x86_64.AppImage' -o -name '*linux-x64.AppImage' | head -n1)
+          linux_arm64=$(find release-assets -name '*linux-arm64.AppImage' | head -n1)
+          windows_x64=$(find release-assets -name 'AetherChat-Setup-*.exe' | head -n1)
+          test -f "$linux_x64" && test -f "$linux_arm64" && test -f "$windows_x64"
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+          python scripts/release_security.py manifest --version "$version" \
+            --release "linux,x64,$linux_x64,$base/$(basename "$linux_x64")" \
+            --release "linux,arm64,$linux_arm64,$base/$(basename "$linux_arm64")" \
+            --release "windows,x64,$windows_x64,$base/$(basename "$windows_x64")" \
+            --output release-assets/update-manifest.json
+          python scripts/release_security.py sign --manifest release-assets/update-manifest.json --output release-assets/update-manifest.signed.json
+          python scripts/release_security.py verify --envelope release-assets/update-manifest.signed.json
+          find release-assets -maxdepth 1 -type f ! -name 'SHA256SUMS' -print0 | sort -z | xargs -0 sha256sum > release-assets/SHA256SUMS
+      - name: Publish release assets
+        shell: bash
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --verify-tag --title "AetherChat $GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" release-assets/* --clobber

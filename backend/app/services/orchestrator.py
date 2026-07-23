@@ -1,0 +1,1958 @@
+import asyncio
+import json
+import re
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime
+from uuid import uuid4
+
+from ..models.schemas import ChatMessage, Message, ProviderConfig, ToolCall, ToolDefinition
+from ..providers.base import LLMProvider, get_provider
+from .agent_run_service import agent_run_service
+from .approval_service import approval_policy, approval_service
+from .chat_database import chat_database
+from .computer_use_consent import conversation_computer_use_approval
+from .context_builder import build_messages_for_provider
+from .git_workspace_service import (
+    WORKSPACE_TOOL_NAMES,
+    GitWorkspaceError,
+    git_workspace_service,
+)
+from .knowledge_service import KnowledgeError, knowledge_service
+from .mcp_registry import mcp_registry
+from .memory_service import memory_service
+from .model_registry import model_registry
+from .plugin_registry import plugin_registry
+from .tool_registry import ToolInvoke, tool_registry
+
+MAX_MODEL_TOOL_ROUNDS = 12
+MAX_MODEL_TURNS = 32
+MAX_PSEUDO_TOOL_RETRIES = 2
+PSEUDO_TOOL_CALL_RE = re.compile(r"请求执行工具\s*[:：]\s*([A-Za-z0-9_]+)")
+_COMPUTER_USE_LOCK = asyncio.Lock()
+
+# Simple Facilitator for loop detection and summaries (PR10 starter)
+class Facilitator:
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+        self.mode = "project"
+        self.history: list[str] = []
+        self.loop_count = 0
+
+    def check_loop(self, content: str) -> bool:
+        self.history.append(content[:100])
+        if len(self.history) > 5:
+            self.history.pop(0)
+        # Simple repetition detection
+        if len(set(self.history[-3:])) == 1:
+            self.loop_count += 1
+            return self.loop_count >= 2
+        return False
+
+    def get_summary(self) -> str:
+        mode_note = f"当前模式: {self.mode if hasattr(self, 'mode') else 'project'}。"
+        return f"{mode_note} 当前进度摘要（Facilitator）: 已处理 {len(self.history)} 条消息。建议检查任务状态并推进合并提案（需2票或人类确认）。"
+
+    def inject(self, content: str) -> dict:
+        return {
+            "type": "facilitator_msg",
+            "content": content,
+            "ts": datetime.now(UTC).isoformat()
+        }
+
+DEFAULT_PROVIDERS = [
+    ProviderConfig(name="claude", type="anthropic", model="claude-3-5-sonnet", persona="Architect/Reviewer", participation_policy="always", api_key_ref="ANTHROPIC_API_KEY"),
+    ProviderConfig(name="deepseek", type="openai_compat", model="deepseek-chat", persona="Coder/Reasoner", participation_policy="always", api_key_ref="DEEPSEEK_API_KEY"),
+    ProviderConfig(name="grok", type="openai_compat", model="grok-2", persona="Creative", participation_policy="always", api_key_ref="XAI_API_KEY"),
+    ProviderConfig(name="qwen", type="openai_compat", model="qwen-plus", persona="Chinese/local + Critic", participation_policy="always", api_key_ref="QWEN_API_KEY"),
+    ProviderConfig(name="kimi", type="openai_compat", model="kimi-k2", persona="Researcher", participation_policy="always", api_key_ref="KIMI_API_KEY"),
+    ProviderConfig(name="gpt", type="openai_compat", model="gpt-4.1", persona="Implementer", participation_policy="always", api_key_ref="OPENAI_API_KEY"),
+]
+
+class SessionOrchestrator:
+    def __init__(self, session_id: str, tenant_id: str = "demo", mode: str = "casual"):
+        self.session_id = session_id
+        self.tenant_id = tenant_id
+        self.mode: str = mode  # casual | roundtable | project
+        self.providers: dict[str, LLMProvider] = {}
+        self.refresh_providers()
+        self.budget_remaining = 10.0
+        self.facilitator = Facilitator(session_id)
+        self.conversation_history: list[ChatMessage] = []
+        self._history_loaded = False
+        self._running_tasks: dict[str, asyncio.Task] = {}
+        self._interrupt_all = False
+        self._interrupted_models: set[str] = set()
+        self._budget_lock = asyncio.Lock()
+        self._budget_exhausted = False
+        self._roundtable_cursor = 0
+        self.run_service = agent_run_service
+        self._active_run_id: str | None = None
+        self._run_steers: list[dict] = []
+        self._plan_cancelled = False
+
+    def begin_agent_run(self, run_id: str, steers: list[dict] | None = None) -> None:
+        self._active_run_id = str(run_id)
+        self._run_steers = [dict(item) for item in (steers or []) if isinstance(item, dict)]
+        self._plan_cancelled = False
+
+    def end_agent_run(self, run_id: str) -> None:
+        if self._active_run_id == str(run_id):
+            self._active_run_id = None
+            self._run_steers = []
+            self._plan_cancelled = False
+
+    def queue_steer(self, steer: dict) -> None:
+        if self._active_run_id != str(steer.get("run_id") or ""):
+            raise ValueError("转向消息不属于当前运行")
+        if any(item.get("id") == steer.get("id") for item in self._run_steers):
+            return
+        self._run_steers.append(dict(steer))
+
+    def record_steer_message(self, content: str) -> dict:
+        message = Message(
+            id=uuid4(),
+            session_id=self.session_id,
+            author_model="user",
+            role="user",
+            content=str(content).strip(),
+            created_at=datetime.now(UTC),
+        )
+        self.conversation_history.append(ChatMessage(role="user", content=message.content))
+        chat_database.save_message(message, mode=self.mode)
+        memory_service.refresh(self.session_id, user_content=message.content)
+        return message.model_dump(mode="json")
+
+    def _consume_steers(self, model: str) -> list[dict]:
+        selected: list[dict] = []
+        for steer in self._run_steers:
+            targets = {str(value) for value in steer.get("targets") or []}
+            applied = {str(value) for value in steer.get("applied_models") or []}
+            if targets and "all" not in targets and model not in targets:
+                continue
+            if model in applied:
+                continue
+            applied.add(model)
+            steer["applied_models"] = sorted(applied)
+            selected.append(steer)
+        return selected
+
+    def _has_pending_steers(self, model: str) -> bool:
+        for steer in self._run_steers:
+            targets = {str(value) for value in steer.get("targets") or []}
+            applied = {str(value) for value in steer.get("applied_models") or []}
+            if targets and "all" not in targets and model not in targets:
+                continue
+            if model not in applied:
+                return True
+        return False
+
+    async def stream_user_message(self, action: dict) -> AsyncIterator[dict]:
+        self.refresh_providers()
+        workspace_service = (
+            self.run_service.workspace_service or git_workspace_service
+        )
+        agent_run_id = str(action.get("_agent_run_id") or self._active_run_id or "").strip()
+        pending_steers = action.get("_pending_steers") or []
+        if agent_run_id and self._active_run_id is None:
+            self.begin_agent_run(agent_run_id, pending_steers)
+        elif agent_run_id and self._active_run_id == agent_run_id:
+            for steer in pending_steers:
+                if isinstance(steer, dict):
+                    self.queue_steer(steer)
+        if action.get("mode"):
+            self.mode = action.get("mode")
+            self.facilitator.mode = self.mode
+        raw_attachment_ids = action.get("attachment_ids") or []
+        if not isinstance(raw_attachment_ids, list) or len(raw_attachment_ids) > 10:
+            yield {"type": "error", "code": "invalid_attachments", "message": "单条消息最多附带 10 个有效附件。"}
+            return
+        attachment_ids = [str(value) for value in raw_attachment_ids]
+        content = str(action.get("content") or "").strip()
+        if not content and attachment_ids:
+            content = "请阅读并分析我附带的资料。"
+        if not content:
+            yield {"type": "error", "code": "empty_message", "message": "消息内容不能为空。"}
+            return
+        try:
+            attachment_refs = knowledge_service.attachment_refs(self.session_id, attachment_ids)
+            attachment_context = knowledge_service.context_for_attachments(
+                self.session_id, attachment_ids, content
+            )
+            attachment_images = knowledge_service.image_data_urls(self.session_id, attachment_ids)
+        except (KeyError, KnowledgeError, ValueError) as exc:
+            message = exc.args[0] if isinstance(exc, KeyError) and exc.args else str(exc)
+            yield {"type": "error", "code": "invalid_attachments", "message": str(message)}
+            return
+        if not self._history_loaded:
+            self.conversation_history = [
+                ChatMessage(
+                    role=row["role"],
+                    content=row["content"],
+                    name=row["author_model"] if row["role"] == "assistant" else None,
+                )
+                for row in chat_database.chat_history(self.session_id)
+                if row["role"] in {"system", "user", "assistant", "tool"}
+            ]
+            self._history_loaded = True
+        raw_targets = action.get("targets") or list(self.providers.keys())
+        explicit_targets = {target for target in raw_targets if target != "all"}
+        targets = self._parse_targets(content, raw_targets)
+
+        # Mode-aware filtering
+        if self.mode == "roundtable":
+            if targets:
+                index = self._roundtable_cursor % len(targets)
+                targets = [targets[index]]
+                self._roundtable_cursor += 1
+
+        if not action.get("_aether_retry"):
+            user_message = Message(
+                id=uuid4(),
+                session_id=self.session_id,
+                author_model="user",
+                role="user",
+                content=content,
+                attachments=attachment_refs,
+                created_at=datetime.now(UTC),
+            )
+            self.conversation_history.append(ChatMessage(role="user", content=content, images=attachment_images))
+            chat_database.save_message(user_message, mode=self.mode)
+            memory_service.refresh(self.session_id, user_content=content)
+            yield {"type": "message_complete", "message": user_message.model_dump(mode="json")}
+
+        # Facilitator check
+        if self.facilitator.check_loop(content):
+            yield self.facilitator.inject(self.facilitator.get_summary())
+
+        queue: asyncio.Queue[dict] = asyncio.Queue()
+        selected = [name for name in targets if self._should_participate(name, content, targets, explicit_targets)]
+        if not selected:
+            yield {
+                "type": "error",
+                "message": "没有选中可用模型。请选择具体模型，或选择全部模型后重试。",
+            }
+            return
+        if self.budget_remaining <= 0:
+            self._budget_exhausted = True
+            yield {
+                "type": "error",
+                "code": "budget_exceeded",
+                "message": "会话预算已用尽，请增加预算后再调用模型。",
+            }
+            return
+        planned_execution = bool(
+            agent_run_id
+            and self.mode == "project"
+            and str(action.get("execution_strategy") or "direct") == "planned"
+        )
+        plan_bundle: dict | None = None
+        if planned_execution:
+            plan_bundle = self.run_service.ensure_plan(
+                run_id=agent_run_id,
+                session_id=self.session_id,
+                action=action,
+                models=selected,
+                profiles={
+                    name: str(self.providers[name].config.persona or "")
+                    for name in selected
+                },
+            )
+            yield {
+                "type": "plan_created",
+                "run_id": agent_run_id,
+                "goal": plan_bundle["goal"],
+                "plan_steps": plan_bundle["steps"],
+            }
+            current_plan_run = self.run_service.database.get_agent_run(
+                agent_run_id,
+                include_events=False,
+            ) or {}
+            if (
+                current_plan_run.get("plan_status") == "draft"
+                and not action.get("_plan_confirmed")
+            ):
+                waiting_run = self.run_service.database.update_agent_run(
+                    agent_run_id,
+                    "waiting_plan_confirmation",
+                    error=None,
+                )
+                self.run_service.database.append_agent_event(
+                    agent_run_id,
+                    "plan_confirmation_required",
+                    {
+                        "revision": current_plan_run.get("plan_revision"),
+                        "step_count": len(plan_bundle["steps"]),
+                    },
+                )
+                yield {
+                    "type": "plan_confirmation_required",
+                    "run_id": agent_run_id,
+                    "revision": current_plan_run.get("plan_revision"),
+                    "agent_run": waiting_run,
+                }
+                return
+            self.run_service.begin_plan_execution(agent_run_id)
+        context_msgs = [message.model_copy(deep=True) for message in self.conversation_history]
+        memory_context = memory_service.context(self.session_id)
+        if memory_context:
+            context_msgs.insert(0, ChatMessage(role="system", content=memory_context))
+        if attachment_context:
+            context_msgs.insert(0, ChatMessage(role="system", content=attachment_context))
+        language = str(action.get("language") or "").strip()
+        if language == "中文优先":
+            context_msgs.insert(0, ChatMessage(role="system", content="请优先使用清晰、准确的中文回复。"))
+        elif language == "中英双语":
+            context_msgs.insert(0, ChatMessage(role="system", content="请使用中英双语回复，先中文后英文。"))
+        if any(tool.name.startswith("plugin__desktop_control__") for tool in self._available_tools()):
+            context_msgs.insert(0, ChatMessage(
+                role="system",
+                content=(
+                    "你可以使用 AetherChat Computer Use 工具观察并操作本机。"
+                    "先 list_windows/list_apps，再 get_state；优先引用 snapshot_id 与 element_index，"
+                    "每次点击、输入、滚动或拖拽后必须重新 get_state 验证结果。"
+                    "write_artifact 只写入当前会话工件库；run_command 在隔离的 /workspace 中执行，"
+                    "不能访问或写入本机桌面。要在本机新建 TXT/MD/JSON/CSV/TSV 文件，"
+                    "优先调用 documents 的 export_to_local，传入工作区相对 path 与本机绝对 destination_path；"
+                    "也可调用 desktop_control 的 write_document，传入绝对 path 和 data.text。"
+                    "不要向用户输出‘请求执行工具’来代替调用；必须发送结构化工具调用。"
+                    "用户在普通聊天文本中输入‘允许’不等于授权；真实授权必须由对话中的独立授权卡片完成。"
+                    "不得猜测敏感数据，不得绕过本机授权对话框。"
+                ),
+            ))
+        if any(tool.name.startswith("plugin__comfyui__") for tool in self._available_tools()):
+            context_msgs.insert(0, ChatMessage(
+                role="system",
+                content=(
+                    "你可以与本机 ComfyUI 图像/视频模型协作。用户要求生成视觉内容时，"
+                    "先调用 comfyui.status 获取当前真实模型和工作流，再选择 generate_image、"
+                    "generate_video 或 run_workflow；不要声称已经生成而不调用工具。"
+                    "你负责把用户意图整理为包含主体、环境、构图、光线、风格及动作的完整提示词，"
+                    "ComfyUI 负责生成。工具返回文件后必须明确报告实际 filename 或 URL。"
+                ),
+            ))
+
+        async def run_provider(
+            name: str,
+            provider: LLMProvider,
+            execution: dict | None = None,
+        ):
+            self._running_tasks[name] = asyncio.current_task()
+            execution = execution or {}
+            plan_step_id = str(execution.get("plan_step_id") or "") or None
+            workspace_id = str(execution.get("workspace_id") or "") or None
+            publish_message = bool(execution.get("publish_message", True))
+            allow_side_effects = bool(execution.get("allow_side_effects", True))
+            provider_tools = [
+                tool for tool in self._available_tools()
+                if (
+                    (
+                        tool.name not in WORKSPACE_TOOL_NAMES
+                        or workspace_id is not None
+                    )
+                    and (
+                        allow_side_effects
+                        or not self.run_service.is_side_effecting_tool(
+                            tool.name
+                        )
+                    )
+                )
+            ]
+            full_parts: list[str] = []
+            total_prompt_tokens = 0
+            total_completion_tokens = 0
+            total_cost = 0.0
+            completed = False
+            message_emitted = False
+            pseudo_tool_retries = 0
+            try:
+                if self._is_interrupted(name):
+                    return
+                checkpoint = execution.get("resume_checkpoint")
+                if checkpoint is None:
+                    checkpoint = (action.get("_resume_checkpoints") or {}).get(name)
+                restored_context, tool_round = self._restore_checkpoint(checkpoint)
+                if restored_context:
+                    local_context = restored_context
+                else:
+                    source_context = execution.get("context_messages") or context_msgs
+                    step_instruction = str(execution.get("instruction") or "").strip()
+                    system_prompt = self._provider_system_prompt(name, provider)
+                    if step_instruction:
+                        system_prompt = (
+                            f"{system_prompt}\n\n"
+                            "【当前 Plan Step】\n"
+                            f"{step_instruction}"
+                        )
+                    local_context = await build_messages_for_provider(
+                        source_context,
+                        provider_limit=provider.config.token_limit,
+                        output_reserve=provider.config.max_tokens,
+                        system_prompt=system_prompt,
+                    )
+
+                async def apply_queued_steers(kind: str = "steer") -> bool:
+                    steers = self._consume_steers(name)
+                    if not steers:
+                        return False
+                    for steer in steers:
+                        local_context.append(ChatMessage(
+                            role="user",
+                            content=(
+                                "【运行中用户转向】\n"
+                                f"{str(steer.get('content') or '').strip()}\n"
+                                "以这条最新指令为准；重新检查尚未执行的计划和工具调用。"
+                            ),
+                        ))
+                    if agent_run_id:
+                        self._save_provider_checkpoint(
+                            agent_run_id,
+                            name,
+                            local_context,
+                            next_tool_round=tool_round,
+                            kind=kind,
+                            plan_step_id=plan_step_id,
+                        )
+                    for steer in steers:
+                        steer_id = str(steer.get("id") or "")
+                        if agent_run_id:
+                            self.run_service.mark_steer_applied(agent_run_id, steer_id, name)
+                        await queue.put({
+                            "type": "steer_applied",
+                            "model": name,
+                            "steer_id": steer_id,
+                        })
+                    return True
+
+                await apply_queued_steers()
+                for _provider_turn in range(MAX_MODEL_TURNS):
+                    if self._is_interrupted(name):
+                        break
+                    round_text = ""
+                    round_tool_calls: list[dict] = []
+                    round_usage: dict | None = None
+                    async for chunk in provider.stream_chat(
+                        messages=local_context,
+                        tools=provider_tools,
+                        session_id=self.session_id,
+                    ):
+                        if self._is_interrupted(name):
+                            break
+                        delta = chunk.get("delta") or ""
+                        if delta:
+                            round_text += delta
+                            await queue.put({
+                                "type": "delta",
+                                "model": name,
+                                "delta": delta,
+                                "ts": datetime.now(UTC).isoformat(),
+                            })
+                        round_tool_calls.extend(chunk.get("tool_calls") or [])
+                        if chunk.get("usage"):
+                            round_usage = chunk["usage"]
+
+                    if round_text.strip():
+                        full_parts.append(round_text.strip())
+
+                    became_exhausted = False
+                    if round_usage:
+                        prompt_tokens = int(round_usage.get("prompt_tokens", 0) or 0)
+                        completion_tokens = int(round_usage.get("completion_tokens", 0) or 0)
+                        total_prompt_tokens += prompt_tokens
+                        total_completion_tokens += completion_tokens
+                        cost = self._calculate_cost(provider, round_usage)
+                        total_cost += cost
+                        async with self._budget_lock:
+                            self.budget_remaining = max(0.0, round(self.budget_remaining - cost, 6))
+                            became_exhausted = self.budget_remaining <= 0 and not self._budget_exhausted
+                            if became_exhausted:
+                                self._budget_exhausted = True
+                        await queue.put({"type": "cost_update", "budget_remaining": self.budget_remaining})
+
+                    if self._has_pending_steers(name):
+                        if full_parts and full_parts[-1] == round_text.strip():
+                            full_parts.pop()
+                        if round_text.strip():
+                            local_context.append(ChatMessage(
+                                role="assistant",
+                                content=round_text.strip(),
+                            ))
+                        await queue.put({"type": "stream_reset", "model": name})
+                        await apply_queued_steers()
+                        continue
+
+                    pseudo_match = PSEUDO_TOOL_CALL_RE.search(round_text)
+                    if not round_tool_calls and pseudo_match:
+                        requested_name = pseudo_match.group(1)
+                        definition = next(
+                            (tool for tool in provider_tools if tool.name == requested_name),
+                            None,
+                        )
+                        if full_parts and full_parts[-1] == round_text.strip():
+                            full_parts.pop()
+                        await queue.put({"type": "stream_reset", "model": name})
+                        if definition is None:
+                            await queue.put({
+                                "type": "error",
+                                "code": "unknown_pseudo_tool",
+                                "model": name,
+                                "message": f"{name} 请求了不存在的工具：{requested_name}",
+                            })
+                            break
+                        pseudo_tool_retries += 1
+                        if pseudo_tool_retries > MAX_PSEUDO_TOOL_RETRIES:
+                            await queue.put({
+                                "type": "error",
+                                "code": "tool_call_format",
+                                "model": name,
+                                "message": f"{name} 连续以文本描述工具调用，已停止；请重试或检查本地模型工具调用模板。",
+                            })
+                            break
+                        local_context.append(ChatMessage(role="assistant", content=round_text.strip()))
+                        local_context.append(ChatMessage(
+                            role="user",
+                            content=(
+                                f"你刚才没有真正调用工具。立即发起结构化工具调用 {requested_name}，"
+                                "不要输出解释或‘请求执行工具’文本。"
+                                f"参数 JSON Schema：{json.dumps(definition.parameters, ensure_ascii=False)}。"
+                                "请根据对话与已有工具结果填写所有必需参数。"
+                            ),
+                        ))
+                        continue
+
+                    if not round_tool_calls:
+                        completed = True
+                        break
+                    if became_exhausted:
+                        await queue.put({
+                            "type": "error",
+                            "code": "budget_exceeded",
+                            "message": "会话预算已用尽，电脑控制循环已停止。",
+                        })
+                        self._cancel_running_providers(exclude=name)
+                        break
+                    if tool_round >= MAX_MODEL_TOOL_ROUNDS:
+                        await queue.put({
+                            "type": "error",
+                            "code": "tool_loop_limit",
+                            "model": name,
+                            "message": f"{name} 达到 {MAX_MODEL_TOOL_ROUNDS} 轮工具调用上限，已安全停止。",
+                        })
+                        break
+
+                    canonical_tool_calls = self._normalize_tool_calls(round_tool_calls)
+                    local_context.append(ChatMessage(
+                        role="assistant",
+                        content=round_text.strip(),
+                        tool_calls=canonical_tool_calls,
+                    ))
+
+                    tool_results: list[tuple[ToolCall, dict, list[str]]] = []
+                    tool_call_records: dict[str, dict] = {}
+
+                    # ruff B023 误报：本闭包只在当前迭代内被 await 消费（下方 617-814），
+                    # tool_results/tool_call_records 每轮 549-550 重建、tool_round 自增在 856（晚于全部调用），
+                    # 闭包从不在变量被改写后执行，无迟绑定问题。逐行 noqa 而非全局豁免，保留对其它闭包的检查。
+                    async def remember_tool_result(
+                        tool_call: ToolCall,
+                        payload: dict,
+                        images: list[str],
+                        *,
+                        tool_run_id: str | None = None,
+                        replayed: bool = False,
+                    ) -> None:
+                        tool_results.append((tool_call, payload, images))  # noqa: B023
+                        record = tool_call_records.get(tool_call.id)  # noqa: B023
+                        if record is not None and not replayed:
+                            updated = self.run_service.finish_tool_call(
+                                record["id"],
+                                payload,
+                                tool_run_id=tool_run_id,
+                            )
+                            if updated is not None:
+                                tool_call_records[tool_call.id] = updated  # noqa: B023
+                        await queue.put({
+                            "type": "tool_result_replayed" if replayed else "tool_result",
+                            "model": name,
+                            "tool_call_id": tool_call.id,
+                            "tool_name": tool_call.name,
+                            "round_index": tool_round,  # noqa: B023
+                            "status": payload.get("status"),
+                            "tool_run_id": tool_run_id,
+                            "idempotency_key": (
+                                tool_call_records.get(tool_call.id, {}).get("idempotency_key")  # noqa: B023
+                            ),
+                        })
+
+                    for call_index, tool_call in enumerate(canonical_tool_calls):
+                        tool_name = tool_call.name
+                        arguments = tool_call.arguments
+                        if agent_run_id:
+                            call_record = self.run_service.begin_tool_call(
+                                run_id=agent_run_id,
+                                session_id=self.session_id,
+                                model=name,
+                                provider_type=provider.config.type,
+                                provider_model=provider.config.model,
+                                provider_call_id=tool_call.id,
+                                tool_name=tool_name,
+                                arguments=arguments,
+                                round_index=tool_round,
+                                call_index=call_index,
+                                plan_step_id=plan_step_id,
+                            )
+                            tool_call_records[tool_call.id] = call_record
+                            await queue.put({
+                                "type": "tool_call",
+                                "model": name,
+                                "tool_call_id": tool_call.id,
+                                "tool_name": tool_name,
+                                "round_index": tool_round,
+                                "call_index": call_index,
+                                "idempotency_key": call_record["idempotency_key"],
+                                "status": call_record["status"],
+                            })
+                            if call_record["disposition"] == "replay":
+                                replay_payload = call_record.get("result") or {
+                                    "tool": tool_name,
+                                    "status": "error",
+                                    "error": "已完成工具调用缺少可恢复结果。",
+                                }
+                                await remember_tool_result(
+                                    tool_call,
+                                    replay_payload,
+                                    [],
+                                    tool_run_id=call_record.get("tool_run_id"),
+                                    replayed=True,
+                                )
+                                continue
+                            if call_record["disposition"] == "uncertain":
+                                await remember_tool_result(
+                                    tool_call,
+                                    {
+                                        "tool": tool_name,
+                                        "status": "error",
+                                        "error": call_record.get("error"),
+                                        "requires_human_review": True,
+                                    },
+                                    [],
+                                    replayed=True,
+                                )
+                                await queue.put({
+                                    "type": "error",
+                                    "code": "tool_result_uncertain",
+                                    "model": name,
+                                    "message": call_record.get("error"),
+                                })
+                                continue
+                            if (
+                                not allow_side_effects
+                                and self.run_service.is_side_effecting_tool(tool_name)
+                            ):
+                                await remember_tool_result(
+                                    tool_call,
+                                    {
+                                        "tool": tool_name,
+                                        "status": "denied",
+                                        "error": (
+                                            "当前 Plan Step 为只读 Worker/Verifier；"
+                                            "副作用操作只能由 Synthesizer 在独立授权后执行。"
+                                        ),
+                                    },
+                                    [],
+                                )
+                                continue
+                            if approval_policy(tool_name, arguments) is not None:
+                                self.run_service.update_tool_call_status(
+                                    call_record["id"],
+                                    "waiting_approval",
+                                )
+                        approved = await self._authorize_model_tool(queue, name, tool_name, arguments)
+                        if not approved:
+                            started_at = datetime.now(UTC).isoformat()
+                            error = "用户拒绝了本次工具操作。"
+                            run = tool_registry.record_run(
+                                tool_id=None,
+                                tool_name=tool_name or "unknown",
+                                caller=f"model:{name}",
+                                session_id=self.session_id,
+                                arguments=self._sanitize_tool_arguments(tool_name, arguments),
+                                status="error",
+                                output=None,
+                                error=error,
+                                started_at=started_at,
+                            )
+                            await remember_tool_result(
+                                tool_call,
+                                {"tool": tool_name, "status": "denied", "error": error},
+                                [],
+                                tool_run_id=run.get("id"),
+                            )
+                            await queue.put({"type": "tool_run", "run": run})
+                            continue
+                        if call_record := tool_call_records.get(tool_call.id):
+                            self.run_service.update_tool_call_status(call_record["id"], "running")
+                        plugin_match = plugin_registry.resolve_tool_name(tool_name)
+                        if plugin_match is not None:
+                            started_at = datetime.now(UTC).isoformat()
+                            try:
+                                if tool_name.startswith("plugin__desktop_control__"):
+                                    async with _COMPUTER_USE_LOCK:
+                                        with conversation_computer_use_approval():
+                                            plugin_result = await plugin_registry.invoke_tool(
+                                                tool_name, self.session_id, f"model:{name}", arguments
+                                            )
+                                else:
+                                    plugin_result = await plugin_registry.invoke_tool(
+                                        tool_name, self.session_id, f"model:{name}", arguments
+                                    )
+                                safe_result, images = self._sanitize_tool_result(plugin_result)
+                                run = tool_registry.record_run(
+                                    tool_id=None,
+                                    tool_name=tool_name,
+                                    caller=f"model:{name}",
+                                    session_id=self.session_id,
+                                    arguments=self._sanitize_tool_arguments(tool_name, arguments),
+                                    status="success",
+                                    output=safe_result,
+                                    error=None,
+                                    started_at=started_at,
+                                )
+                                await remember_tool_result(
+                                    tool_call,
+                                    {"tool": tool_name, "status": "success", "result": safe_result},
+                                    images,
+                                    tool_run_id=run.get("id"),
+                                )
+                            except Exception as exc:
+                                run = tool_registry.record_run(
+                                    tool_id=None,
+                                    tool_name=tool_name,
+                                    caller=f"model:{name}",
+                                    session_id=self.session_id,
+                                    arguments=self._sanitize_tool_arguments(tool_name, arguments),
+                                    status="error",
+                                    output=None,
+                                    error=str(exc),
+                                    started_at=started_at,
+                                )
+                                await remember_tool_result(
+                                    tool_call,
+                                    {"tool": tool_name, "status": "error", "error": str(exc)},
+                                    [],
+                                    tool_run_id=run.get("id"),
+                                )
+                            await queue.put({"type": "tool_run", "run": run})
+                            continue
+
+                        mcp_match = mcp_registry.resolve_tool_name(tool_name)
+                        if mcp_match is not None:
+                            started_at = datetime.now(UTC).isoformat()
+                            try:
+                                mcp_result = await mcp_registry.invoke_tool(tool_name, arguments)
+                                safe_result, images = self._sanitize_tool_result(mcp_result)
+                                is_error = bool(mcp_result.get("is_error"))
+                                run = tool_registry.record_run(
+                                    tool_id=None,
+                                    tool_name=tool_name,
+                                    caller=f"model:{name}",
+                                    session_id=self.session_id,
+                                    arguments=self._sanitize_tool_arguments(tool_name, arguments),
+                                    status="error" if is_error else "success",
+                                    output=safe_result,
+                                    error="MCP 工具返回错误" if is_error else None,
+                                    started_at=started_at,
+                                )
+                                await remember_tool_result(
+                                    tool_call,
+                                    {
+                                        "tool": tool_name,
+                                        "status": "error" if is_error else "success",
+                                        "result": safe_result,
+                                    },
+                                    images,
+                                    tool_run_id=run.get("id"),
+                                )
+                            except Exception as exc:
+                                run = tool_registry.record_run(
+                                    tool_id=None,
+                                    tool_name=tool_name,
+                                    caller=f"model:{name}",
+                                    session_id=self.session_id,
+                                    arguments=self._sanitize_tool_arguments(tool_name, arguments),
+                                    status="error",
+                                    output=None,
+                                    error=str(exc),
+                                    started_at=started_at,
+                                )
+                                await remember_tool_result(
+                                    tool_call,
+                                    {"tool": tool_name, "status": "error", "error": str(exc)},
+                                    [],
+                                    tool_run_id=run.get("id"),
+                                )
+                            await queue.put({"type": "tool_run", "run": run})
+                            continue
+
+                        tool = tool_registry.find_by_name(tool_name, self.session_id)
+                        if tool is None:
+                            error = f"模型请求了未注册工具：{tool_name}"
+                            await queue.put({"type": "error", "code": "unknown_tool", "model": name, "message": error})
+                            await remember_tool_result(
+                                tool_call,
+                                {"tool": tool_name, "status": "error", "error": error},
+                                [],
+                            )
+                            continue
+                        run = await tool_registry.invoke_async(
+                            tool["id"],
+                            ToolInvoke(caller=f"model:{name}", session_id=self.session_id, arguments=arguments),
+                            session_id=self.session_id,
+                            execution_context={
+                                "run_id": agent_run_id or None,
+                                "plan_step_id": plan_step_id,
+                                "workspace_id": workspace_id,
+                            },
+                        )
+                        safe_output, images = self._sanitize_tool_result(run.get("output"))
+                        await remember_tool_result(
+                            tool_call,
+                            {
+                                "tool": tool_name,
+                                "status": run.get("status", "error"),
+                                "result": safe_output,
+                                "error": run.get("error"),
+                            },
+                            images,
+                            tool_run_id=run.get("id"),
+                        )
+                        await queue.put({"type": "tool_run", "run": {**run, "output": safe_output}})
+
+                    for previous_message in local_context:
+                        previous_message.images = []
+                    remaining_result_chars = 180_000
+                    remaining_image_slots = 4
+                    for tool_call, tool_result, result_images in tool_results:
+                        serialized = json.dumps(tool_result, ensure_ascii=False, default=str, indent=2)
+                        if len(serialized) > remaining_result_chars:
+                            if remaining_result_chars > 0:
+                                serialized = (
+                                    serialized[:remaining_result_chars]
+                                    + "\n...[工具结果已截断]"
+                                )
+                            else:
+                                serialized = "[工具结果因本轮总长度上限已省略]"
+                        remaining_result_chars = max(0, remaining_result_chars - len(serialized))
+                        attached_images = result_images[:remaining_image_slots]
+                        remaining_image_slots -= len(attached_images)
+                        local_context.append(ChatMessage(
+                            role="tool",
+                            name=tool_call.name,
+                            tool_call_id=tool_call.id,
+                            tool_error=tool_result.get("status") != "success",
+                            content=(
+                                f"第 {tool_round + 1} 轮工具 {tool_call.name} 的结果。"
+                                "如执行了界面动作，请重新调用 get_state 验证，不要凭旧截图继续。\n"
+                                f"{serialized}"
+                            ),
+                            images=attached_images,
+                        ))
+                    tool_round += 1
+                    if agent_run_id:
+                        self._save_provider_checkpoint(
+                            agent_run_id,
+                            name,
+                            local_context,
+                            next_tool_round=tool_round,
+                            kind="tool_round",
+                            plan_step_id=plan_step_id,
+                        )
+
+                else:
+                    await queue.put({
+                        "type": "error",
+                        "code": "model_turn_limit",
+                        "model": name,
+                        "message": f"{name} 达到 {MAX_MODEL_TURNS} 次模型调用上限，已安全停止。",
+                    })
+
+                final_content = "\n\n".join(full_parts).strip()
+                if not final_content and completed:
+                    final_content = "操作已完成。"
+                if final_content and completed:
+                    if agent_run_id:
+                        self._save_provider_checkpoint(
+                            agent_run_id,
+                            name,
+                            [
+                                *local_context,
+                                ChatMessage(role="assistant", content=final_content),
+                            ],
+                            next_tool_round=tool_round,
+                            kind="completed",
+                            plan_step_id=plan_step_id,
+                        )
+                    if publish_message:
+                        message = Message(
+                            id=uuid4(),
+                            session_id=self.session_id,
+                            author_model=name,
+                            role="assistant",
+                            content=final_content,
+                            tokens_in=total_prompt_tokens,
+                            tokens_out=total_completion_tokens,
+                            cost_usd=round(total_cost, 6),
+                            created_at=datetime.now(UTC),
+                        )
+                        self.conversation_history.append(
+                            ChatMessage(role="assistant", content=final_content)
+                        )
+                        chat_database.save_message(message, mode=self.mode)
+                        memory_service.refresh(self.session_id)
+                        await queue.put({
+                            "type": "message_complete",
+                            "message": message.model_dump(mode="json"),
+                        })
+                    else:
+                        await queue.put({
+                            "type": "plan_step_output",
+                            "model": name,
+                            "content": final_content,
+                            "partial": False,
+                        })
+                    message_emitted = True
+
+            except asyncio.CancelledError:
+                await queue.put({"type": "interrupted", "model": name})
+            except Exception as exc:
+                await queue.put({
+                    "type": "error",
+                    "code": "provider_error",
+                    "model": name,
+                    "message": f"{name} 调用失败：{exc}",
+                })
+            finally:
+                final_content = "\n\n".join(full_parts).strip()
+                if final_content and not message_emitted:
+                    if publish_message:
+                        message = Message(
+                            id=uuid4(),
+                            session_id=self.session_id,
+                            author_model=name,
+                            role="assistant",
+                            content=final_content,
+                            tokens_in=total_prompt_tokens,
+                            tokens_out=total_completion_tokens,
+                            cost_usd=round(total_cost, 6),
+                            created_at=datetime.now(UTC),
+                        )
+                        self.conversation_history.append(
+                            ChatMessage(role="assistant", content=final_content)
+                        )
+                        chat_database.save_message(message, mode=self.mode)
+                        memory_service.refresh(self.session_id)
+                        await queue.put({
+                            "type": "message_complete",
+                            "message": message.model_dump(mode="json"),
+                            "partial": True,
+                        })
+                    else:
+                        await queue.put({
+                            "type": "plan_step_output",
+                            "model": name,
+                            "content": final_content,
+                            "partial": True,
+                        })
+                if name in self._running_tasks:
+                    del self._running_tasks[name]
+                await queue.put({
+                    "type": "provider_done",
+                    "model": name,
+                    "plan_step_id": plan_step_id,
+                })
+
+        async def stream_batch(
+            executions: list[dict],
+            outcomes: dict[str, dict],
+        ) -> AsyncIterator[dict]:
+            step_by_model = {
+                str(item["model"]): item
+                for item in executions
+            }
+            tasks = [
+                asyncio.create_task(
+                    run_provider(
+                        str(item["model"]),
+                        self.providers[str(item["model"])],
+                        item,
+                    )
+                )
+                for item in executions
+            ]
+            for item in executions:
+                key = str(item.get("plan_step_id") or item["model"])
+                outcomes[key] = {
+                    "status": "running",
+                    "content": "",
+                    "error": None,
+                    "code": None,
+                }
+            fatal_codes = {
+                "provider_error", "budget_exceeded", "tool_loop_limit",
+                "model_turn_limit", "tool_result_uncertain",
+                "unknown_pseudo_tool", "tool_call_format",
+            }
+            done = 0
+            while done < len(tasks):
+                event = await queue.get()
+                event_model = str(
+                    event.get("model")
+                    or (event.get("approval") or {}).get("model")
+                    or (event.get("message") or {}).get("author_model")
+                    or ""
+                )
+                execution = step_by_model.get(event_model)
+                plan_step = execution.get("step") if execution else None
+                key = str(
+                    event.get("plan_step_id")
+                    or (execution or {}).get("plan_step_id")
+                    or event_model
+                )
+                if plan_step is not None:
+                    event = {
+                        **event,
+                        "run_id": agent_run_id,
+                        "plan_step_id": plan_step["id"],
+                        "plan_step_key": plan_step["step_key"],
+                        "plan_step_kind": plan_step["kind"],
+                    }
+                if event.get("type") == "provider_done":
+                    done += 1
+                    if key in outcomes and outcomes[key]["status"] == "running":
+                        outcomes[key] = {
+                            "status": "failed",
+                            "content": outcomes[key].get("content") or "",
+                            "error": "模型未产生可确认的步骤输出",
+                        }
+                    continue
+                if event.get("type") == "error":
+                    code = str(event.get("code") or "")
+                    affected = [key] if key in outcomes else list(outcomes)
+                    if code in fatal_codes or not event_model:
+                        for outcome_key in affected:
+                            outcomes[outcome_key]["status"] = "failed"
+                            outcomes[outcome_key]["code"] = code
+                            outcomes[outcome_key]["error"] = str(
+                                event.get("message") or "计划步骤执行失败"
+                            )
+                elif event.get("type") == "interrupted" and key in outcomes:
+                    outcomes[key]["status"] = "interrupted"
+                    outcomes[key]["error"] = "用户中断"
+                elif event.get("type") == "plan_step_output" and key in outcomes:
+                    outcomes[key]["content"] = str(event.get("content") or "")
+                    if event.get("partial"):
+                        if outcomes[key]["status"] == "running":
+                            outcomes[key]["status"] = "failed"
+                            outcomes[key]["error"] = "模型只产生了部分输出"
+                    elif outcomes[key]["status"] == "running":
+                        outcomes[key]["status"] = "completed"
+                elif event.get("type") == "message_complete" and key in outcomes:
+                    message = event.get("message") or {}
+                    if (
+                        message.get("role") == "assistant"
+                        and message.get("author_model") == event_model
+                    ):
+                        outcomes[key]["content"] = str(message.get("content") or "")
+                        if event.get("partial"):
+                            if outcomes[key]["status"] == "running":
+                                outcomes[key]["status"] = "failed"
+                                outcomes[key]["error"] = "模型只产生了部分输出"
+                        elif outcomes[key]["status"] == "running":
+                            outcomes[key]["status"] = "completed"
+
+                if (
+                    execution is not None
+                    and not execution.get("publish_message", True)
+                    and event.get("type") in {"delta", "stream_reset"}
+                ):
+                    continue
+                yield event
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        if not planned_execution or plan_bundle is None:
+            tasks = [
+                asyncio.create_task(run_provider(name, self.providers[name]))
+                for name in selected
+            ]
+            done = 0
+            while done < len(tasks):
+                event = await queue.get()
+                if event.get("type") == "provider_done":
+                    done += 1
+                    continue
+                yield event
+            await asyncio.gather(*tasks, return_exceptions=True)
+            return
+
+        plan_terminal_error_emitted = False
+        while True:
+            plan_steps = self.run_service.database.list_agent_plan_steps(agent_run_id)
+            if self._plan_cancelled:
+                for step in plan_steps:
+                    if step["status"] in {"pending", "ready", "running"}:
+                        interrupted_step = self.run_service.finish_plan_step(
+                            agent_run_id,
+                            step["id"],
+                            status="interrupted",
+                            error="用户中断整个计划",
+                        )
+                        yield {
+                            "type": "plan_step_update",
+                            "run_id": agent_run_id,
+                            "plan_step": self._public_plan_step(interrupted_step),
+                        }
+                break
+            by_key = {step["step_key"]: step for step in plan_steps}
+            synthesizer = by_key.get("synthesizer")
+            if synthesizer and synthesizer["status"] == "completed":
+                break
+
+            pending = [
+                step for step in plan_steps
+                if step["status"] in {"pending", "ready", "interrupted"}
+            ]
+            if not pending:
+                break
+
+            ready: list[dict] = []
+            for step in pending:
+                if (
+                    step["kind"] in {"verifier", "synthesizer"}
+                    and all(
+                        candidate["status"] in {
+                            "completed", "failed", "blocked", "interrupted", "skipped",
+                        }
+                        for candidate in plan_steps
+                        if candidate["kind"] == "worker"
+                    )
+                    and not any(
+                        candidate["kind"] == "worker"
+                        and candidate["status"] == "completed"
+                        for candidate in plan_steps
+                    )
+                ):
+                    blocked = self.run_service.finish_plan_step(
+                        agent_run_id,
+                        step["id"],
+                        status="blocked",
+                        error="没有成功完成的 Worker 输出，无法核验或综合",
+                    )
+                    yield {
+                        "type": "plan_step_update",
+                        "run_id": agent_run_id,
+                        "plan_step": self._public_plan_step(blocked),
+                    }
+                    continue
+                dependency_states = [
+                    by_key.get(key, {}).get("status")
+                    for key in step.get("dependencies") or []
+                ]
+                if all(status == "completed" for status in dependency_states):
+                    ready.append(step)
+                    continue
+                terminal_dependencies = all(
+                    status in {
+                        "completed", "failed", "blocked", "interrupted", "skipped",
+                    }
+                    for status in dependency_states
+                )
+                if step.get("allow_failed_dependencies") and terminal_dependencies:
+                    ready.append(step)
+                    continue
+                if terminal_dependencies and any(
+                    status != "completed" for status in dependency_states
+                ):
+                    blocked = self.run_service.finish_plan_step(
+                        agent_run_id,
+                        step["id"],
+                        status="blocked",
+                        error="依赖步骤失败，当前步骤未执行",
+                    )
+                    yield {
+                        "type": "plan_step_update",
+                        "run_id": agent_run_id,
+                        "plan_step": self._public_plan_step(blocked),
+                    }
+
+            if not ready:
+                refreshed = self.run_service.database.list_agent_plan_steps(agent_run_id)
+                unresolved = [
+                    step for step in refreshed
+                    if step["status"] in {"pending", "ready", "interrupted"}
+                ]
+                if unresolved:
+                    for step in unresolved:
+                        blocked = self.run_service.finish_plan_step(
+                            agent_run_id,
+                            step["id"],
+                            status="blocked",
+                            error="计划依赖无法满足或检测到无进展状态",
+                        )
+                        yield {
+                            "type": "plan_step_update",
+                            "run_id": agent_run_id,
+                            "plan_step": self._public_plan_step(blocked),
+                        }
+                    yield {
+                        "type": "error",
+                        "code": "plan_blocked",
+                        "message": "Plan DAG 没有可执行步骤，已安全停止。",
+                    }
+                    plan_terminal_error_emitted = True
+                break
+
+            next_phase = min(int(step["phase"]) for step in ready)
+            phase_steps = [
+                step for step in ready if int(step["phase"]) == next_phase
+            ]
+            if self.budget_remaining <= 0:
+                for step in phase_steps:
+                    failed_step = self.run_service.finish_plan_step(
+                        agent_run_id,
+                        step["id"],
+                        status="failed",
+                        error="会话预算已用尽，计划步骤未执行",
+                    )
+                    yield {
+                        "type": "plan_step_update",
+                        "run_id": agent_run_id,
+                        "plan_step": self._public_plan_step(failed_step),
+                    }
+                yield {
+                    "type": "error",
+                    "code": "budget_exceeded",
+                    "message": "会话预算已用尽，计划执行已停止。",
+                }
+                plan_terminal_error_emitted = True
+                break
+            executions: list[dict] = []
+            unavailable: list[tuple[dict, str]] = []
+            for step in phase_steps:
+                model = str(step.get("assigned_model") or "")
+                if not model or model not in self.providers:
+                    unavailable.append((step, f"计划模型不可用：{model or '未分配'}"))
+                    continue
+                running_step = self.run_service.start_plan_step(
+                    agent_run_id, step["id"]
+                )
+                yield {
+                    "type": "plan_step_update",
+                    "run_id": agent_run_id,
+                    "plan_step": self._public_plan_step(running_step),
+                }
+                current_steps = self.run_service.database.list_agent_plan_steps(
+                    agent_run_id
+                )
+                current_by_key = {
+                    item["step_key"]: item for item in current_steps
+                }
+                worker_workspace: dict | None = None
+                if (
+                    running_step["kind"] == "worker"
+                    and action.get("repository_id")
+                ):
+                    try:
+                        worker_workspace = await asyncio.to_thread(
+                            workspace_service.prepare_worker_workspace,
+                            run_id=agent_run_id,
+                            plan_step_id=running_step["id"],
+                            session_id=self.session_id,
+                            repository_id=str(action["repository_id"]),
+                            base_commit=str(
+                                action.get("repository_base_commit") or ""
+                            ),
+                            attempt=int(running_step.get("attempt") or 1),
+                        )
+                    except (GitWorkspaceError, OSError) as exc:
+                        unavailable.append((running_step, str(exc)))
+                        continue
+                workspace_instruction = ""
+                if worker_workspace is not None:
+                    workspace_instruction = (
+                        "\n\n【独立 Git worktree】\n"
+                        "你已获得仅属于当前 Worker 的隔离 worktree。"
+                        "先调用 workspace_list_files / workspace_read_file "
+                        "理解代码，再用 workspace_write_file、"
+                        "workspace_delete_file 或 workspace_run_command 完成实际修改。"
+                        "workspace_status 可检查候选变更。"
+                        "不要调用 write_artifact 或普通 run_command 来代替代码修改。"
+                        "你不能直接访问用户主仓库；结束后系统会独立生成 diff "
+                        "并运行计划中已确认的核验命令。"
+                    )
+                executions.append({
+                    "model": model,
+                    "plan_step_id": running_step["id"],
+                    "step": running_step,
+                    "workspace_id": (
+                        worker_workspace.get("id")
+                        if worker_workspace is not None
+                        else None
+                    ),
+                    "publish_message": running_step["kind"] == "synthesizer",
+                    "allow_side_effects": running_step["kind"] == "synthesizer",
+                    "instruction": (
+                        self._plan_step_instruction(
+                            plan_bundle["goal"],
+                            running_step,
+                        )
+                        + workspace_instruction
+                    ),
+                    "context_messages": self._plan_step_context(
+                        context_msgs,
+                        plan_bundle["goal"],
+                        running_step,
+                        current_by_key,
+                        self._run_steers,
+                        self.run_service.database.list_agent_reviews(
+                            agent_run_id
+                        ),
+                        workspace_service.deterministic_evidence(
+                            agent_run_id
+                        ),
+                    ),
+                    "resume_checkpoint": (
+                        action.get("_resume_plan_checkpoints") or {}
+                    ).get(running_step["id"]),
+                })
+
+            for step, error in unavailable:
+                failed_step = self.run_service.finish_plan_step(
+                    agent_run_id,
+                    step["id"],
+                    status="failed",
+                    error=error,
+                )
+                yield {
+                    "type": "plan_step_update",
+                    "run_id": agent_run_id,
+                    "plan_step": self._public_plan_step(failed_step),
+                }
+
+            if not executions:
+                continue
+
+            outcomes: dict[str, dict] = {}
+            async for event in stream_batch(executions, outcomes):
+                yield event
+
+            review_for_replan: dict | None = None
+            for execution in executions:
+                step = execution["step"]
+                outcome = outcomes.get(step["id"]) or {
+                    "status": "failed",
+                    "content": "",
+                    "error": "计划步骤没有执行结果",
+                }
+                status = str(outcome.get("status") or "failed")
+                if status not in {"completed", "failed", "interrupted"}:
+                    status = "failed"
+                finished_step = self.run_service.finish_plan_step(
+                    agent_run_id,
+                    step["id"],
+                    status=status,
+                    content=str(outcome.get("content") or ""),
+                    error=str(outcome.get("error") or "") or None,
+                )
+                yield {
+                    "type": "plan_step_update",
+                    "run_id": agent_run_id,
+                    "plan_step": self._public_plan_step(finished_step),
+                }
+                workspace_id = str(
+                    execution.get("workspace_id") or ""
+                )
+                if step["kind"] == "worker" and workspace_id:
+                    try:
+                        workspace = await workspace_service.finalize_workspace(
+                            workspace_id,
+                            action.get("verification_commands") or [],
+                        )
+                        yield {
+                            "type": "workspace_verified",
+                            "run_id": agent_run_id,
+                            "plan_step_id": step["id"],
+                            "workspace": (
+                                workspace_service.public_workspace(
+                                    workspace
+                                )
+                            ),
+                        }
+                    except (GitWorkspaceError, OSError) as exc:
+                        yield {
+                            "type": "error",
+                            "code": "workspace_verification_failed",
+                            "model": execution["model"],
+                            "message": str(exc),
+                        }
+                if step["kind"] == "verifier" and outcome.get("content"):
+                    parsed_review = self._parse_plan_review(
+                        str(outcome.get("content") or "")
+                    )
+                    parsed_review = workspace_service.enforce_review(
+                        agent_run_id,
+                        parsed_review,
+                    )
+                    review = self.run_service.record_review(
+                        run_id=agent_run_id,
+                        plan_step_id=step["id"],
+                        session_id=self.session_id,
+                        reviewer_model=str(step.get("assigned_model") or ""),
+                        review=parsed_review,
+                    )
+                    yield {
+                        "type": "review_recorded",
+                        "run_id": agent_run_id,
+                        "review": review,
+                    }
+                    review_for_replan = review
+            if review_for_replan is not None:
+                revised_run = self.run_service.maybe_revise_after_review(
+                    run_id=agent_run_id,
+                    session_id=self.session_id,
+                    review=review_for_replan,
+                )
+                if revised_run is not None:
+                    revised_steps = (
+                        self.run_service.database.list_agent_plan_steps(
+                            agent_run_id
+                        )
+                    )
+                    yield {
+                        "type": "plan_replanned",
+                        "run_id": agent_run_id,
+                        "revision": revised_run.get("plan_revision"),
+                        "automatic_revision_count": revised_run.get(
+                            "automatic_revision_count"
+                        ),
+                        "trigger_review": review_for_replan,
+                        "plan_steps": [
+                            self._public_plan_step(item)
+                            for item in revised_steps
+                        ],
+                    }
+                    continue
+                if review_for_replan.get("verdict") == "fail":
+                    current_steps = (
+                        self.run_service.database.list_agent_plan_steps(
+                            agent_run_id
+                        )
+                    )
+                    synthesizer = next(
+                        (
+                            item for item in current_steps
+                            if item["kind"] == "synthesizer"
+                        ),
+                        None,
+                    )
+                    if synthesizer and synthesizer["status"] in {
+                        "pending", "ready", "interrupted",
+                    }:
+                        blocked = self.run_service.finish_plan_step(
+                            agent_run_id,
+                            synthesizer["id"],
+                            status="blocked",
+                            error=(
+                                "Verifier 在允许的返工次数后仍判定失败；"
+                                "已阻止生成未经核验的最终交付"
+                            ),
+                        )
+                        yield {
+                            "type": "plan_step_update",
+                            "run_id": agent_run_id,
+                            "plan_step": self._public_plan_step(blocked),
+                        }
+                    yield {
+                        "type": "error",
+                        "code": "plan_verification_failed",
+                        "message": (
+                            "核验在有限返工后仍失败，已安全停止最终综合。"
+                        ),
+                    }
+                    plan_terminal_error_emitted = True
+                    break
+            if any(
+                outcome.get("code") in {
+                    "tool_result_uncertain", "budget_exceeded",
+                }
+                for outcome in outcomes.values()
+            ):
+                plan_terminal_error_emitted = True
+                break
+
+        final_steps = self.run_service.database.list_agent_plan_steps(agent_run_id)
+        final_synthesizer = next(
+            (
+                step for step in final_steps
+                if step["kind"] == "synthesizer"
+            ),
+            None,
+        )
+        if (
+            not self._plan_cancelled
+            and not plan_terminal_error_emitted
+            and (
+                not final_synthesizer
+                or final_synthesizer["status"] != "completed"
+            )
+        ):
+            yield {
+                "type": "error",
+                "code": "plan_incomplete",
+                "message": "计划未生成可确认的最终交付，请在运行面板检查失败步骤。",
+            }
+
+    @staticmethod
+    def _plan_step_instruction(goal: dict, step: dict) -> str:
+        goal_text = json.dumps({
+            "objective": goal.get("objective"),
+            "success_criteria": goal.get("success_criteria") or [],
+            "constraints": goal.get("constraints") or [],
+            "deliverable": goal.get("deliverable"),
+        }, ensure_ascii=False, indent=2)
+        base = (
+            f"步骤：{step.get('title')}\n"
+            f"类型：{step.get('kind')}\n"
+            f"职责：{step.get('role')}\n"
+            f"说明：{step.get('description')}\n"
+            f"Goal Spec：\n{goal_text}\n"
+        )
+        if step.get("kind") == "worker":
+            return (
+                f"{base}\n"
+                "独立完成你的候选结果，不假设其他 Worker 会弥补遗漏。"
+                "只报告实际执行或验证过的事实；明确列出证据、风险与未验证项。"
+            )
+        if step.get("kind") == "verifier":
+            return (
+                f"{base}\n"
+                "核验后只输出一个 JSON 对象，不要使用 Markdown 代码围栏。格式："
+                '{"verdict":"pass|needs_revision|fail",'
+                '"summary":"核验摘要","evidence":["可核对证据"],'
+                '"issues":["矛盾、缺口或未验证项"]}。'
+                "若没有足够证据，不能返回 pass。"
+            )
+        if step.get("kind") == "synthesizer":
+            return (
+                f"{base}\n"
+                "生成唯一、可直接交付给用户的最终答案。不要展示内部 JSON、Plan Step "
+                "编号或模型讨论过程；吸收 Verifier 指出的问题，并明确仍无法验证的部分。"
+            )
+        return base
+
+    @staticmethod
+    def _public_plan_step(step: dict) -> dict:
+        return {**step, "output": None}
+
+    @staticmethod
+    def _plan_step_context(
+        base_context: list[ChatMessage],
+        goal: dict,
+        step: dict,
+        steps_by_key: dict[str, dict],
+        steers: list[dict],
+        reviews: list[dict],
+        workspace_evidence: list[dict] | None = None,
+    ) -> list[ChatMessage]:
+        messages = [message.model_copy(deep=True) for message in base_context]
+        if step.get("kind") == "worker" and int(step.get("attempt") or 0) > 1:
+            previous_output = step.get("output")
+            previous_content = (
+                str(previous_output.get("content") or "")
+                if isinstance(previous_output, dict)
+                else ""
+            )
+            latest_review = reviews[-1] if reviews else {}
+            issues = latest_review.get("issues")
+            issue_lines = [
+                str(issue)[:1000]
+                for issue in issues[:20]
+            ] if isinstance(issues, list) else []
+            messages.append(ChatMessage(
+                role="user",
+                content=(
+                    "【Verifier 触发的受控返工】\n"
+                    f"上一版候选：\n{previous_content[:40_000] or '[无可复用候选]'}\n\n"
+                    f"核验摘要：{str(latest_review.get('summary') or '需要修订')[:10_000]}\n"
+                    + (
+                        "待修问题：\n"
+                        + "\n".join(f"- {issue}" for issue in issue_lines)
+                        if issue_lines else "待修问题：核验未提供结构化问题，请重新检查成功条件。"
+                    )
+                    + "\n请针对问题生成新的完整候选，不要只描述修改过程。"
+                ),
+            ))
+        dependencies = [
+            steps_by_key[key]
+            for key in step.get("dependencies") or []
+            if key in steps_by_key
+        ]
+        if dependencies:
+            blocks: list[str] = []
+            remaining = 120_000
+            for dependency in dependencies:
+                output = dependency.get("output")
+                content = (
+                    str(output.get("content") or "")
+                    if isinstance(output, dict)
+                    else ""
+                )
+                content = content[:40_000]
+                block = (
+                    f"### {dependency.get('title')} "
+                    f"[{dependency.get('kind')} / {dependency.get('status')}]\n"
+                    f"模型：{dependency.get('assigned_model') or 'system'}\n"
+                    f"{content or '[无可用输出]'}"
+                )
+                if dependency.get("error"):
+                    block += f"\n错误：{dependency['error']}"
+                if len(block) > remaining:
+                    block = block[:remaining] + "\n...[依赖输出已截断]"
+                remaining = max(0, remaining - len(block))
+                blocks.append(block)
+                if remaining == 0:
+                    break
+            messages.append(ChatMessage(
+                role="user",
+                content=(
+                    "以下是已经持久化的上游步骤结果。只把其中可核对内容视为证据，"
+                    "失败或空输出不得推断为成功：\n\n"
+                    + "\n\n".join(blocks)
+                ),
+            ))
+        if (
+            workspace_evidence
+            and step.get("kind") in {"verifier", "synthesizer"}
+        ):
+            messages.append(ChatMessage(
+                role="user",
+                content=(
+                    "【不可由模型声明替代的 Git/测试证据】\n"
+                    "以下记录由 AetherChat 在独立 worktree 上直接采集。"
+                    "exit_code 非 0 不能视为通过；unverified 表示只有 diff、"
+                    "没有执行确定性核验命令：\n"
+                    + json.dumps(
+                        workspace_evidence,
+                        ensure_ascii=False,
+                        indent=2,
+                    )[:80_000]
+                ),
+            ))
+        steer_texts = [
+            str(item.get("content") or "").strip()
+            for item in steers
+            if str(item.get("content") or "").strip()
+        ]
+        if steer_texts:
+            messages.append(ChatMessage(
+                role="user",
+                content=(
+                    "【本 Run 最新转向记录】\n"
+                    + "\n".join(f"- {text}" for text in steer_texts[-10:])
+                    + "\n最终输出必须服从这些较新的指令。"
+                ),
+            ))
+        return messages
+
+    @staticmethod
+    def _parse_plan_review(content: str) -> dict:
+        normalized = str(content or "").strip()
+        candidate = normalized
+        fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", normalized, re.S)
+        if fenced:
+            candidate = fenced.group(1)
+        else:
+            start = normalized.find("{")
+            end = normalized.rfind("}")
+            if start >= 0 and end > start:
+                candidate = normalized[start:end + 1]
+        try:
+            parsed = json.loads(candidate)
+        except (json.JSONDecodeError, TypeError):
+            parsed = {}
+        if not isinstance(parsed, dict):
+            parsed = {}
+        verdict = str(parsed.get("verdict") or "unknown").lower()
+        if verdict not in {"pass", "needs_revision", "fail"}:
+            verdict = "unknown"
+        evidence = parsed.get("evidence")
+        issues = parsed.get("issues")
+        return {
+            "verdict": verdict,
+            "summary": str(parsed.get("summary") or normalized or "无核验摘要")[:20_000],
+            "evidence": evidence[:50] if isinstance(evidence, list) else [],
+            "issues": issues[:50] if isinstance(issues, list) else [],
+        }
+
+    async def _authorize_model_tool(
+        self,
+        queue: asyncio.Queue[dict],
+        model: str,
+        tool_name: str,
+        arguments: dict,
+    ) -> bool:
+        policy = approval_policy(tool_name, arguments)
+        if policy is None:
+            return True
+        safe_arguments = dict(self._sanitize_tool_arguments(tool_name, arguments))
+        for key in ("content", "api_key", "token", "password", "secret"):
+            if key in safe_arguments:
+                safe_arguments[key] = f"[已隐藏 {len(str(safe_arguments[key]))} 个字符]"
+        pending = approval_service.create(
+            session_id=self.session_id,
+            model=model,
+            tool_name=tool_name,
+            arguments=safe_arguments,
+            **policy,
+        )
+        if pending is None:
+            return True
+        await queue.put({"type": "approval_required", "approval": pending.public()})
+        decision = await approval_service.wait(pending.id)
+        await queue.put({
+            "type": "approval_resolved",
+            "approval_id": pending.id,
+            "decision": decision,
+        })
+        return decision in {"allow_once", "allow_session"}
+
+    def _available_tools(self) -> list[ToolDefinition]:
+        definitions = [
+            ToolDefinition(
+                name=tool["name"],
+                description=tool.get("description") or tool["name"],
+                parameters=tool.get("input_schema") or {"type": "object", "properties": {}},
+            )
+            for tool in tool_registry.list(self.session_id)
+            if tool.get("enabled", True)
+        ]
+        definitions.extend(plugin_registry.tool_definitions())
+        definitions.extend(mcp_registry.tool_definitions())
+        unique: dict[str, ToolDefinition] = {}
+        for definition in definitions:
+            unique[definition.name] = definition
+        return list(unique.values())
+
+    @staticmethod
+    def _sanitize_tool_result(value):
+        images: list[str] = []
+
+        def visit(item):
+            if isinstance(item, dict):
+                safe = {}
+                for key, child in item.items():
+                    if key in {"image_data_url", "dataUrl"} and isinstance(child, str) and child.startswith("data:image/"):
+                        images.append(child)
+                        safe[key] = "[image attached separately]"
+                    else:
+                        safe[key] = visit(child)
+                return safe
+            if isinstance(item, list):
+                return [visit(child) for child in item]
+            if isinstance(item, str) and item.startswith("data:image/") and ";base64," in item:
+                images.append(item)
+                return "[image attached separately]"
+            return item
+
+        return visit(value), images
+
+    def _save_provider_checkpoint(
+        self,
+        run_id: str,
+        model: str,
+        messages: list[ChatMessage],
+        *,
+        next_tool_round: int,
+        kind: str,
+        plan_step_id: str | None = None,
+    ) -> dict:
+        serialized_messages = []
+        for message in messages[-80:]:
+            payload = message.model_dump(mode="json")
+            payload["images"] = []
+            if len(payload.get("content") or "") > 50_000:
+                payload["content"] = (
+                    str(payload["content"])[:50_000]
+                    + "\n...[checkpoint content truncated]"
+                )
+            serialized_messages.append(payload)
+        return self.run_service.save_checkpoint(
+            run_id=run_id,
+            session_id=self.session_id,
+            model=model,
+            kind=kind,
+            plan_step_id=plan_step_id,
+            state={
+                "version": 1,
+                "next_tool_round": max(0, int(next_tool_round)),
+                "messages": serialized_messages,
+            },
+        )
+
+    @staticmethod
+    def _restore_checkpoint(checkpoint: dict | None) -> tuple[list[ChatMessage], int]:
+        if not isinstance(checkpoint, dict):
+            return [], 0
+        state = checkpoint.get("state")
+        if not isinstance(state, dict) or state.get("version") != 1:
+            return [], 0
+        restored: list[ChatMessage] = []
+        for payload in state.get("messages") or []:
+            try:
+                restored.append(ChatMessage.model_validate(payload))
+            except Exception:
+                return [], 0
+        if not restored:
+            return [], 0
+        try:
+            next_tool_round = max(0, int(state.get("next_tool_round", 0)))
+        except (TypeError, ValueError):
+            next_tool_round = 0
+        return restored, next_tool_round
+
+    @staticmethod
+    def _normalize_tool_calls(calls: list[dict | ToolCall]) -> list[ToolCall]:
+        normalized: list[ToolCall] = []
+        seen_ids: set[str] = set()
+        for raw_call in calls:
+            if isinstance(raw_call, ToolCall):
+                call_id = raw_call.id.strip()
+                tool_name = raw_call.name.strip()
+                arguments = raw_call.arguments
+            else:
+                call_id = str(raw_call.get("id") or "").strip()
+                tool_name = str(raw_call.get("name") or "").strip()
+                arguments = raw_call.get("arguments") or {}
+            tool_name = tool_name or "unknown_tool"
+            if not isinstance(arguments, dict):
+                arguments = {"_raw": arguments}
+            if not call_id or call_id in seen_ids:
+                call_id = f"call_{uuid4().hex}"
+            seen_ids.add(call_id)
+            normalized.append(ToolCall(id=call_id, name=tool_name, arguments=arguments))
+        return normalized
+
+    @staticmethod
+    def _sanitize_tool_arguments(tool_name: str, arguments: dict) -> dict:
+        if not tool_name.startswith("plugin__desktop_control__"):
+            return arguments
+        safe = dict(arguments)
+        for key in ("text", "value"):
+            if key in safe:
+                safe[key] = f"[redacted {len(str(safe[key]))} characters]"
+        if "data" in safe:
+            safe["data"] = "[document payload redacted]"
+        return safe
+
+    async def broadcast_user_message(self, action: dict):
+        async for _ in self.stream_user_message(action):
+            pass
+
+    def interrupt(self, scope: str = "all"):
+        """PR6: Interrupt support"""
+        if scope == "all":
+            self._plan_cancelled = True
+            self._interrupt_all = True
+            for task in list(self._running_tasks.values()):
+                task.cancel()
+        else:
+            self._interrupted_models.add(scope)
+            if scope in self._running_tasks:
+                self._running_tasks[scope].cancel()
+        asyncio.create_task(self._reset_interrupt(scope))
+
+    async def _reset_interrupt(self, scope: str):
+        await asyncio.sleep(0.1)
+        if scope == "all":
+            self._interrupt_all = False
+        else:
+            self._interrupted_models.discard(scope)
+
+    def _is_interrupted(self, name: str) -> bool:
+        return self._interrupt_all or name in self._interrupted_models
+
+    def _cancel_running_providers(self, exclude: str | None = None):
+        for name, task in list(self._running_tasks.items()):
+            if name != exclude and not task.done():
+                task.cancel()
+
+    def _calculate_cost(self, provider: LLMProvider, usage: dict) -> float:
+        prompt_tokens = max(0, int(usage.get("prompt_tokens", 0) or 0))
+        completion_tokens = max(0, int(usage.get("completion_tokens", 0) or 0))
+        input_cost = prompt_tokens * max(0.0, provider.config.cost_per_1k_input) / 1000
+        output_cost = completion_tokens * max(0.0, provider.config.cost_per_1k_output) / 1000
+        return round(input_cost + output_cost, 6)
+
+    @staticmethod
+    def _provider_system_prompt(name: str, provider: LLMProvider) -> str:
+        agent_name = " ".join(str(name or "agent").split())[:120]
+        persona = " ".join(str(provider.config.persona or "").split())[:1200]
+        parts = [
+            "你是 AetherChat 多模型团队中的一个独立 Agent。",
+            f"你的稳定标识是：{agent_name}。",
+        ]
+        if persona:
+            parts.append(f"你的当前职责是：{persona}。请优先完成与该职责直接相关的工作。")
+        parts.append(
+            "只报告你实际完成或验证过的工作；不要声称其他 Agent 已经评审、执行或同意，"
+            "除非上下文中有对应的可核对结果。"
+        )
+        return "\n".join(parts)
+
+    def _parse_targets(self, content: str, default_targets: list[str]) -> list[str]:
+        """PR6: Parse @mentions for targeting"""
+        import re
+        mentions = re.findall(r'@(\w+)', content)
+        if not mentions:
+            if "all" in default_targets:
+                return list(self.providers.keys())
+            return default_targets
+        if "all" in mentions:
+            return list(self.providers.keys())
+        targets = [m for m in mentions if m in self.providers]
+        return targets or default_targets
+
+    def _should_participate(self, name: str, content: str, targets: list[str], explicit_targets: set[str] | None = None) -> bool:
+        """Respect participation_policy and mode"""
+        provider = self.providers.get(name)
+        if not provider:
+            return False
+        policy = provider.config.participation_policy
+        if name not in targets:
+            return False
+        if self.mode == "casual":
+            return True
+        if policy == "always":
+            return True
+        if policy == "mentioned":
+            return name in (explicit_targets or set()) or "@" + name in content or "all" in content.lower()
+        if policy == "project_autonomous" and self.mode == "project":
+            if name in (explicit_targets or set()):
+                return True
+            # In project mode, autonomous for task-related
+            return any(kw in content.lower() for kw in ["task", "claim", "write", "merge", "propose"])
+        return False
+
+    def refresh_providers(self):
+        self.providers = {
+            config.name: get_provider(config) for config in model_registry.configs()
+        }
+
+    async def start_model_streams(self, prompt: str):
+        # 并行启动多个模型
+        tasks = []
+        for name, prov in self.providers.items():
+            tasks.append(self._run_one(prov, prompt))
+        await asyncio.gather(*tasks)
+
+    async def _run_one(self, provider, prompt):
+        async for _ in provider.stream_chat([ChatMessage(role="user", content=prompt)]):
+            pass

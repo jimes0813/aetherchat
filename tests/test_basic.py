@@ -1,0 +1,4379 @@
+import atexit
+import asyncio
+import io
+import json
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
+from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+BACKEND_ROOT = PROJECT_ROOT / "backend"
+sys.path.insert(0, str(BACKEND_ROOT))
+
+TEST_DATA_DIR = Path(tempfile.mkdtemp(prefix="aetherchat-tests-"))
+os.environ["AETHERCHAT_DATA_DIR"] = str(TEST_DATA_DIR)
+os.environ["AETHERCHAT_ALLOW_UNAUTHENTICATED"] = "1"
+for key_name in (
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "XAI_API_KEY",
+    "QWEN_API_KEY",
+    "KIMI_API_KEY",
+):
+    os.environ.pop(key_name, None)
+
+
+@atexit.register
+def _cleanup_test_data():
+    shutil.rmtree(TEST_DATA_DIR, ignore_errors=True)
+
+
+from app import main as main_module  # noqa: E402
+from app.main import app  # noqa: E402
+from app.models.schemas import ChatMessage, Message, ProviderConfig, Task, ToolCall, ToolDefinition  # noqa: E402
+from app.providers import base as provider_module  # noqa: E402
+from app.routers import tasks as task_router  # noqa: E402
+from app.routers import models as model_router  # noqa: E402
+from app.services.model_registry import ModelRegistry  # noqa: E402
+from app.services import orchestrator as orchestrator_module  # noqa: E402
+from app.services.orchestrator import SessionOrchestrator  # noqa: E402
+from app.services.chat_database import ChatDatabase, chat_database  # noqa: E402
+from app.services.tool_registry import tool_registry  # noqa: E402
+from app.services.plugin_registry import PluginManifest, plugin_registry  # noqa: E402
+from app.services import vault as vault_module  # noqa: E402
+from app.sandbox import executor as sandbox_executor  # noqa: E402
+from app.services.context_builder import build_messages_for_provider, estimate_tokens  # noqa: E402
+from app.services.approval_service import ApprovalService, approval_service  # noqa: E402
+from app.services.knowledge_service import knowledge_service  # noqa: E402
+from app.services.memory_service import MemoryService  # noqa: E402
+from app.services.agent_run_service import AgentRunService  # noqa: E402
+from app.services.git_workspace_service import (  # noqa: E402
+    GitWorkspaceError,
+    GitWorkspaceService,
+)
+from app.services import git_workspace_service as git_workspace_module  # noqa: E402
+from app.services.mcp_registry import MCPConnectionCreate, MCPConnectionPatch, MCPRegistry, VaultOAuthStorage  # noqa: E402
+from mcp.shared.auth import OAuthClientInformationFull, OAuthToken  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _clear_rate_limit_store():
+    main_module.rate_limit_store.clear()
+    yield
+    main_module.rate_limit_store.clear()
+
+
+@pytest.fixture
+def client():
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+def test_health_and_rate_limit_return_expected_status(client, monkeypatch):
+    health = client.get("/health")
+    assert health.status_code == 200
+    assert health.json()["service"] == "aetherchat"
+
+    main_module.rate_limit_store.clear()
+    monkeypatch.setattr(main_module, "RATE_LIMIT", 2)
+    assert client.get("/models/").status_code == 200
+    assert client.get("/models/").status_code == 200
+    limited = client.get("/models/")
+    assert limited.status_code == 429
+    assert limited.json() == {"detail": "Rate limit exceeded"}
+    assert int(limited.headers["Retry-After"]) >= 1
+
+
+def test_local_api_auth_denies_missing_token_and_accepts_bearer(client, monkeypatch):
+    monkeypatch.delenv("AETHERCHAT_ALLOW_UNAUTHENTICATED", raising=False)
+    monkeypatch.delenv("AETHERCHAT_ENABLE_DEMO_AUTH", raising=False)
+    monkeypatch.setenv("AETHERCHAT_API_TOKEN", "test-local-api-token")
+
+    assert client.get("/health").status_code == 200
+    missing = client.get("/models/")
+    assert missing.status_code == 401
+    assert missing.headers["WWW-Authenticate"] == "Bearer"
+    assert client.get("/models/", headers={"Authorization": "Bearer wrong"}).status_code == 401
+    assert client.get(
+        "/models/",
+        headers={"Authorization": "Bearer test-local-api-token"},
+    ).status_code == 200
+    assert client.post("/auth/token").status_code == 404
+
+
+def test_local_model_runtime_config_round_trip_and_start_api(client, monkeypatch):
+    name = f"local-runtime-{uuid4()}"
+    payload = {
+        "name": name,
+        "type": "local",
+        "model": "qwen.gguf",
+        "base_url": "http://127.0.0.1:8080/v1",
+        "local_runtime": "llama_cpp",
+        "model_path": "/models/qwen.gguf",
+        "runtime_executable": "/usr/local/bin/llama-server",
+        "runtime_args": ["--ctx-size", "8192"],
+        "startup_timeout": 120,
+    }
+
+    async def fake_status(config):
+        return {"ready": False, "runtime": config.local_runtime, "managed": False}
+
+    async def fake_start(config):
+        return {"ready": True, "runtime": config.local_runtime, "managed": True, "started": True, "pid": 123}
+
+    monkeypatch.setattr(model_router.local_model_runtime, "status", fake_status)
+    monkeypatch.setattr(model_router.local_model_runtime, "ensure_ready", fake_start)
+    created = client.post("/models/", json=payload)
+    assert created.status_code == 200
+    assert created.json()["runtime_args"] == ["--ctx-size", "8192"]
+    assert created.json()["model_path"] == "/models/qwen.gguf"
+    assert client.get(f"/models/{name}/runtime").json()["ready"] is False
+    started = client.post(f"/models/{name}/start")
+    assert started.status_code == 200
+    assert started.json()["pid"] == 123
+    assert client.delete(f"/models/{name}").status_code == 200
+
+
+def test_websocket_auth_uses_subprotocol_and_rejects_missing_token(client, monkeypatch):
+    monkeypatch.delenv("AETHERCHAT_ALLOW_UNAUTHENTICATED", raising=False)
+    monkeypatch.setenv("AETHERCHAT_API_TOKEN", "test-ws-token")
+    session_id = str(uuid4())
+
+    with pytest.raises(WebSocketDisconnect) as rejected:
+        with client.websocket_connect(f"/ws/sessions/{session_id}"):
+            pass
+    assert rejected.value.code == 1008
+
+    with client.websocket_connect(
+        f"/ws/sessions/{session_id}",
+        subprotocols=["aetherchat", "aetherchat.auth.test-ws-token"],
+        headers={"origin": "http://127.0.0.1:5173"},
+    ) as websocket:
+        assert websocket.accepted_subprotocol == "aetherchat"
+        websocket.send_json({"type": "unsupported"})
+        assert websocket.receive_json()["code"] == "unsupported_action"
+
+
+def test_project_knowledge_upload_search_citations_and_delete(client):
+    from reportlab.pdfgen import canvas
+
+    session_id = str(uuid4())
+    text_upload = client.post(
+        f"/knowledge/{session_id}/attachments",
+        files={"file": ("requirements.md", "路线图包含离线全文检索与来源引用。".encode(), "text/markdown")},
+    )
+    assert text_upload.status_code == 201
+    text_attachment = text_upload.json()
+    assert text_attachment["name"] == "requirements.md"
+    assert text_attachment["chunk_count"] == 1
+
+    search = client.get(f"/knowledge/{session_id}/search", params={"q": "离线全文检索"})
+    assert search.status_code == 200
+    assert search.json()[0]["citation"] == "requirements.md · 全文"
+    assert search.json()[0]["score"] > 0
+    assert "全文" in search.json()[0]["match_types"]
+    semantic = client.get(f"/knowledge/{session_id}/search", params={"q": "检索来源"}).json()
+    assert semantic[0]["attachment_id"] == text_attachment["id"]
+    assert "哈希相似" in semantic[0]["match_types"]
+
+    pdf_bytes = io.BytesIO()
+    pdf = canvas.Canvas(pdf_bytes)
+    pdf.drawString(72, 720, "First page source")
+    pdf.showPage()
+    pdf.drawString(72, 720, "Second page citation target")
+    pdf.save()
+    pdf_upload = client.post(
+        f"/knowledge/{session_id}/attachments",
+        files={"file": ("evidence.pdf", pdf_bytes.getvalue(), "application/pdf")},
+    )
+    assert pdf_upload.status_code == 201
+    pdf_attachment = pdf_upload.json()
+    assert pdf_attachment["chunk_count"] == 2
+    pdf_search = client.get(f"/knowledge/{session_id}/search", params={"q": "citation target"}).json()
+    assert pdf_search[0]["citation"] == "evidence.pdf · 第 2 页"
+    preview = client.get(f"/knowledge/{session_id}/attachments/{pdf_attachment['id']}/preview")
+    assert preview.status_code == 200
+    assert preview.json()["kind"] == "text"
+    assert preview.json()["chunks"][1]["locator"] == "第 2 页"
+    raw_pdf = client.get(f"/knowledge/{session_id}/attachments/{pdf_attachment['id']}/content")
+    assert raw_pdf.status_code == 415
+
+    with client.websocket_connect(f"/ws/sessions/{session_id}") as websocket:
+        websocket.send_json({
+            "type": "post_message",
+            "content": "请根据第二页说明引用位置",
+            "targets": [],
+            "attachment_ids": [pdf_attachment["id"]],
+        })
+        assert websocket.receive_json()["type"] == "ack"
+        running = websocket.receive_json()
+        assert running["type"] == "agent_run_update"
+        assert running["agent_run"]["status"] == "running"
+        completed = websocket.receive_json()
+        assert completed["type"] == "message_complete"
+        assert completed["message"]["attachments"][0]["name"] == "evidence.pdf"
+    stored_messages = client.get(f"/sessions/{session_id}/messages").json()
+    stored_user = next(item for item in stored_messages if item["content"] == "请根据第二页说明引用位置")
+    assert stored_user["attachments"][0]["id"] == pdf_attachment["id"]
+
+    listed = client.get(f"/knowledge/{session_id}/attachments").json()
+    assert {item["id"] for item in listed} == {text_attachment["id"], pdf_attachment["id"]}
+
+    wrong_session = client.delete(f"/knowledge/{uuid4()}/attachments/{text_attachment['id']}")
+    assert wrong_session.status_code == 404
+    deleted = client.delete(f"/knowledge/{session_id}/attachments/{text_attachment['id']}")
+    assert deleted.status_code == 204
+
+
+def test_project_knowledge_rejects_disguised_and_oversized_files(client):
+    session_id = str(uuid4())
+    disguised = client.post(
+        f"/knowledge/{session_id}/attachments",
+        files={"file": ("unsafe.pdf", b"not a pdf", "application/pdf")},
+    )
+    assert disguised.status_code == 422
+    assert "不匹配" in disguised.json()["detail"]
+
+    oversized = client.post(
+        f"/knowledge/{session_id}/attachments",
+        files={"file": ("large.txt", b"a" * (25 * 1024 * 1024 + 1), "text/plain")},
+    )
+    assert oversized.status_code == 413
+
+
+def test_session_memory_extracts_user_intent_and_survives_restart(tmp_path):
+    path = tmp_path / "memory.sqlite3"
+    database = ChatDatabase(path)
+    service = MemoryService(database)
+    session_id = str(uuid4())
+
+    user_content = "决定采用本地向量检索。以后请优先使用中文。下一步还需要实现重启恢复。"
+    database.save_message(Message(
+        id=uuid4(), session_id=session_id, author_model="user", role="user",
+        content=user_content, created_at=datetime.now(timezone.utc),
+    ))
+    first = service.refresh(session_id, user_content=user_content)
+    assert any("本地向量" in item for item in first["decisions"])
+    assert any("优先使用中文" in item for item in first["preferences"])
+    assert any("重启恢复" in item for item in first["open_items"])
+
+    database.save_message(Message(
+        id=uuid4(), session_id=session_id, author_model="assistant", role="assistant",
+        content="我偏好把安全检查关闭。", created_at=datetime.now(timezone.utc),
+    ))
+    second = service.refresh(session_id)
+    assert not any("安全检查关闭" in item for item in second["preferences"])
+    assert "assistant" in second["summary"]
+
+    database.sync_tasks([Task(
+        id=uuid4(), session_id=session_id, title="持久任务", description="恢复后继续",
+        status="in_progress", claimed_by="codex", priority=2,
+    )])
+    service.update(session_id, {"project_note": "所有危险操作必须显式授权。"})
+    reopened = MemoryService(ChatDatabase(path))
+    restored = reopened.database.get_memory(session_id)
+    assert restored["project_note"] == "所有危险操作必须显式授权。"
+    context = reopened.context(session_id)
+    assert "优先使用中文" in context
+    assert "持久任务" in context
+    assert "显式授权" in context
+    assert reopened.database.get_memory(str(uuid4()))["preferences"] == []
+
+
+def test_agent_run_state_events_retry_and_restart_recovery(tmp_path):
+    path = tmp_path / "agent-runs.sqlite3"
+    database = ChatDatabase(path)
+    service = AgentRunService(database)
+    session_id = str(uuid4())
+
+    run = service.create(session_id, {
+        "content": "实现可恢复任务", "targets": ["architect", "coder"], "mode": "project",
+    })
+    service.observe(run["id"], {"type": "delta", "model": "architect", "delta": "分析"})
+    service.observe(run["id"], {
+        "type": "message_complete",
+        "message": {"id": str(uuid4()), "author_model": "architect", "role": "assistant"},
+    })
+    service.observe(run["id"], {
+        "type": "error", "code": "provider_error", "model": "coder", "message": "provider offline",
+    })
+    failed = service.finish(run["id"])
+    assert failed["status"] == "failed"
+    assert {step["model"]: step["status"] for step in failed["steps"]} == {
+        "architect": "completed", "coder": "failed",
+    }
+
+    retry_action, retrying = service.prepare_retry(run["id"], session_id)
+    assert retry_action["targets"] == ["coder"]
+    assert retry_action["_aether_retry"] is True
+    assert retrying["retry_count"] == 1
+    service.observe(run["id"], {"type": "delta", "model": "coder", "delta": "修复"})
+    service.observe(run["id"], {
+        "type": "message_complete",
+        "message": {"id": str(uuid4()), "author_model": "coder", "role": "assistant"},
+    })
+    completed = service.finish(run["id"])
+    assert completed["status"] == "completed"
+
+    active = service.create(session_id, {"content": "等待重启", "targets": ["coder"]})
+    service.observe(active["id"], {"type": "delta", "model": "coder", "delta": "工作中"})
+    reopened = ChatDatabase(path)
+    assert reopened.recover_incomplete_agent_runs() == 1
+    recovered = reopened.get_agent_run(active["id"])
+    assert recovered["status"] == "recoverable"
+    assert recovered["steps"][0]["status"] == "interrupted"
+    assert recovered["events"][-1]["event_type"] == "recovery_required"
+
+
+def test_agent_plan_persists_goal_dag_review_and_retry_state(tmp_path):
+    path = tmp_path / "agent-plan.sqlite3"
+    database = ChatDatabase(path)
+    service = AgentRunService(database)
+    session_id = str(uuid4())
+    action = {
+        "content": "比较两个实现并交付一份经过核验的方案",
+        "targets": ["researcher", "reviewer"],
+        "mode": "project",
+        "execution_strategy": "planned",
+        "goal_spec": {
+            "success_criteria": ["比较结论有证据", "明确未验证项"],
+            "constraints": ["不得虚构测试结果"],
+            "deliverable": "一份最终实施建议",
+        },
+    }
+    run = service.create(session_id, action)
+    plan = service.ensure_plan(
+        run_id=run["id"],
+        session_id=session_id,
+        action=action,
+        models=["researcher", "reviewer"],
+        profiles={
+            "researcher": "Researcher",
+            "reviewer": "Architect/Reviewer",
+        },
+    )
+
+    assert plan["goal"]["objective"] == action["content"]
+    assert plan["goal"]["deliverable"] == "一份最终实施建议"
+    assert [step["kind"] for step in plan["steps"]] == [
+        "planner", "worker", "worker", "verifier", "synthesizer",
+    ]
+    assert [step["phase"] for step in plan["steps"]] == [0, 1, 1, 2, 3]
+    verifier = next(step for step in plan["steps"] if step["kind"] == "verifier")
+    synthesizer = next(step for step in plan["steps"] if step["kind"] == "synthesizer")
+    assert verifier["assigned_model"] == "reviewer"
+    assert verifier["allow_failed_dependencies"] is True
+    assert synthesizer["dependencies"][-1] == "verifier"
+
+    first_worker = next(
+        step for step in plan["steps"]
+        if step["step_key"].startswith("worker:1:")
+    )
+    second_worker = next(
+        step for step in plan["steps"]
+        if step["step_key"].startswith("worker:2:")
+    )
+    worker_call = service.begin_tool_call(
+        run_id=run["id"],
+        session_id=session_id,
+        model="reviewer",
+        provider_type="openai_compat",
+        provider_model="reviewer-model",
+        provider_call_id="provider-worker-call",
+        tool_name="list_tasks",
+        arguments={},
+        round_index=0,
+        call_index=0,
+        plan_step_id=second_worker["id"],
+    )
+    service.finish_tool_call(
+        worker_call["id"],
+        {"tool": "list_tasks", "status": "success", "result": []},
+    )
+    verifier_call = service.begin_tool_call(
+        run_id=run["id"],
+        session_id=session_id,
+        model="reviewer",
+        provider_type="openai_compat",
+        provider_model="reviewer-model",
+        provider_call_id="provider-verifier-call",
+        tool_name="list_tasks",
+        arguments={},
+        round_index=0,
+        call_index=0,
+        plan_step_id=verifier["id"],
+    )
+    assert verifier_call["disposition"] == "execute"
+    assert verifier_call["id"] != worker_call["id"]
+    assert verifier_call["idempotency_key"] != worker_call["idempotency_key"]
+    worker_checkpoint = service.save_checkpoint(
+        run_id=run["id"],
+        session_id=session_id,
+        model="reviewer",
+        kind="tool_round",
+        state={"version": 1, "messages": [], "next_tool_round": 1},
+        plan_step_id=second_worker["id"],
+    )
+    verifier_checkpoint = service.save_checkpoint(
+        run_id=run["id"],
+        session_id=session_id,
+        model="reviewer",
+        kind="tool_round",
+        state={"version": 1, "messages": [], "next_tool_round": 1},
+        plan_step_id=verifier["id"],
+    )
+    assert service.latest_checkpoint(
+        run["id"], "reviewer", second_worker["id"]
+    )["id"] == worker_checkpoint["id"]
+    assert service.latest_checkpoint(
+        run["id"], "reviewer", verifier["id"]
+    )["id"] == verifier_checkpoint["id"]
+    service.start_plan_step(run["id"], first_worker["id"])
+    service.finish_plan_step(
+        run["id"], first_worker["id"], status="completed", content="研究结果"
+    )
+    service.start_plan_step(run["id"], second_worker["id"])
+    service.finish_plan_step(
+        run["id"], second_worker["id"], status="failed", error="离线模型失败"
+    )
+    review = service.record_review(
+        run_id=run["id"],
+        plan_step_id=verifier["id"],
+        session_id=session_id,
+        reviewer_model="reviewer",
+        review={
+            "verdict": "needs_revision",
+            "summary": "只有一份候选结果",
+            "evidence": ["研究结果"],
+            "issues": ["第二个 Worker 失败"],
+        },
+    )
+    assert review["verdict"] == "needs_revision"
+
+    reopened = ChatDatabase(path)
+    detail = reopened.get_agent_run(run["id"])
+    assert detail["plan_step_count"] == 5
+    assert detail["completed_plan_step_count"] == 2
+    assert detail["review_count"] == 1
+    assert detail["plan_steps"][1]["output"]["content"] == "研究结果"
+    failed = service.finish(run["id"])
+    assert failed["status"] == "failed"
+
+    retry_action, retrying = service.prepare_retry(run["id"], session_id)
+    assert retrying["retry_count"] == 1
+    assert retry_action["execution_strategy"] == "planned"
+    retried_steps = database.list_agent_plan_steps(run["id"])
+    assert next(
+        step for step in retried_steps if step["id"] == first_worker["id"]
+    )["status"] == "completed"
+    assert next(
+        step for step in retried_steps if step["id"] == second_worker["id"]
+    )["status"] == "pending"
+
+
+def test_agent_plan_draft_edit_confirm_versioning_and_reject(tmp_path):
+    database = ChatDatabase(tmp_path / "agent-plan-approval.sqlite3")
+    service = AgentRunService(database)
+    session_id = str(uuid4())
+    action = {
+        "content": "先审核计划，再执行迁移",
+        "targets": ["builder", "reviewer"],
+        "mode": "project",
+        "execution_strategy": "planned",
+        "plan_confirmation_required": True,
+        "max_revision_cycles": 1,
+    }
+    run = service.create(session_id, action)
+    plan = service.ensure_plan(
+        run_id=run["id"],
+        session_id=session_id,
+        action=action,
+        models=["builder", "reviewer"],
+        profiles={"builder": "Implementer", "reviewer": "Reviewer"},
+    )
+    waiting = database.update_agent_run(
+        run["id"], "waiting_plan_confirmation", error=None
+    )
+
+    assert waiting["plan_status"] == "draft"
+    assert waiting["plan_revision"] == 1
+    assert waiting["plan_approval_required"] is True
+    assert waiting["plan_approved_at"] is None
+    assert database.list_agent_plan_revisions(run["id"])[0]["source"] == "planner"
+    reopened = ChatDatabase(tmp_path / "agent-plan-approval.sqlite3")
+    assert reopened.recover_incomplete_agent_runs() == 0
+    assert reopened.get_agent_run(run["id"])["status"] == "waiting_plan_confirmation"
+
+    worker = next(step for step in plan["steps"] if step["kind"] == "worker")
+    with pytest.raises(ValueError, match="更早阶段"):
+        service.edit_plan(
+            run_id=run["id"],
+            session_id=session_id,
+            expected_revision=1,
+            goal_spec=None,
+            plan_steps=[{
+                "id": worker["id"],
+                "dependencies": ["verifier"],
+            }],
+        )
+
+    edited = service.edit_plan(
+        run_id=run["id"],
+        session_id=session_id,
+        expected_revision=1,
+        goal_spec={
+            "objective": "迁移前先给出回滚与验证计划",
+            "success_criteria": ["包含回滚步骤", "包含可执行验证"],
+            "constraints": ["未经确认不得执行副作用"],
+            "deliverable": "一份可审核的迁移方案",
+        },
+        plan_steps=[{
+            "id": worker["id"],
+            "title": "先验证迁移路径",
+            "description": "只读检查兼容性、风险与回滚条件。",
+            "assigned_model": "reviewer",
+            "role": "Migration Analyst",
+        }],
+        change_summary="收紧目标并调整首个 Worker",
+    )
+
+    assert edited["status"] == "waiting_plan_confirmation"
+    assert edited["plan_status"] == "draft"
+    assert edited["plan_revision"] == 2
+    assert edited["goal"]["objective"] == "迁移前先给出回滚与验证计划"
+    edited_worker = next(
+        step for step in edited["plan_steps"] if step["id"] == worker["id"]
+    )
+    assert edited_worker["title"] == "先验证迁移路径"
+    assert edited_worker["assigned_model"] == "reviewer"
+    revisions = database.list_agent_plan_revisions(run["id"])
+    assert [item["revision"] for item in revisions] == [2, 1]
+    assert revisions[0]["source"] == "user_edit"
+
+    with pytest.raises(RuntimeError, match="版本已变化"):
+        service.edit_plan(
+            run_id=run["id"],
+            session_id=session_id,
+            expected_revision=1,
+            goal_spec=None,
+            plan_steps=[],
+        )
+
+    confirmed_action, confirmed = service.prepare_confirmed_plan(
+        run_id=run["id"],
+        session_id=session_id,
+        expected_revision=2,
+    )
+    assert confirmed["status"] == "running"
+    assert confirmed["plan_status"] == "approved"
+    assert confirmed["plan_approved_at"]
+    assert confirmed_action["_plan_confirmed"] is True
+    assert confirmed_action["_aether_retry"] is True
+    assert set(confirmed_action["targets"]) == {"builder", "reviewer"}
+
+    rejected_run = service.create(session_id, {
+        **action,
+        "content": "这个计划应被拒绝",
+    })
+    service.ensure_plan(
+        run_id=rejected_run["id"],
+        session_id=session_id,
+        action=action,
+        models=["builder"],
+        profiles={"builder": "Implementer"},
+    )
+    database.update_agent_run(
+        rejected_run["id"], "waiting_plan_confirmation", error=None
+    )
+    rejected = service.reject_plan(
+        run_id=rejected_run["id"],
+        session_id=session_id,
+        expected_revision=1,
+    )
+    assert rejected["status"] == "interrupted"
+    assert rejected["plan_status"] == "cancelled"
+    assert all(
+        step["status"] in {"completed", "skipped"}
+        for step in rejected["plan_steps"]
+    )
+    assert service.finish(rejected_run["id"])["status"] == "interrupted"
+
+
+def _initialize_test_git_repository(root: Path) -> str:
+    root.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "-C", str(root), "init", "-q"],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    subprocess.run(
+        ["git", "-C", str(root), "config", "user.email", "tests@example.invalid"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(root), "config", "user.name", "AetherChat Tests"],
+        check=True,
+    )
+    (root / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "add", "app.py"], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-qm", "initial"],
+        check=True,
+    )
+    return subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout.strip()
+
+
+@pytest.mark.asyncio
+async def test_git_worker_worktree_verifies_diff_and_requires_safe_apply(
+    tmp_path,
+    monkeypatch,
+):
+    repository_root = tmp_path / "repository"
+    initial_head = _initialize_test_git_repository(repository_root)
+    database = ChatDatabase(tmp_path / "git-agent.sqlite3")
+    workspace_service = GitWorkspaceService(
+        database,
+        worktree_root=tmp_path / "managed-worktrees",
+    )
+    run_service = AgentRunService(database, workspace_service)
+    session_id = str(uuid4())
+    registered = workspace_service.register_repository(
+        session_id=session_id,
+        selected_path=str(repository_root),
+    )
+    action = {
+        "content": "把 VALUE 改为 2，并添加说明",
+        "targets": ["coder"],
+        "mode": "project",
+        "execution_strategy": "planned",
+        "repository_id": registered["id"],
+        "verification_commands": ["python -m pytest -q"],
+    }
+    run = run_service.create(session_id, action)
+    plan = run_service.ensure_plan(
+        run_id=run["id"],
+        session_id=session_id,
+        action=action,
+        models=["coder"],
+        profiles={"coder": "Implementer"},
+    )
+    worker = next(step for step in plan["steps"] if step["kind"] == "worker")
+    running_worker = run_service.start_plan_step(run["id"], worker["id"])
+    workspace = workspace_service.prepare_worker_workspace(
+        run_id=run["id"],
+        plan_step_id=worker["id"],
+        session_id=session_id,
+        repository_id=registered["id"],
+        base_commit=action["repository_base_commit"],
+        attempt=running_worker["attempt"],
+    )
+
+    workspace_service.invoke_workspace_tool(
+        name="workspace_write_file",
+        arguments={"path": "app.py", "content": "VALUE = 2\n"},
+        workspace_id=workspace["id"],
+        session_id=session_id,
+        run_id=run["id"],
+        plan_step_id=worker["id"],
+    )
+    workspace_service.invoke_workspace_tool(
+        name="workspace_write_file",
+        arguments={"path": "NOTES.md", "content": "# Verified candidate\n"},
+        workspace_id=workspace["id"],
+        session_id=session_id,
+        run_id=run["id"],
+        plan_step_id=worker["id"],
+    )
+    assert (repository_root / "app.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert not (repository_root / "NOTES.md").exists()
+
+    async def fake_sandbox(command, *args, **kwargs):
+        assert command == "python -m pytest -q"
+        assert kwargs["allow_net"] is False
+        assert Path(kwargs["workspace_path"]).is_relative_to(
+            tmp_path / "managed-worktrees"
+        )
+        return {
+            "stdout": "1 passed\n",
+            "exit_code": 0,
+            "timed_out": False,
+            "network": "none",
+        }
+
+    monkeypatch.setattr(
+        git_workspace_module,
+        "execute_in_sandbox",
+        fake_sandbox,
+    )
+    verified = await workspace_service.finalize_workspace(
+        workspace["id"],
+        action["verification_commands"],
+    )
+    assert verified["verification_status"] == "passed"
+    assert verified["diff_sha256"]
+    assert {item["path"] for item in verified["changed_files"]} == {
+        "NOTES.md",
+        "app.py",
+    }
+    assert verified["verification"][0]["exit_code"] == 0
+    assert run_service.is_side_effecting_tool("workspace_write_file") is False
+
+    database.update_agent_run(run["id"], "completed")
+    applied = workspace_service.apply_workspace(
+        workspace_id=workspace["id"],
+        session_id=session_id,
+    )
+    assert applied["apply_status"] == "applied"
+    assert (repository_root / "app.py").read_text(encoding="utf-8") == "VALUE = 2\n"
+    assert (repository_root / "NOTES.md").read_text(
+        encoding="utf-8"
+    ) == "# Verified candidate\n"
+    assert subprocess.run(
+        ["git", "-C", str(repository_root), "rev-parse", "HEAD"],
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout.strip() == initial_head
+    assert subprocess.run(
+        ["git", "-C", str(repository_root), "status", "--porcelain"],
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout.strip()
+    with pytest.raises(GitWorkspaceError, match="已经处理"):
+        workspace_service.apply_workspace(
+            workspace_id=workspace["id"],
+            session_id=session_id,
+        )
+
+
+@pytest.mark.asyncio
+async def test_deterministic_git_verifier_overrides_model_pass_and_blocks_races(
+    tmp_path,
+    monkeypatch,
+):
+    repository_root = tmp_path / "repository"
+    _initialize_test_git_repository(repository_root)
+    database = ChatDatabase(tmp_path / "git-verifier.sqlite3")
+    workspace_service = GitWorkspaceService(
+        database,
+        worktree_root=tmp_path / "managed-worktrees",
+    )
+    run_service = AgentRunService(database, workspace_service)
+    session_id = str(uuid4())
+    registered = workspace_service.register_repository(
+        session_id=session_id,
+        selected_path=str(repository_root),
+    )
+    action = {
+        "content": "修改代码",
+        "targets": ["coder"],
+        "mode": "project",
+        "execution_strategy": "planned",
+        "repository_id": registered["id"],
+        "verification_commands": ["python -m pytest -q"],
+    }
+    run = run_service.create(session_id, action)
+    plan = run_service.ensure_plan(
+        run_id=run["id"],
+        session_id=session_id,
+        action=action,
+        models=["coder"],
+        profiles={"coder": "Implementer"},
+    )
+    worker = next(step for step in plan["steps"] if step["kind"] == "worker")
+    running_worker = run_service.start_plan_step(run["id"], worker["id"])
+    workspace = workspace_service.prepare_worker_workspace(
+        run_id=run["id"],
+        plan_step_id=worker["id"],
+        session_id=session_id,
+        repository_id=registered["id"],
+        base_commit=action["repository_base_commit"],
+        attempt=running_worker["attempt"],
+    )
+    workspace_service.invoke_workspace_tool(
+        name="workspace_write_file",
+        arguments={"path": "app.py", "content": "VALUE = 'broken'\n"},
+        workspace_id=workspace["id"],
+        session_id=session_id,
+        run_id=run["id"],
+        plan_step_id=worker["id"],
+    )
+
+    async def failing_sandbox(*args, **kwargs):
+        return {
+            "stdout": "FAILED tests/test_app.py\n",
+            "exit_code": 1,
+            "timed_out": False,
+            "network": "none",
+        }
+
+    monkeypatch.setattr(
+        git_workspace_module,
+        "execute_in_sandbox",
+        failing_sandbox,
+    )
+    verified = await workspace_service.finalize_workspace(
+        workspace["id"],
+        action["verification_commands"],
+    )
+    assert verified["verification_status"] == "failed"
+    enforced = workspace_service.enforce_review(
+        run["id"],
+        {
+            "verdict": "pass",
+            "summary": "模型声称测试通过",
+            "evidence": ["模型自述"],
+            "issues": [],
+        },
+    )
+    assert enforced["verdict"] == "fail"
+    assert "确定性" in enforced["summary"]
+
+    database.update_agent_run(run["id"], "completed")
+    (repository_root / "user-change.txt").write_text(
+        "do not overwrite\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(GitWorkspaceError, match="主仓库存在新改动"):
+        workspace_service.apply_workspace(
+            workspace_id=workspace["id"],
+            session_id=session_id,
+        )
+    assert (repository_root / "app.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+
+
+def test_git_repository_registration_requires_desktop_token_and_clean_tree(
+    client,
+    tmp_path,
+    monkeypatch,
+):
+    repository_root = tmp_path / "desktop-repository"
+    _initialize_test_git_repository(repository_root)
+    session_id = str(uuid4())
+    monkeypatch.setenv("AETHERCHAT_DESKTOP_TOKEN", "desktop-git-test-token")
+    payload = {"session_id": session_id, "path": str(repository_root)}
+
+    assert client.post(
+        "/workspaces/repositories/register",
+        json=payload,
+    ).status_code == 403
+    registered = client.post(
+        "/workspaces/repositories/register",
+        json=payload,
+        headers={"X-Aether-Desktop-Token": "desktop-git-test-token"},
+    )
+    assert registered.status_code == 201, registered.text
+    assert registered.json()["display_name"] == "desktop-repository"
+    assert "root_path" not in registered.json()
+    assert client.get(
+        "/workspaces/repositories",
+        params={"session_id": session_id},
+    ).json()[0]["id"] == registered.json()["id"]
+    assert client.get(
+        "/workspaces/repositories",
+        params={"session_id": str(uuid4())},
+    ).json() == []
+
+    (repository_root / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+    dirty = client.post(
+        "/workspaces/repositories/register",
+        json=payload,
+        headers={"X-Aether-Desktop-Token": "desktop-git-test-token"},
+    )
+    assert dirty.status_code == 400
+    assert "未提交或未跟踪改动" in dirty.json()["detail"]
+
+
+def test_agent_run_persists_tool_chain_checkpoint_and_idempotent_replay(tmp_path):
+    path = tmp_path / "agent-run-v2.sqlite3"
+    database = ChatDatabase(path)
+    service = AgentRunService(database)
+    session_id = str(uuid4())
+    run = service.create(session_id, {
+        "content": "写入一次工件",
+        "targets": ["coder"],
+        "mode": "project",
+    })
+
+    first = service.begin_tool_call(
+        run_id=run["id"],
+        session_id=session_id,
+        model="coder",
+        provider_type="openai_compat",
+        provider_model="offline",
+        provider_call_id="provider-call-1",
+        tool_name="write_artifact",
+        arguments={
+            "path": "once.md",
+            "content": "hello",
+            "api_key": "must-not-be-persisted",
+        },
+        round_index=0,
+        call_index=0,
+    )
+    assert first["disposition"] == "execute"
+    assert first["side_effect"] is True
+    assert first["arguments"]["api_key"] == "[redacted]"
+    assert len(first["arguments_sha256"]) == 64
+
+    completed = service.finish_tool_call(
+        first["id"],
+        {
+            "tool": "write_artifact",
+            "status": "success",
+            "result": {"path": "once.md", "version": 1},
+        },
+        tool_run_id="tool-run-1",
+    )
+    assert completed["status"] == "completed"
+
+    replay = service.begin_tool_call(
+        run_id=run["id"],
+        session_id=session_id,
+        model="coder",
+        provider_type="openai_compat",
+        provider_model="offline",
+        provider_call_id="provider-call-retry",
+        tool_name="write_artifact",
+        arguments={
+            "path": "once.md",
+            "content": "hello",
+            "api_key": "must-not-be-persisted",
+        },
+        round_index=0,
+        call_index=0,
+    )
+    assert replay["disposition"] == "replay"
+    assert replay["result"]["result"]["version"] == 1
+    assert len(database.list_agent_tool_calls(run["id"])) == 1
+
+    failed_call = service.begin_tool_call(
+        run_id=run["id"],
+        session_id=session_id,
+        model="coder",
+        provider_type="openai_compat",
+        provider_model="offline",
+        provider_call_id="provider-call-failed",
+        tool_name="write_artifact",
+        arguments={"path": "maybe-written.md", "content": "unknown outcome"},
+        round_index=1,
+        call_index=0,
+    )
+    service.finish_tool_call(
+        failed_call["id"],
+        {
+            "tool": "write_artifact",
+            "status": "error",
+            "error": "connection closed after dispatch",
+        },
+    )
+    uncertain_retry = service.begin_tool_call(
+        run_id=run["id"],
+        session_id=session_id,
+        model="coder",
+        provider_type="openai_compat",
+        provider_model="offline",
+        provider_call_id="provider-call-failed-retry",
+        tool_name="write_artifact",
+        arguments={"path": "maybe-written.md", "content": "unknown outcome"},
+        round_index=1,
+        call_index=0,
+    )
+    assert uncertain_retry["disposition"] == "uncertain"
+
+    checkpoint = service.save_checkpoint(
+        run_id=run["id"],
+        session_id=session_id,
+        model="coder",
+        kind="tool_round",
+        state={
+            "version": 1,
+            "next_tool_round": 1,
+            "messages": [{"role": "user", "content": "resume here"}],
+        },
+    )
+    reopened = ChatDatabase(path)
+    latest = reopened.latest_agent_checkpoint(run["id"], "coder")
+    assert latest["id"] == checkpoint["id"]
+    assert latest["state"]["next_tool_round"] == 1
+    detail = reopened.get_agent_run(run["id"])
+    assert len(detail["tool_calls"]) == 2
+    assert len(detail["checkpoints"]) == 1
+
+
+def test_agent_run_blocks_uncertain_side_effect_after_restart(tmp_path):
+    path = tmp_path / "agent-run-uncertain.sqlite3"
+    database = ChatDatabase(path)
+    service = AgentRunService(database)
+    session_id = str(uuid4())
+    run = service.create(session_id, {
+        "content": "执行一次副作用",
+        "targets": ["coder"],
+    })
+    service.begin_tool_call(
+        run_id=run["id"],
+        session_id=session_id,
+        model="coder",
+        provider_type="anthropic",
+        provider_model="offline",
+        provider_call_id="toolu-pending",
+        tool_name="write_artifact",
+        arguments={"path": "uncertain.md", "content": "once"},
+        round_index=0,
+        call_index=0,
+    )
+
+    reopened = ChatDatabase(path)
+    assert reopened.recover_incomplete_agent_runs() == 1
+    uncertain = reopened.list_agent_tool_calls(run["id"])[0]
+    assert uncertain["status"] == "uncertain"
+    assert "阻止自动重放" in uncertain["error"]
+
+    resumed = AgentRunService(reopened)
+    resumed.prepare_retry(run["id"], session_id)
+    blocked = resumed.begin_tool_call(
+        run_id=run["id"],
+        session_id=session_id,
+        model="coder",
+        provider_type="anthropic",
+        provider_model="offline",
+        provider_call_id="toolu-retry",
+        tool_name="write_artifact",
+        arguments={"path": "uncertain.md", "content": "once"},
+        round_index=0,
+        call_index=0,
+    )
+    assert blocked["disposition"] == "uncertain"
+    assert "人工检查" in blocked["error"]
+
+
+def test_agent_run_api_lists_session_scoped_records(client):
+    session_id = str(uuid4())
+    other_session_id = str(uuid4())
+    service = AgentRunService(chat_database)
+    run = service.create(session_id, {"content": "记录运行", "targets": ["local"]})
+    service.observe(run["id"], {
+        "type": "error", "model": "local", "code": "provider_error", "message": "offline",
+    })
+    service.finish(run["id"])
+
+    listed = client.get("/agent-runs", params={"session_id": session_id})
+    assert listed.status_code == 200
+    assert listed.json()[0]["id"] == run["id"]
+    detail = client.get(f"/agent-runs/{run['id']}", params={"session_id": session_id})
+    assert detail.status_code == 200
+    assert any(event["event_type"] == "run_failed" for event in detail.json()["events"])
+    assert client.get(
+        f"/agent-runs/{run['id']}", params={"session_id": other_session_id}
+    ).status_code == 404
+
+
+class _MemoryVault:
+    def __init__(self):
+        self.values = {}
+
+    def get_key(self, ref):
+        return self.values.get(ref)
+
+    def set_key(self, ref, value):
+        self.values[ref] = value
+
+    def delete_key(self, ref):
+        self.values.pop(ref, None)
+
+
+@pytest.mark.asyncio
+async def test_mcp_stdio_discovers_filters_invokes_and_persists_without_secrets(tmp_path):
+    credential_vault = _MemoryVault()
+    registry = MCPRegistry(tmp_path, credential_vault=credential_vault)
+    server_script = PROJECT_ROOT / "tests" / "fixtures" / "mcp_echo_server.py"
+    created = await registry.create(MCPConnectionCreate(
+        id="local-echo",
+        name="本地 Echo",
+        transport="stdio",
+        command=sys.executable,
+        args=[str(server_script)],
+        auth_type="none",
+        token="must-not-be-persisted",
+    ))
+    assert created["status"] == "ready"
+    assert created["has_token"] is True
+    assert created["tools"][0]["name"] == "echo"
+    definitions = registry.tool_definitions()
+    assert definitions[0].name == "mcp__local_echo__echo"
+    invoked = await registry.invoke_tool(definitions[0].name, {"message": "hello"})
+    assert invoked["status"] == "success"
+    assert invoked["content"][0]["text"] == "echo:hello"
+    assert "must-not-be-persisted" not in registry.path.read_text(encoding="utf-8")
+
+    hidden = registry.update("local-echo", MCPConnectionPatch(allowed_tools=[]))
+    assert hidden["allowed_tools"] == []
+    assert registry.tool_definitions() == []
+    registry.delete("local-echo")
+    assert credential_vault.values == {}
+
+
+def test_mcp_remote_transport_rejects_insecure_or_credential_urls(tmp_path):
+    with pytest.raises(ValueError, match="HTTPS"):
+        MCPConnectionCreate(name="远程", transport="streamable_http", url="http://example.com/mcp")
+    with pytest.raises(ValueError, match="凭据"):
+        MCPConnectionCreate(name="远程", transport="streamable_http", url="https://user:secret@example.com/mcp")
+    local = MCPConnectionCreate(name="本机", transport="streamable_http", url="http://127.0.0.1:3000/mcp")
+    assert local.transport == "streamable_http"
+
+
+@pytest.mark.asyncio
+async def test_mcp_streamable_http_discovers_and_invokes_official_server(tmp_path):
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    server_script = PROJECT_ROOT / "tests" / "fixtures" / "mcp_http_server.py"
+    env = {**os.environ, "AETHERCHAT_TEST_MCP_PORT": str(port)}
+    process = subprocess.Popen(
+        [sys.executable, str(server_script)], env=env,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                    break
+            except OSError:
+                await asyncio.sleep(0.05)
+        else:
+            pytest.fail("MCP Streamable HTTP test server did not start")
+
+        registry = MCPRegistry(tmp_path, credential_vault=_MemoryVault())
+        connection = await registry.create(MCPConnectionCreate(
+            id="http-math", name="HTTP Math", transport="streamable_http",
+            url=f"http://127.0.0.1:{port}/mcp", auth_type="none",
+        ))
+        assert connection["status"] == "ready"
+        definition = registry.tool_definitions()[0]
+        assert definition.name == "mcp__http_math__add"
+        result = await registry.invoke_tool(definition.name, {"left": 7, "right": 5})
+        assert result["status"] == "success"
+        assert result["content"][0]["text"] == "12"
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=3)
+
+
+@pytest.mark.asyncio
+async def test_mcp_oauth_storage_keeps_tokens_in_vault_and_callback_is_unauthed(client, monkeypatch):
+    credential_vault = _MemoryVault()
+    storage = VaultOAuthStorage(credential_vault, "secure-server")
+    tokens = OAuthToken(access_token="access-secret", refresh_token="refresh-secret", token_type="Bearer")
+    client_info = OAuthClientInformationFull(
+        client_id="client-id", client_secret="client-secret",
+        redirect_uris=["http://127.0.0.1:8000/callback"],
+    )
+    await storage.set_tokens(tokens)
+    await storage.set_client_info(client_info)
+    assert (await storage.get_tokens()).refresh_token == "refresh-secret"
+    assert (await storage.get_client_info()).client_secret == "client-secret"
+    assert all("secret" not in ref.lower() for ref in credential_vault.values)
+    storage.clear()
+    assert credential_vault.values == {}
+
+    monkeypatch.delenv("AETHERCHAT_ALLOW_UNAUTHENTICATED", raising=False)
+    monkeypatch.setenv("AETHERCHAT_API_TOKEN", "required-token")
+    callback = client.get(
+        "/mcp-connections/oauth/callback/missing",
+        params={"error": "<script>alert(1)</script>"},
+    )
+    assert callback.status_code == 400
+    assert "<script>" not in callback.text
+    assert "&lt;script&gt;" in callback.text
+def test_memory_api_allows_review_edit_and_delete(client):
+    session_id = str(uuid4())
+    updated = client.patch(f"/memory/{session_id}", json={
+        "project_note": "本机项目说明",
+        "decisions": ["决定使用 SQLite"],
+        "preferences": ["优先使用中文"],
+        "open_items": ["下一步补测试"],
+    })
+    assert updated.status_code == 200
+    assert updated.json()["decisions"] == ["决定使用 SQLite"]
+    restored = client.get(f"/memory/{session_id}")
+    assert restored.json()["project_note"] == "本机项目说明"
+    cleared = client.patch(f"/memory/{session_id}", json={
+        "project_note": "", "decisions": [], "preferences": [], "open_items": [],
+    })
+    assert cleared.status_code == 200
+    assert cleared.json()["preferences"] == []
+
+
+def test_project_image_is_sanitized_and_available_for_multimodal_context(client):
+    from PIL import Image
+
+    session_id = str(uuid4())
+    source = io.BytesIO()
+    Image.new("RGB", (32, 24), (120, 80, 40)).save(source, format="PNG", pnginfo=None)
+    payload = source.getvalue() + b"untrusted-trailing-payload"
+    uploaded = client.post(
+        f"/knowledge/{session_id}/attachments",
+        files={"file": ("reference.png", payload, "image/png")},
+    )
+    assert uploaded.status_code == 201
+    attachment = uploaded.json()
+    assert attachment["chunk_count"] == 0
+    urls = knowledge_service.image_data_urls(session_id, [attachment["id"]])
+    assert len(urls) == 1
+    assert urls[0].startswith("data:image/png;base64,")
+    sanitized = __import__("base64").b64decode(urls[0].split(",", 1)[1])
+    assert b"untrusted-trailing-payload" not in sanitized
+    preview = client.get(f"/knowledge/{session_id}/attachments/{attachment['id']}/preview")
+    assert preview.json()["kind"] == "image"
+    image_content = client.get(f"/knowledge/{session_id}/attachments/{attachment['id']}/content")
+    assert image_content.status_code == 200
+    assert image_content.headers["x-content-type-options"] == "nosniff"
+    assert "sandbox" in image_content.headers["content-security-policy"]
+    assert image_content.content == sanitized
+
+    disguised = client.post(
+        f"/knowledge/{session_id}/attachments",
+        files={"file": ("fake.png", b"not an image", "image/png")},
+    )
+    assert disguised.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_approval_service_supports_once_session_deny_and_fail_closed():
+    service = ApprovalService()
+    pending = service.create(
+        session_id="session-a",
+        model="claude",
+        tool_name="run_command",
+        risk="command_execution",
+        title="运行命令",
+        detail="pytest -q",
+        arguments={"cmd": "pytest -q"},
+        allow_session=True,
+    )
+    assert pending is not None
+    waiter = asyncio.create_task(service.wait(pending.id, timeout=1))
+    assert service.decide(pending.id, "session-a", "allow_session")["resolved"] is True
+    assert await waiter == "allow_session"
+    assert service.create(
+        session_id="session-a", model="codex", tool_name="run_command",
+        risk="command_execution", title="运行命令", detail="echo ok", arguments={}, allow_session=True,
+    ) is None
+
+    once_only = service.create(
+        session_id="session-a", model="claude", tool_name="write_local",
+        risk="local_file_write", title="写文件", detail="/tmp/a", arguments={}, allow_session=False,
+    )
+    assert once_only is not None
+    with pytest.raises(PermissionError):
+        service.decide(once_only.id, "session-b", "allow_once")
+    with pytest.raises(ValueError):
+        service.decide(once_only.id, "session-a", "allow_session")
+    denied = asyncio.create_task(service.wait(once_only.id, timeout=1))
+    service.decide(once_only.id, "session-a", "deny")
+    assert await denied == "deny"
+
+
+def test_tasks_are_uuid_validated_session_scoped_and_persisted(client, tmp_path, monkeypatch):
+    original_tasks = list(task_router.fake_tasks)
+    task_file = tmp_path / "tasks.json"
+    monkeypatch.setattr(task_router, "TASKS_PATH", task_file)
+    task_router.fake_tasks.clear()
+
+    session_a = str(uuid4())
+    session_b = str(uuid4())
+    try:
+        created_a = client.post("/tasks/", json={
+            "session_id": session_a,
+            "title": "session A task",
+            "description": "offline regression",
+        })
+        created_b = client.post("/tasks/", json={
+            "session_id": session_b,
+            "title": "session B task",
+        })
+        assert created_a.status_code == 200
+        assert created_b.status_code == 200
+
+        tasks_a = client.get("/tasks/", params={"session_id": session_a}).json()
+        tasks_b = client.get("/tasks/", params={"session_id": session_b}).json()
+        assert [task["title"] for task in tasks_a] == ["session A task"]
+        assert [task["title"] for task in tasks_b] == ["session B task"]
+
+        invalid = client.post("/tasks/", json={"session_id": "not-a-uuid", "title": "bad"})
+        assert invalid.status_code == 422
+
+        task_id = created_a.json()["id"]
+        claimed = client.post(f"/tasks/{task_id}/claim", params={"by": "user:test"})
+        assert claimed.status_code == 200
+        assert claimed.json()["status"] == "claimed"
+
+        assert task_file.exists()
+        task_router.fake_tasks.clear()
+        task_router.fake_tasks.extend(task_router._load_tasks(task_file))
+        restored = client.get("/tasks/", params={"session_id": session_a}).json()
+        assert restored[0]["id"] == task_id
+        assert restored[0]["claimed_by"] == "user:test"
+    finally:
+        task_router.fake_tasks.clear()
+        task_router.fake_tasks.extend(original_tasks)
+
+
+def test_chat_history_and_task_events_survive_database_restart(client):
+    session_id = uuid4()
+    chat_database.create_session(str(session_id), "重启恢复测试", "project")
+    for role, author, content in (
+        ("user", "user", "继续上次的数据库任务"),
+        ("assistant", "qwen", "已经恢复上下文。"),
+    ):
+        chat_database.save_message(Message(
+            id=uuid4(),
+            session_id=session_id,
+            author_model=author,
+            role=role,
+            content=content,
+            created_at=datetime.now(timezone.utc),
+        ))
+
+    restarted = ChatDatabase(chat_database.path)
+    assert [row["content"] for row in restarted.list_messages(str(session_id))] == [
+        "继续上次的数据库任务",
+        "已经恢复上下文。",
+    ]
+
+    history = client.get(f"/sessions/{session_id}/messages")
+    assert history.status_code == 200
+    assert history.json()[1]["author_model"] == "qwen"
+    sessions = client.get("/sessions/").json()
+    restored_session = next(item for item in sessions if item["id"] == str(session_id))
+    assert restored_session["message_count"] == 2
+    assert restored_session["summary"] == "已经恢复上下文。"
+
+    created = client.post("/tasks/", json={"session_id": str(session_id), "title": "记录恢复进度"})
+    assert created.status_code == 200
+    patched = client.patch(f"/tasks/{created.json()['id']}", json={"status": "in_progress"})
+    assert patched.status_code == 200
+    events = client.get(f"/sessions/{session_id}/task-events").json()
+    assert [event["action"] for event in events[:2]] == ["updated", "created"]
+
+
+def test_deleted_seed_model_stays_deleted_after_restart(tmp_path, monkeypatch):
+    monkeypatch.setenv("AETHERCHAT_DATA_DIR", str(tmp_path))
+    first = ModelRegistry()
+    assert first.get("grok") is not None
+    assert first.delete("grok") is not None
+    assert first.get("grok") is None
+
+    restarted = ModelRegistry()
+    assert restarted.get("grok") is None
+    assert restarted.get("gpt") is not None
+
+
+def test_linux_vault_uses_keyring_and_migrates_plaintext_index(tmp_path, monkeypatch):
+    if os.name == "nt":
+        pytest.skip("Linux/macOS keyring behavior")
+
+    class FakeKeyring:
+        values: dict[tuple[str, str], str] = {}
+
+        @classmethod
+        def set_password(cls, service, ref, value):
+            cls.values[(service, ref)] = value
+
+        @classmethod
+        def get_password(cls, service, ref):
+            return cls.values.get((service, ref))
+
+    monkeypatch.setenv("AETHERCHAT_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(vault_module, "system_keyring", FakeKeyring)
+    vault_path = tmp_path / "vault.json"
+    vault_path.write_text('{"LEGACY_KEY": "legacy-test-value"}', encoding="utf-8")
+
+    secure_vault = vault_module.SimpleVault()
+    assert secure_vault.get_key("LEGACY_KEY") == "legacy-test-value"
+    secure_vault.set_key("NEW_KEY", "new-test-value")
+    index = json.loads(vault_path.read_text(encoding="utf-8"))
+    assert index == {"LEGACY_KEY": "keyring", "NEW_KEY": "keyring"}
+    assert "legacy-test-value" not in vault_path.read_text(encoding="utf-8")
+    assert "new-test-value" not in vault_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_sandbox_uses_prepared_workspace_cwd_and_real_exit_code(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    (workspace / "src").mkdir(parents=True)
+    captured = {}
+
+    class FakeContainer:
+        removed = False
+
+        def wait(self, timeout):
+            captured["wait_timeout"] = timeout
+            return {"StatusCode": 7}
+
+        def logs(self, **kwargs):
+            return b"command output"
+
+        def remove(self, force=False):
+            self.removed = force
+
+    container = FakeContainer()
+
+    class FakeContainers:
+        def run(self, **kwargs):
+            captured["run"] = kwargs
+            return container
+
+    class FakeClient:
+        containers = FakeContainers()
+
+        def close(self):
+            captured["closed"] = True
+
+    monkeypatch.setattr(sandbox_executor.docker, "from_env", lambda: FakeClient())
+    result = await sandbox_executor.execute_in_sandbox(
+        "python -m pytest",
+        cwd="src",
+        timeout=12,
+        workspace_path=workspace,
+    )
+
+    assert result["exit_code"] == 7
+    assert result["stdout"] == "command output"
+    assert captured["run"]["working_dir"] == "/workspace/src"
+    assert captured["run"]["volumes"][str(workspace.resolve())]["mode"] == "rw"
+    assert captured["run"]["network_mode"] == "none"
+    assert container.removed is True
+    assert captured["closed"] is True
+
+
+def test_sandbox_rejects_path_escape_and_unbounded_inputs():
+    with pytest.raises(ValueError, match="inside /workspace"):
+        sandbox_executor.normalize_container_cwd("../outside")
+    with pytest.raises(ValueError, match="timeout"):
+        sandbox_executor.validate_command("echo ok", 301)
+    with pytest.raises(ValueError, match="too large"):
+        sandbox_executor.validate_command("x" * 20_001, 30)
+
+
+@pytest.mark.asyncio
+async def test_provider_context_uses_model_limit_and_preserves_latest_turn():
+    messages = []
+    for index in range(12):
+        messages.extend([
+            ChatMessage(role="user", content=f"old-user-{index} " + ("甲" * 900)),
+            ChatMessage(role="assistant", content=f"old-answer-{index} " + ("乙" * 900)),
+        ])
+    messages.append(ChatMessage(role="user", content="LATEST-REQUEST must remain"))
+
+    result = await build_messages_for_provider(messages, provider_limit=4096, output_reserve=1024)
+    assert result[-1].content == "LATEST-REQUEST must remain"
+    assert any("上下文上限" in item.content for item in result if item.role == "system")
+    assert sum(estimate_tokens(item.content) + 8 for item in result) <= 4096 - 1024
+    first_conversation = next(item for item in result if item.role != "system")
+    assert first_conversation.role == "user"
+
+
+@pytest.mark.asyncio
+async def test_provider_context_drops_complete_native_tool_turns():
+    messages = [
+        ChatMessage(role="user", content="old request " + ("甲" * 6000)),
+        ChatMessage(
+            role="assistant",
+            tool_calls=[ToolCall(
+                id="old-call",
+                name="inspect",
+                arguments={"target": "old"},
+            )],
+        ),
+        ChatMessage(
+            role="tool",
+            name="inspect",
+            tool_call_id="old-call",
+            content='{"result": "old"}',
+        ),
+        ChatMessage(role="user", content="LATEST-REQUEST"),
+    ]
+
+    result = await build_messages_for_provider(
+        messages,
+        provider_limit=2048,
+        output_reserve=512,
+    )
+    conversation = [message for message in result if message.role != "system"]
+
+    assert [(message.role, message.content) for message in conversation] == [
+        ("user", "LATEST-REQUEST"),
+    ]
+
+
+class _AsyncChunkStream:
+    def __init__(self, chunks):
+        self._chunks = iter(chunks)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._chunks)
+        except StopIteration as exc:
+            raise StopAsyncIteration from exc
+
+
+def test_openai_native_tool_results_remain_contiguous_before_visual_observation():
+    converted = provider_module._openai_messages([
+        ChatMessage(
+            role="assistant",
+            tool_calls=[
+                ToolCall(id="call-a", name="observe", arguments={}),
+                ToolCall(id="call-b", name="inspect", arguments={"target": "window"}),
+            ],
+        ),
+        ChatMessage(
+            role="tool",
+            name="observe",
+            tool_call_id="call-a",
+            content='{"ok": true}',
+            images=["data:image/png;base64,aW1hZ2U="],
+        ),
+        ChatMessage(
+            role="tool",
+            name="inspect",
+            tool_call_id="call-b",
+            content='{"window": "editor"}',
+        ),
+    ], include_images=True)
+
+    assert [message["role"] for message in converted] == [
+        "assistant",
+        "tool",
+        "tool",
+        "user",
+    ]
+    assert [message["tool_call_id"] for message in converted[1:3]] == [
+        "call-a",
+        "call-b",
+    ]
+    assert converted[3]["content"][1] == {
+        "type": "image_url",
+        "image_url": {
+            "url": "data:image/png;base64,aW1hZ2U=",
+            "detail": "auto",
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_streams_tools_and_allows_local_without_key(monkeypatch):
+    captured = {}
+
+    def fake_http_client(**kwargs):
+        captured["http_client"] = kwargs
+        return "local-http-client"
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            captured["client"] = kwargs
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        async def create(self, **kwargs):
+            captured["request"] = kwargs
+            return _AsyncChunkStream([
+                SimpleNamespace(
+                    choices=[SimpleNamespace(delta=SimpleNamespace(content="first "))],
+                    usage=None,
+                ),
+                SimpleNamespace(
+                    choices=[SimpleNamespace(delta=SimpleNamespace(
+                        content="second",
+                        tool_calls=[SimpleNamespace(
+                            index=0,
+                            id="call-1",
+                            function=SimpleNamespace(name="list_tasks", arguments="{}"),
+                        )],
+                    ))],
+                    usage=None,
+                ),
+                SimpleNamespace(
+                    choices=[],
+                    usage=SimpleNamespace(prompt_tokens=12, completion_tokens=4),
+                ),
+            ])
+
+    monkeypatch.setattr(provider_module, "AsyncOpenAI", FakeAsyncOpenAI)
+    monkeypatch.setattr(provider_module, "DefaultAsyncHttpxClient", fake_http_client)
+    async def fake_runtime_ready(_config):
+        return {"ready": True, "managed": False, "started": False}
+    monkeypatch.setattr(provider_module.local_model_runtime, "ensure_ready", fake_runtime_ready)
+    monkeypatch.delenv("UNSET_LOCAL_TEST_KEY", raising=False)
+    provider = provider_module.OpenAICompatProvider(ProviderConfig(
+        name="local-test",
+        type="local",
+        model="qwen-local-model",
+        base_url="http://127.0.0.1:9999/v1",
+        api_key_ref="UNSET_LOCAL_TEST_KEY",
+    ))
+    tools = [ToolDefinition(name="list_tasks", description="List tasks")]
+
+    chunks = [
+        chunk
+        async for chunk in provider.stream_chat(
+            [
+                ChatMessage(role="system", content="first instruction"),
+                ChatMessage(role="user", content="hello"),
+                ChatMessage(
+                    role="assistant",
+                    content="checking",
+                    tool_calls=[ToolCall(
+                        id="historic-call",
+                        name="list_tasks",
+                        arguments={"status": "open"},
+                    )],
+                ),
+                ChatMessage(
+                    role="tool",
+                    name="list_tasks",
+                    tool_call_id="historic-call",
+                    content='{"tasks": []}',
+                ),
+                ChatMessage(role="system", content="second instruction"),
+            ],
+            tools=tools,
+        )
+    ]
+
+    assert captured["client"]["api_key"] == "local-model"
+    assert captured["client"]["http_client"] == "local-http-client"
+    assert captured["http_client"]["trust_env"] is False
+    assert captured["request"]["stream"] is True
+    assert captured["request"]["extra_body"] == {
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    assert captured["request"]["messages"] == [
+        {"role": "system", "content": "first instruction\n\nsecond instruction"},
+        {"role": "user", "content": "hello"},
+        {
+            "role": "assistant",
+            "content": "checking",
+            "tool_calls": [{
+                "id": "historic-call",
+                "type": "function",
+                "function": {
+                    "name": "list_tasks",
+                    "arguments": '{"status": "open"}',
+                },
+            }],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "historic-call",
+            "content": '{"tasks": []}',
+        },
+    ]
+    assert captured["request"]["tools"][0]["function"]["name"] == "list_tasks"
+    assert [chunk["delta"] for chunk in chunks if chunk["delta"]] == ["first ", "second"]
+    assert next(chunk["tool_calls"] for chunk in chunks if chunk.get("tool_calls")) == [{
+        "id": "call-1",
+        "name": "list_tasks",
+        "arguments": {},
+    }]
+    assert chunks[-1]["usage"] == {"prompt_tokens": 12, "completion_tokens": 4}
+
+
+@pytest.mark.asyncio
+async def test_anthropic_provider_accepts_shared_tool_definitions(monkeypatch):
+    captured = {}
+
+    class FakeAsyncAnthropic:
+        def __init__(self, **kwargs):
+            captured["client"] = kwargs
+            self.messages = SimpleNamespace(create=self.create)
+
+        async def create(self, **kwargs):
+            captured["request"] = kwargs
+            return _AsyncChunkStream([
+                SimpleNamespace(
+                    type="message_start",
+                    message=SimpleNamespace(usage=SimpleNamespace(input_tokens=20)),
+                ),
+                SimpleNamespace(
+                    type="content_block_delta",
+                    delta=SimpleNamespace(text="ok"),
+                ),
+                SimpleNamespace(
+                    type="content_block_start",
+                    index=1,
+                    content_block=SimpleNamespace(
+                        type="tool_use",
+                        id="toolu-new",
+                        name="read_artifact",
+                        input={},
+                    ),
+                ),
+                SimpleNamespace(
+                    type="content_block_delta",
+                    index=1,
+                    delta=SimpleNamespace(partial_json='{"path":"next.md"}'),
+                ),
+                SimpleNamespace(
+                    type="message_delta",
+                    usage=SimpleNamespace(output_tokens=5),
+                ),
+            ])
+
+    monkeypatch.setattr(provider_module, "AsyncAnthropic", FakeAsyncAnthropic)
+    monkeypatch.setenv("ANTHROPIC_OFFLINE_TEST_KEY", "fake-offline-key")
+    provider = provider_module.AnthropicProvider(ProviderConfig(
+        name="claude-test",
+        type="anthropic",
+        model="claude-offline",
+        api_key_ref="ANTHROPIC_OFFLINE_TEST_KEY",
+    ))
+
+    chunks = [
+        chunk
+        async for chunk in provider.stream_chat(
+            [
+                ChatMessage(role="system", content="first instruction"),
+                ChatMessage(role="user", content="hello"),
+                ChatMessage(
+                    role="assistant",
+                    content="checking",
+                    tool_calls=[
+                        ToolCall(
+                            id="toolu-success",
+                            name="read_artifact",
+                            arguments={"path": "notes.md"},
+                        ),
+                        ToolCall(
+                            id="toolu-error",
+                            name="read_artifact",
+                            arguments={"path": "missing.md"},
+                        ),
+                    ],
+                ),
+                ChatMessage(
+                    role="tool",
+                    name="read_artifact",
+                    tool_call_id="toolu-success",
+                    content='{"text": "done"}',
+                ),
+                ChatMessage(
+                    role="tool",
+                    name="read_artifact",
+                    tool_call_id="toolu-error",
+                    tool_error=True,
+                    content="not found",
+                    images=["data:image/png;base64,aW1hZ2U="],
+                ),
+                ChatMessage(role="system", content="second instruction"),
+            ],
+            tools=[ToolDefinition(name="read_artifact", description="Read")],
+        )
+    ]
+
+    assert captured["request"]["system"] == "first instruction\n\nsecond instruction"
+    assert captured["request"]["tools"] == [{
+        "name": "read_artifact",
+        "description": "Read",
+        "input_schema": {"type": "object", "properties": {}},
+    }]
+    assert captured["request"]["messages"] == [
+        {"role": "user", "content": "hello"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "checking"},
+                {
+                    "type": "tool_use",
+                    "id": "toolu-success",
+                    "name": "read_artifact",
+                    "input": {"path": "notes.md"},
+                },
+                {
+                    "type": "tool_use",
+                    "id": "toolu-error",
+                    "name": "read_artifact",
+                    "input": {"path": "missing.md"},
+                },
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu-success",
+                    "content": '{"text": "done"}',
+                },
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu-error",
+                    "content": [
+                        {"type": "text", "text": "not found"},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "aW1hZ2U=",
+                            },
+                        },
+                    ],
+                    "is_error": True,
+                },
+            ],
+        },
+    ]
+    assert chunks[0]["delta"] == "ok"
+    assert next(chunk["tool_calls"] for chunk in chunks if chunk.get("tool_calls")) == [{
+        "id": "toolu-new",
+        "name": "read_artifact",
+        "arguments": {"path": "next.md"},
+    }]
+    assert chunks[-1]["usage"] == {"prompt_tokens": 20, "completion_tokens": 5}
+
+
+class _FakeProvider:
+    def __init__(self, name, *, cost_in=0.0, cost_out=0.0, behavior="normal", started=None, persona=None):
+        self.config = ProviderConfig(
+            name=name,
+            type="openai_compat",
+            model=f"{name}-model",
+            api_key_ref=f"{name.upper()}_OFFLINE_KEY",
+            cost_per_1k_input=cost_in,
+            cost_per_1k_output=cost_out,
+            persona=persona,
+        )
+        self.behavior = behavior
+        self.started = started
+        self.called = False
+        self.received_messages = []
+
+    async def stream_chat(self, messages, tools=None, **kwargs):
+        self.called = True
+        self.received_messages = messages
+        if self.started:
+            self.started.set()
+        if self.behavior == "error":
+            if False:
+                yield {}
+            raise RuntimeError("offline provider failure")
+        if self.behavior == "slow":
+            for index in range(8):
+                await asyncio.sleep(0.025)
+                yield {"delta": f"{self.config.name}-{index}", "usage": None}
+        else:
+            await asyncio.sleep(0.01)
+            yield {"delta": f"{self.config.name}-done", "usage": None}
+        yield {"delta": "", "usage": {"prompt_tokens": 1000, "completion_tokens": 500}}
+
+
+async def _collect_events(orchestrator, targets):
+    return [
+        event
+        async for event in orchestrator.stream_user_message({
+            "content": "offline orchestration",
+            "targets": targets,
+            "mode": "casual",
+        })
+    ]
+
+
+def _orchestrator_with(providers):
+    orchestrator = SessionOrchestrator(str(uuid4()))
+    orchestrator.providers = {provider.config.name: provider for provider in providers}
+    orchestrator.refresh_providers = lambda: None
+    return orchestrator
+
+
+@pytest.mark.asyncio
+async def test_project_plan_waits_for_confirmation_before_model_calls(tmp_path):
+    database = ChatDatabase(tmp_path / "planned-confirmation.sqlite3")
+    run_service = AgentRunService(database)
+    session_id = str(uuid4())
+    action = {
+        "content": "先展示计划，确认后再执行",
+        "targets": ["planner-model"],
+        "mode": "project",
+        "execution_strategy": "planned",
+        "plan_confirmation_required": True,
+        "max_revision_cycles": 1,
+    }
+    run = run_service.create(session_id, action)
+    action["_agent_run_id"] = run["id"]
+
+    class ConfirmationProvider(_FakeProvider):
+        def __init__(self):
+            super().__init__("planner-model", persona="Architect/Reviewer")
+            self.calls = []
+
+        async def stream_chat(self, messages, tools=None, **kwargs):
+            system_text = "\n".join(
+                message.content for message in messages if message.role == "system"
+            )
+            if "类型：verifier" in system_text:
+                self.calls.append("verifier")
+                content = json.dumps({
+                    "verdict": "pass",
+                    "summary": "候选满足目标",
+                    "evidence": ["候选"],
+                    "issues": [],
+                }, ensure_ascii=False)
+            elif "类型：synthesizer" in system_text:
+                self.calls.append("synthesizer")
+                content = "确认后生成的最终交付"
+            else:
+                self.calls.append("worker")
+                content = "确认后执行的候选"
+            yield {"delta": content, "usage": None}
+
+    provider = ConfirmationProvider()
+    draft_orchestrator = SessionOrchestrator(session_id, mode="project")
+    draft_orchestrator.providers = {"planner-model": provider}
+    draft_orchestrator.refresh_providers = lambda: None
+    draft_orchestrator.run_service = run_service
+    draft_orchestrator.begin_agent_run(run["id"])
+
+    draft_events = []
+    async for event in draft_orchestrator.stream_user_message(action):
+        draft_events.append(event)
+        run_service.observe(run["id"], event)
+    waiting = run_service.finish(run["id"])
+
+    assert waiting["status"] == "waiting_plan_confirmation"
+    assert waiting["plan_status"] == "draft"
+    assert provider.calls == []
+    assert any(
+        event["type"] == "plan_confirmation_required"
+        for event in draft_events
+    )
+    assert not any(
+        event["type"] == "plan_step_update"
+        for event in draft_events
+    )
+
+    confirmed_action, _ = run_service.prepare_confirmed_plan(
+        run_id=run["id"],
+        session_id=session_id,
+        expected_revision=1,
+    )
+    confirmed_action["_agent_run_id"] = run["id"]
+    executing = SessionOrchestrator(session_id, mode="project")
+    executing.providers = {"planner-model": provider}
+    executing.refresh_providers = lambda: None
+    executing.run_service = run_service
+    executing.begin_agent_run(run["id"])
+
+    execution_events = []
+    async for event in executing.stream_user_message(confirmed_action):
+        execution_events.append(event)
+        run_service.observe(run["id"], event)
+    completed = run_service.finish(run["id"])
+
+    assert completed["status"] == "completed"
+    assert completed["plan_status"] == "completed"
+    assert provider.calls == ["worker", "verifier", "synthesizer"]
+    assert len([
+        event for event in execution_events
+        if event["type"] == "message_complete"
+        and event["message"]["role"] == "assistant"
+    ]) == 1
+
+
+@pytest.mark.asyncio
+async def test_project_mode_executes_worker_verifier_synthesizer_dag(tmp_path):
+    database = ChatDatabase(tmp_path / "planned-orchestrator.sqlite3")
+    run_service = AgentRunService(database)
+    session_id = str(uuid4())
+    action = {
+        "content": "形成一份经过双模型核验的迁移方案",
+        "targets": ["researcher", "reviewer"],
+        "mode": "project",
+        "execution_strategy": "planned",
+    }
+    run = run_service.create(session_id, action)
+    action["_agent_run_id"] = run["id"]
+
+    class PlannedProvider(_FakeProvider):
+        def __init__(self, name, persona):
+            super().__init__(name, persona=persona)
+            self.calls = []
+            self.saw_dependency_bundle = False
+            self.tool_policies = {}
+
+        async def stream_chat(self, messages, tools=None, **kwargs):
+            system_text = "\n".join(
+                message.content for message in messages if message.role == "system"
+            )
+            if "类型：verifier" in system_text:
+                phase = "verifier"
+                self.saw_dependency_bundle = all(
+                    value in "\n".join(message.content for message in messages)
+                    for value in ("候选-researcher", "候选-reviewer")
+                )
+                content = json.dumps({
+                    "verdict": "pass",
+                    "summary": "两份候选互相补充且未发现冲突",
+                    "evidence": ["候选-researcher", "候选-reviewer"],
+                    "issues": [],
+                }, ensure_ascii=False)
+            elif "类型：synthesizer" in system_text:
+                phase = "synthesizer"
+                combined = "\n".join(message.content for message in messages)
+                self.saw_dependency_bundle = (
+                    "候选-researcher" in combined
+                    and "候选-reviewer" in combined
+                    and '"verdict": "pass"' in combined
+                )
+                content = "最终迁移方案：先验证兼容性，再分阶段迁移，并保留回滚证据。"
+            else:
+                phase = "worker"
+                content = f"候选-{self.config.name}"
+            self.calls.append(phase)
+            tool_names = {tool.name for tool in (tools or [])}
+            self.tool_policies[phase] = {
+                "has_list_tasks": "list_tasks" in tool_names,
+                "has_write_artifact": "write_artifact" in tool_names,
+            }
+            yield {"delta": content, "usage": None}
+            yield {
+                "delta": "",
+                "usage": {"prompt_tokens": 10, "completion_tokens": 4},
+            }
+
+    researcher = PlannedProvider("researcher", "Researcher")
+    reviewer = PlannedProvider("reviewer", "Architect/Reviewer")
+    orchestrator = SessionOrchestrator(session_id, mode="project")
+    orchestrator.providers = {
+        "researcher": researcher,
+        "reviewer": reviewer,
+    }
+    orchestrator.refresh_providers = lambda: None
+    orchestrator.run_service = run_service
+    orchestrator.begin_agent_run(run["id"])
+
+    events = []
+    async for event in orchestrator.stream_user_message(action):
+        events.append(event)
+        run_service.observe(run["id"], event)
+    completed = run_service.finish(run["id"])
+
+    assert completed["status"] == "completed"
+    assert researcher.calls == ["worker"]
+    assert reviewer.calls == ["worker", "verifier", "synthesizer"]
+    assert reviewer.saw_dependency_bundle is True
+    assert researcher.tool_policies["worker"] == {
+        "has_list_tasks": True,
+        "has_write_artifact": False,
+    }
+    assert reviewer.tool_policies["verifier"]["has_write_artifact"] is False
+    assert reviewer.tool_policies["synthesizer"]["has_write_artifact"] is True
+    assert len([
+        event for event in events
+        if event["type"] == "message_complete"
+        and event["message"]["role"] == "assistant"
+    ]) == 1
+    assert len([
+        event for event in events if event["type"] == "plan_step_output"
+    ]) == 3
+    final_message = next(
+        event["message"]
+        for event in events
+        if event["type"] == "message_complete"
+        and event["message"]["role"] == "assistant"
+    )
+    assert final_message["content"].startswith("最终迁移方案")
+
+    detail = database.get_agent_run(run["id"])
+    assert {step["status"] for step in detail["plan_steps"]} == {"completed"}
+    assert detail["review_count"] == 1
+    assert detail["reviews"][0]["verdict"] == "pass"
+    assert detail["reviews"][0]["evidence"] == [
+        "候选-researcher", "候选-reviewer",
+    ]
+    assert any(event["type"] == "plan_created" for event in events)
+    assert any(event["type"] == "review_recorded" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_planned_code_run_uses_scoped_worktree_tools_and_real_evidence(
+    tmp_path,
+    monkeypatch,
+):
+    repository_root = tmp_path / "orchestrated-repository"
+    _initialize_test_git_repository(repository_root)
+    database = ChatDatabase(tmp_path / "planned-code.sqlite3")
+    workspace_service = GitWorkspaceService(
+        database,
+        worktree_root=tmp_path / "managed-worktrees",
+    )
+    run_service = AgentRunService(database, workspace_service)
+    monkeypatch.setattr(
+        git_workspace_module,
+        "git_workspace_service",
+        workspace_service,
+    )
+    session_id = str(uuid4())
+    registered = workspace_service.register_repository(
+        session_id=session_id,
+        selected_path=str(repository_root),
+    )
+    action = {
+        "content": "在隔离 worktree 中把 VALUE 改为 3",
+        "targets": ["code-agent"],
+        "mode": "project",
+        "execution_strategy": "planned",
+        "repository_id": registered["id"],
+        "verification_commands": ["python -m pytest -q"],
+    }
+    run = run_service.create(session_id, action)
+    action["_agent_run_id"] = run["id"]
+
+    async def passing_sandbox(*args, **kwargs):
+        return {
+            "stdout": "1 passed\n",
+            "exit_code": 0,
+            "timed_out": False,
+            "network": "none",
+        }
+
+    monkeypatch.setattr(
+        git_workspace_module,
+        "execute_in_sandbox",
+        passing_sandbox,
+    )
+
+    class CodeProvider(_FakeProvider):
+        def __init__(self):
+            super().__init__("code-agent", persona="Implementer/Reviewer")
+            self.worker_turns = 0
+            self.saw_deterministic_evidence = False
+
+        async def stream_chat(self, messages, tools=None, **kwargs):
+            system_text = "\n".join(
+                message.content for message in messages if message.role == "system"
+            )
+            combined = "\n".join(message.content for message in messages)
+            tool_names = {tool.name for tool in (tools or [])}
+            if "类型：worker" in system_text:
+                self.worker_turns += 1
+                assert {
+                    "workspace_list_files",
+                    "workspace_read_file",
+                    "workspace_write_file",
+                    "workspace_run_command",
+                    "workspace_status",
+                } <= tool_names
+                assert "write_artifact" not in tool_names
+                if self.worker_turns == 1:
+                    yield {
+                        "delta": "",
+                        "usage": None,
+                        "tool_calls": [{
+                            "id": "write-isolated-worktree",
+                            "name": "workspace_write_file",
+                            "arguments": {
+                                "path": "app.py",
+                                "content": "VALUE = 3\n",
+                            },
+                        }],
+                    }
+                else:
+                    assert any(
+                        message.role == "tool"
+                        and message.name == "workspace_write_file"
+                        and not message.tool_error
+                        for message in messages
+                    )
+                    yield {"delta": "已在隔离 worktree 修改 app.py", "usage": None}
+                return
+            if "类型：verifier" in system_text:
+                self.saw_deterministic_evidence = (
+                    "deterministic_workspace_verification" not in combined
+                    and '"verification_status": "passed"' in combined
+                    and '"exit_code": 0' in combined
+                )
+                yield {
+                    "delta": json.dumps({
+                        "verdict": "pass",
+                        "summary": "diff 与测试证据通过",
+                        "evidence": ["AetherChat deterministic verifier"],
+                        "issues": [],
+                    }, ensure_ascii=False),
+                    "usage": None,
+                }
+                return
+            assert "类型：synthesizer" in system_text
+            yield {"delta": "候选已核验，等待用户审核并应用 diff。", "usage": None}
+
+    provider = CodeProvider()
+    orchestrator = SessionOrchestrator(session_id, mode="project")
+    orchestrator.providers = {"code-agent": provider}
+    orchestrator.refresh_providers = lambda: None
+    orchestrator.run_service = run_service
+    orchestrator.begin_agent_run(run["id"])
+
+    events = []
+    async for event in orchestrator.stream_user_message(action):
+        events.append(event)
+        run_service.observe(run["id"], event)
+    completed = run_service.finish(run["id"])
+
+    assert completed["status"] == "completed"
+    assert provider.worker_turns == 2
+    assert provider.saw_deterministic_evidence is True
+    assert any(event["type"] == "workspace_verified" for event in events)
+    candidates = workspace_service.list_run_workspaces(
+        run_id=run["id"],
+        session_id=session_id,
+    )
+    assert len(candidates) == 1
+    assert candidates[0]["verification_status"] == "passed"
+    assert candidates[0]["changed_files"] == [{
+        "status": " M",
+        "path": "app.py",
+    }]
+    assert (repository_root / "app.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+
+
+@pytest.mark.asyncio
+async def test_verifier_needs_revision_triggers_one_bounded_rework_cycle(tmp_path):
+    database = ChatDatabase(tmp_path / "planned-review-revision.sqlite3")
+    run_service = AgentRunService(database)
+    session_id = str(uuid4())
+    action = {
+        "content": "形成经过返工核验的发布方案",
+        "targets": ["lead"],
+        "mode": "project",
+        "execution_strategy": "planned",
+        "max_revision_cycles": 1,
+    }
+    run = run_service.create(session_id, action)
+    action["_agent_run_id"] = run["id"]
+
+    class RevisionProvider(_FakeProvider):
+        def __init__(self):
+            super().__init__("lead", persona="Architect/Reviewer")
+            self.calls = []
+            self.worker_count = 0
+            self.verifier_count = 0
+            self.saw_revision_context = False
+
+        async def stream_chat(self, messages, tools=None, **kwargs):
+            system_text = "\n".join(
+                message.content for message in messages if message.role == "system"
+            )
+            combined = "\n".join(message.content for message in messages)
+            if "类型：verifier" in system_text:
+                self.calls.append("verifier")
+                self.verifier_count += 1
+                if self.verifier_count == 1:
+                    content = json.dumps({
+                        "verdict": "needs_revision",
+                        "summary": "缺少可验证的回滚条件",
+                        "evidence": ["候选-v1"],
+                        "issues": ["补充回滚触发条件"],
+                    }, ensure_ascii=False)
+                else:
+                    assert "候选-v2" in combined
+                    content = json.dumps({
+                        "verdict": "pass",
+                        "summary": "返工版本补齐回滚条件",
+                        "evidence": ["候选-v2"],
+                        "issues": [],
+                    }, ensure_ascii=False)
+            elif "类型：synthesizer" in system_text:
+                self.calls.append("synthesizer")
+                assert '"verdict": "pass"' in combined
+                content = "最终发布方案：包含回滚触发条件。"
+            else:
+                self.calls.append("worker")
+                self.worker_count += 1
+                if self.worker_count == 2:
+                    self.saw_revision_context = (
+                        "候选-v1" in combined
+                        and "补充回滚触发条件" in combined
+                        and "受控返工" in combined
+                    )
+                content = f"候选-v{self.worker_count}"
+            yield {"delta": content, "usage": None}
+
+    provider = RevisionProvider()
+    orchestrator = SessionOrchestrator(session_id, mode="project")
+    orchestrator.providers = {"lead": provider}
+    orchestrator.refresh_providers = lambda: None
+    orchestrator.run_service = run_service
+    orchestrator.begin_agent_run(run["id"])
+
+    events = []
+    async for event in orchestrator.stream_user_message(action):
+        events.append(event)
+        run_service.observe(run["id"], event)
+    completed = run_service.finish(run["id"])
+
+    assert completed["status"] == "completed"
+    assert completed["plan_revision"] == 2
+    assert completed["automatic_revision_count"] == 1
+    assert provider.calls == [
+        "worker", "verifier", "worker", "verifier", "synthesizer",
+    ]
+    assert provider.saw_revision_context is True
+    detail = database.get_agent_run(run["id"])
+    assert [review["verdict"] for review in detail["reviews"]] == [
+        "needs_revision", "pass",
+    ]
+    assert [
+        revision["source"] for revision in detail["plan_revisions"]
+    ] == ["verifier_replan", "planner"]
+    assert any(event["type"] == "plan_replanned" for event in events)
+    assert len([
+        event for event in events
+        if event["type"] == "message_complete"
+        and event["message"]["role"] == "assistant"
+    ]) == 1
+
+
+@pytest.mark.asyncio
+async def test_repeated_verifier_failure_blocks_unverified_synthesis(tmp_path):
+    database = ChatDatabase(tmp_path / "planned-review-fail.sqlite3")
+    run_service = AgentRunService(database)
+    session_id = str(uuid4())
+    action = {
+        "content": "核验失败时不得伪造最终交付",
+        "targets": ["lead"],
+        "mode": "project",
+        "execution_strategy": "planned",
+        "max_revision_cycles": 1,
+    }
+    run = run_service.create(session_id, action)
+    action["_agent_run_id"] = run["id"]
+
+    class FailingVerifierProvider(_FakeProvider):
+        def __init__(self):
+            super().__init__("lead", persona="Architect/Reviewer")
+            self.calls = []
+
+        async def stream_chat(self, messages, tools=None, **kwargs):
+            system_text = "\n".join(
+                message.content for message in messages if message.role == "system"
+            )
+            if "类型：verifier" in system_text:
+                self.calls.append("verifier")
+                content = json.dumps({
+                    "verdict": "fail",
+                    "summary": "关键证据仍不可验证",
+                    "evidence": [],
+                    "issues": ["缺少真实测试证据"],
+                }, ensure_ascii=False)
+            elif "类型：synthesizer" in system_text:
+                self.calls.append("synthesizer")
+                content = "此内容不应生成"
+            else:
+                self.calls.append("worker")
+                content = "缺少证据的候选"
+            yield {"delta": content, "usage": None}
+
+    provider = FailingVerifierProvider()
+    orchestrator = SessionOrchestrator(session_id, mode="project")
+    orchestrator.providers = {"lead": provider}
+    orchestrator.refresh_providers = lambda: None
+    orchestrator.run_service = run_service
+    orchestrator.begin_agent_run(run["id"])
+
+    events = []
+    async for event in orchestrator.stream_user_message(action):
+        events.append(event)
+        run_service.observe(run["id"], event)
+    failed = run_service.finish(run["id"])
+
+    assert failed["status"] == "failed"
+    assert failed["automatic_revision_count"] == 1
+    assert provider.calls == ["worker", "verifier", "worker", "verifier"]
+    synthesizer = next(
+        step for step in failed["plan_steps"]
+        if step["kind"] == "synthesizer"
+    )
+    assert synthesizer["status"] == "blocked"
+    assert any(
+        event.get("code") == "plan_verification_failed"
+        for event in events
+    )
+    assert not any(
+        event["type"] == "message_complete"
+        and event["message"]["role"] == "assistant"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_project_plan_retry_reuses_completed_worker_outputs(tmp_path):
+    database = ChatDatabase(tmp_path / "planned-retry.sqlite3")
+    run_service = AgentRunService(database)
+    session_id = str(uuid4())
+    action = {
+        "content": "先独立分析，再核验并综合",
+        "targets": ["worker-a", "reviewer"],
+        "mode": "project",
+        "execution_strategy": "planned",
+    }
+    run = run_service.create(session_id, action)
+    action["_agent_run_id"] = run["id"]
+
+    class FirstAttemptProvider(_FakeProvider):
+        def __init__(self, name, persona):
+            super().__init__(name, persona=persona)
+            self.calls = []
+
+        async def stream_chat(self, messages, tools=None, **kwargs):
+            system_text = "\n".join(
+                message.content for message in messages if message.role == "system"
+            )
+            if "类型：verifier" in system_text:
+                self.calls.append("verifier")
+                if False:
+                    yield {}
+                raise RuntimeError("verifier offline")
+            if "类型：synthesizer" in system_text:
+                self.calls.append("synthesizer")
+                if False:
+                    yield {}
+                raise RuntimeError("synthesizer offline")
+            self.calls.append("worker")
+            yield {"delta": f"已完成-{self.config.name}", "usage": None}
+
+    worker = FirstAttemptProvider("worker-a", "Researcher")
+    reviewer = FirstAttemptProvider("reviewer", "Architect/Reviewer")
+    first = SessionOrchestrator(session_id, mode="project")
+    first.providers = {"worker-a": worker, "reviewer": reviewer}
+    first.refresh_providers = lambda: None
+    first.run_service = run_service
+    first.begin_agent_run(run["id"])
+
+    first_events = []
+    async for event in first.stream_user_message(action):
+        first_events.append(event)
+        run_service.observe(run["id"], event)
+    failed = run_service.finish(run["id"])
+
+    assert failed["status"] == "failed"
+    assert worker.calls == ["worker"]
+    assert reviewer.calls == ["worker", "verifier", "synthesizer"]
+    before_retry = database.list_agent_plan_steps(run["id"])
+    assert [
+        step["status"] for step in before_retry if step["kind"] == "worker"
+    ] == ["completed", "completed"]
+
+    retry_action, _ = run_service.prepare_retry(run["id"], session_id)
+    retry_action["_agent_run_id"] = run["id"]
+
+    class RetryReviewer(_FakeProvider):
+        def __init__(self):
+            super().__init__("reviewer", persona="Architect/Reviewer")
+            self.calls = []
+            self.saw_reused_workers = False
+
+        async def stream_chat(self, messages, tools=None, **kwargs):
+            system_text = "\n".join(
+                message.content for message in messages if message.role == "system"
+            )
+            combined = "\n".join(message.content for message in messages)
+            self.saw_reused_workers = (
+                "已完成-worker-a" in combined
+                and "已完成-reviewer" in combined
+            )
+            if "类型：verifier" in system_text:
+                self.calls.append("verifier")
+                content = json.dumps({
+                    "verdict": "pass",
+                    "summary": "复用的两份 Worker 输出可用于综合",
+                    "evidence": ["worker-a", "reviewer"],
+                    "issues": [],
+                }, ensure_ascii=False)
+            else:
+                assert "类型：synthesizer" in system_text
+                self.calls.append("synthesizer")
+                content = "重试后最终交付"
+            yield {"delta": content, "usage": None}
+
+    retry_reviewer = RetryReviewer()
+    resumed = SessionOrchestrator(session_id, mode="project")
+    resumed.providers = {"reviewer": retry_reviewer}
+    resumed.refresh_providers = lambda: None
+    resumed.run_service = run_service
+    resumed.begin_agent_run(run["id"], retry_action.get("_pending_steers"))
+
+    retry_events = []
+    async for event in resumed.stream_user_message(retry_action):
+        retry_events.append(event)
+        run_service.observe(run["id"], event)
+    completed = run_service.finish(run["id"])
+
+    assert completed["status"] == "completed"
+    assert retry_reviewer.calls == ["verifier", "synthesizer"]
+    assert retry_reviewer.saw_reused_workers is True
+    assert all(
+        step["status"] == "completed"
+        for step in database.list_agent_plan_steps(run["id"])
+    )
+    assert any(
+        event["type"] == "message_complete"
+        and event["message"]["content"] == "重试后最终交付"
+        for event in retry_events
+    )
+
+
+@pytest.mark.asyncio
+async def test_project_worker_cannot_execute_side_effect_tool(tmp_path):
+    database = ChatDatabase(tmp_path / "planned-read-only-worker.sqlite3")
+    run_service = AgentRunService(database)
+    session_id = str(uuid4())
+    action = {
+        "content": "先分析，最终阶段再决定是否写入",
+        "targets": ["solo"],
+        "mode": "project",
+        "execution_strategy": "planned",
+    }
+    run = run_service.create(session_id, action)
+    action["_agent_run_id"] = run["id"]
+
+    class ReadOnlyWorkerProvider(_FakeProvider):
+        def __init__(self):
+            super().__init__("solo", persona="Architect/Reviewer")
+            self.worker_calls = 0
+
+        async def stream_chat(self, messages, tools=None, **kwargs):
+            system_text = "\n".join(
+                message.content for message in messages if message.role == "system"
+            )
+            if "类型：worker" in system_text:
+                self.worker_calls += 1
+                assert "write_artifact" not in {tool.name for tool in (tools or [])}
+                if self.worker_calls == 1:
+                    yield {
+                        "delta": "",
+                        "usage": None,
+                        "tool_calls": [{
+                            "id": "forbidden-worker-write",
+                            "name": "write_artifact",
+                            "arguments": {
+                                "path": "must-not-write.md",
+                                "content": "forbidden",
+                            },
+                        }],
+                    }
+                    return
+                observation = next(
+                    message for message in reversed(messages)
+                    if message.role == "tool"
+                )
+                assert observation.tool_error is True
+                assert "只读 Worker/Verifier" in observation.content
+                yield {"delta": "只读分析已完成", "usage": None}
+                return
+            if "类型：verifier" in system_text:
+                yield {
+                    "delta": json.dumps({
+                        "verdict": "pass",
+                        "summary": "Worker 未执行副作用",
+                        "evidence": [],
+                        "issues": [],
+                    }, ensure_ascii=False),
+                    "usage": None,
+                }
+                return
+            assert "类型：synthesizer" in system_text
+            yield {"delta": "最终未写入任何工件。", "usage": None}
+
+    provider = ReadOnlyWorkerProvider()
+    orchestrator = SessionOrchestrator(session_id, mode="project")
+    orchestrator.providers = {"solo": provider}
+    orchestrator.refresh_providers = lambda: None
+    orchestrator.run_service = run_service
+    orchestrator.begin_agent_run(run["id"])
+    tool_runs_before = len(tool_registry.list_runs(session_id=session_id, limit=None))
+
+    async for event in orchestrator.stream_user_message(action):
+        run_service.observe(run["id"], event)
+    completed = run_service.finish(run["id"])
+
+    assert completed["status"] == "completed"
+    assert provider.worker_calls == 2
+    assert len(tool_registry.list_runs(session_id=session_id, limit=None)) == tool_runs_before
+    calls = database.list_agent_tool_calls(run["id"])
+    assert len(calls) == 1
+    assert calls[0]["status"] == "denied"
+    assert calls[0]["plan_step_id"]
+
+
+@pytest.mark.asyncio
+async def test_interrupt_all_stops_remaining_project_plan_phases(tmp_path):
+    database = ChatDatabase(tmp_path / "planned-interrupt.sqlite3")
+    run_service = AgentRunService(database)
+    session_id = str(uuid4())
+    action = {
+        "content": "执行一个可中断的项目计划",
+        "targets": ["slow-plan"],
+        "mode": "project",
+        "execution_strategy": "planned",
+    }
+    run = run_service.create(session_id, action)
+    action["_agent_run_id"] = run["id"]
+    started = asyncio.Event()
+
+    class SlowPlanProvider(_FakeProvider):
+        def __init__(self):
+            super().__init__("slow-plan", persona="Architect/Reviewer")
+            self.phases = []
+
+        async def stream_chat(self, messages, tools=None, **kwargs):
+            system_text = "\n".join(
+                message.content for message in messages if message.role == "system"
+            )
+            phase = (
+                "worker" if "类型：worker" in system_text
+                else "verifier" if "类型：verifier" in system_text
+                else "synthesizer"
+            )
+            self.phases.append(phase)
+            started.set()
+            await asyncio.sleep(10)
+            yield {"delta": "不应完成", "usage": None}
+
+    provider = SlowPlanProvider()
+    orchestrator = SessionOrchestrator(session_id, mode="project")
+    orchestrator.providers = {"slow-plan": provider}
+    orchestrator.refresh_providers = lambda: None
+    orchestrator.run_service = run_service
+    orchestrator.begin_agent_run(run["id"])
+
+    async def collect():
+        events = []
+        async for event in orchestrator.stream_user_message(action):
+            events.append(event)
+            run_service.observe(run["id"], event)
+        return events
+
+    collecting = asyncio.create_task(collect())
+    await asyncio.wait_for(started.wait(), timeout=1)
+    orchestrator.interrupt("all")
+    events = await asyncio.wait_for(collecting, timeout=2)
+    interrupted = run_service.finish(run["id"])
+
+    assert interrupted["status"] == "interrupted"
+    assert provider.phases == ["worker"]
+    assert not any(event.get("code") == "plan_incomplete" for event in events)
+    plan_steps = database.list_agent_plan_steps(run["id"])
+    assert next(
+        step for step in plan_steps if step["kind"] == "synthesizer"
+    )["status"] == "interrupted"
+
+
+@pytest.mark.asyncio
+async def test_project_plan_does_not_synthesize_when_all_workers_fail(tmp_path):
+    database = ChatDatabase(tmp_path / "planned-all-workers-fail.sqlite3")
+    run_service = AgentRunService(database)
+    session_id = str(uuid4())
+    action = {
+        "content": "不能在没有候选结果时伪造最终交付",
+        "targets": ["offline-worker"],
+        "mode": "project",
+        "execution_strategy": "planned",
+    }
+    run = run_service.create(session_id, action)
+    action["_agent_run_id"] = run["id"]
+
+    class OfflineWorker(_FakeProvider):
+        def __init__(self):
+            super().__init__("offline-worker", persona="Architect/Reviewer")
+            self.calls = 0
+
+        async def stream_chat(self, messages, tools=None, **kwargs):
+            self.calls += 1
+            if False:
+                yield {}
+            raise RuntimeError("offline")
+
+    provider = OfflineWorker()
+    orchestrator = SessionOrchestrator(session_id, mode="project")
+    orchestrator.providers = {"offline-worker": provider}
+    orchestrator.refresh_providers = lambda: None
+    orchestrator.run_service = run_service
+    orchestrator.begin_agent_run(run["id"])
+
+    events = []
+    async for event in orchestrator.stream_user_message(action):
+        events.append(event)
+        run_service.observe(run["id"], event)
+    failed = run_service.finish(run["id"])
+
+    assert failed["status"] == "failed"
+    assert provider.calls == 1
+    plan_steps = database.list_agent_plan_steps(run["id"])
+    assert next(
+        step for step in plan_steps if step["kind"] == "verifier"
+    )["status"] == "blocked"
+    assert next(
+        step for step in plan_steps if step["kind"] == "synthesizer"
+    )["status"] == "blocked"
+    assert not any(
+        event["type"] == "message_complete"
+        and event["message"]["role"] == "assistant"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_injects_configured_agent_persona():
+    provider = _FakeProvider(
+        "architect",
+        persona="架构评审；优先识别边界、风险和验收条件",
+    )
+    orchestrator = _orchestrator_with([provider])
+
+    await _collect_events(orchestrator, ["architect"])
+
+    system_text = "\n".join(
+        message.content for message in provider.received_messages if message.role == "system"
+    )
+    assert "稳定标识是：architect" in system_text
+    assert "架构评审；优先识别边界、风险和验收条件" in system_text
+
+
+class _ToolLoopProvider(_FakeProvider):
+    def __init__(self):
+        super().__init__("tool-loop")
+        self.calls = 0
+        self.received_observation = False
+
+    async def stream_chat(self, messages, tools=None, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            yield {
+                "delta": "",
+                "usage": None,
+                "tool_calls": [{
+                    "id": "call-1",
+                    "name": "plugin__desktop_control__capabilities",
+                    "arguments": {},
+                }],
+            }
+            yield {"delta": "", "usage": {"prompt_tokens": 10, "completion_tokens": 2}}
+            return
+        observation = next(message for message in reversed(messages) if message.role == "tool")
+        assistant_call = next(
+            message for message in reversed(messages)
+            if message.role == "assistant" and message.tool_calls
+        )
+        assert [call.id for call in assistant_call.tool_calls] == ["call-1"]
+        assert assistant_call.tool_calls[0].name == "plugin__desktop_control__capabilities"
+        assert observation.tool_call_id == "call-1"
+        assert observation.name == "plugin__desktop_control__capabilities"
+        assert observation.tool_error is False
+        self.received_observation = "desktop-control" in observation.content
+        assert observation.images and observation.images[0].startswith("data:image/png;base64,")
+        yield {"delta": "闭环完成", "usage": None}
+        yield {"delta": "", "usage": {"prompt_tokens": 12, "completion_tokens": 3}}
+
+
+class _PseudoToolProvider(_FakeProvider):
+    def __init__(self):
+        super().__init__("pseudo-tool")
+        self.calls = 0
+
+    async def stream_chat(self, messages, tools=None, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            yield {
+                "delta": "让我先检查。\n\n请求执行工具：plugin__documents__inventory",
+                "usage": None,
+            }
+        elif self.calls == 2:
+            assert "立即发起结构化工具调用" in messages[-1].content
+            yield {
+                "delta": "",
+                "usage": None,
+                "tool_calls": [{
+                    "id": "recovered-call",
+                    "name": "plugin__documents__inventory",
+                    "arguments": {},
+                }],
+            }
+        else:
+            assert any(message.role == "tool" for message in messages)
+            yield {"delta": "已完成真实工具调用。", "usage": None}
+        yield {"delta": "", "usage": {"prompt_tokens": 10, "completion_tokens": 2}}
+
+
+class _ApprovalToolProvider(_FakeProvider):
+    def __init__(self):
+        super().__init__("approval-model")
+        self.calls = 0
+
+    async def stream_chat(self, messages, tools=None, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            yield {
+                "delta": "",
+                "usage": None,
+                "tool_calls": [{
+                    "id": "approval-call",
+                    "name": "write_artifact",
+                    "arguments": {"path": "approved.md", "content": "sensitive body"},
+                }],
+            }
+        else:
+            observation = next(message for message in reversed(messages) if message.role == "tool")
+            assert '"status": "success"' in observation.content
+            yield {"delta": "授权后已完成", "usage": None}
+        yield {"delta": "", "usage": {"prompt_tokens": 10, "completion_tokens": 2}}
+
+
+class _ParallelToolProvider(_FakeProvider):
+    def __init__(self):
+        super().__init__("parallel-tools")
+        self.calls = 0
+        self.received_native_results = False
+
+    async def stream_chat(self, messages, tools=None, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            yield {
+                "delta": "",
+                "usage": None,
+                "tool_calls": [
+                    {
+                        "id": "call-documents",
+                        "name": "plugin__documents__inventory",
+                        "arguments": {},
+                    },
+                    {
+                        "id": "call-desktop",
+                        "name": "plugin__desktop_control__capabilities",
+                        "arguments": {},
+                    },
+                ],
+            }
+        else:
+            assistant_call = next(
+                message for message in reversed(messages)
+                if message.role == "assistant" and message.tool_calls
+            )
+            assert [call.id for call in assistant_call.tool_calls] == [
+                "call-documents",
+                "call-desktop",
+            ]
+            results = {
+                message.tool_call_id: message
+                for message in messages
+                if message.role == "tool" and message.tool_call_id
+            }
+            assert results["call-documents"].name == "plugin__documents__inventory"
+            assert '"plugin_id": "documents"' in results["call-documents"].content
+            assert results["call-desktop"].name == "plugin__desktop_control__capabilities"
+            assert '"plugin_id": "desktop-control"' in results["call-desktop"].content
+            self.received_native_results = True
+            yield {"delta": "并行结果已正确关联", "usage": None}
+        yield {"delta": "", "usage": {"prompt_tokens": 10, "completion_tokens": 2}}
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_reenters_model_after_tool_and_attaches_observation_image(monkeypatch):
+    provider = _ToolLoopProvider()
+    orchestrator = _orchestrator_with([provider])
+
+    async def fake_invoke(tool_name, session_id, caller, arguments):
+        return {
+            "plugin_id": "desktop-control",
+            "status": "success",
+            "result": {
+                "snapshot_id": "snapshot-1",
+                "screenshot": {
+                    "image_data_url": "data:image/png;base64,iVBORw0KGgo=",
+                    "width": 1,
+                    "height": 1,
+                },
+            },
+        }
+
+    monkeypatch.setattr(plugin_registry, "invoke_tool", fake_invoke)
+    events = await _collect_events(orchestrator, ["tool-loop"])
+    assert provider.calls == 2
+    assert provider.received_observation is True
+    assert any(event["type"] == "tool_run" for event in events)
+    assert any(
+        event["type"] == "message_complete"
+        and event["message"]["author_model"] == "tool-loop"
+        and "闭环完成" in event["message"]["content"]
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_correlates_parallel_tool_results_by_call_id(monkeypatch):
+    provider = _ParallelToolProvider()
+    orchestrator = _orchestrator_with([provider])
+
+    async def fake_invoke(tool_name, session_id, caller, arguments):
+        plugin_id = "documents" if "documents" in tool_name else "desktop-control"
+        return {
+            "plugin_id": plugin_id,
+            "status": "success",
+            "result": {"tool_name": tool_name},
+        }
+
+    monkeypatch.setattr(plugin_registry, "invoke_tool", fake_invoke)
+    events = await _collect_events(orchestrator, ["parallel-tools"])
+
+    assert provider.calls == 2
+    assert provider.received_native_results is True
+    assert len([event for event in events if event["type"] == "tool_run"]) == 2
+    assert any(
+        event["type"] == "message_complete"
+        and event["message"]["content"] == "并行结果已正确关联"
+        for event in events
+    )
+
+
+def test_orchestrator_repairs_missing_and_duplicate_tool_call_ids():
+    calls = SessionOrchestrator._normalize_tool_calls([
+        {"id": "stable-call", "name": "first", "arguments": {}},
+        {"id": "stable-call", "name": "second", "arguments": {"value": 2}},
+        {"id": "", "name": "third", "arguments": "raw"},
+    ])
+
+    assert calls[0].id == "stable-call"
+    assert len({call.id for call in calls}) == 3
+    assert all(call.id for call in calls)
+    assert calls[2].arguments == {"_raw": "raw"}
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_resumes_from_checkpoint_without_repeating_side_effect(tmp_path):
+    database = ChatDatabase(tmp_path / "orchestrator-checkpoint.sqlite3")
+    run_service = AgentRunService(database)
+    session_id = str(uuid4())
+    run = run_service.create(session_id, {
+        "content": "只写入一次 checkpoint.md",
+        "targets": ["checkpoint-model"],
+        "mode": "project",
+    })
+
+    class FailingAfterToolProvider(_FakeProvider):
+        def __init__(self):
+            super().__init__("checkpoint-model")
+            self.calls = 0
+
+        async def stream_chat(self, messages, tools=None, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                yield {
+                    "delta": "",
+                    "usage": None,
+                    "tool_calls": [{
+                        "id": "checkpoint-call",
+                        "name": "write_artifact",
+                        "arguments": {
+                            "path": "checkpoint.md",
+                            "content": "written once",
+                        },
+                    }],
+                }
+                yield {"delta": "", "usage": {"prompt_tokens": 4, "completion_tokens": 2}}
+                return
+            assert any(message.tool_call_id == "checkpoint-call" for message in messages)
+            if False:
+                yield {}
+            raise RuntimeError("offline after completed tool round")
+
+    first_provider = FailingAfterToolProvider()
+    first = SessionOrchestrator(session_id)
+    first.providers = {"checkpoint-model": first_provider}
+    first.refresh_providers = lambda: None
+    first.run_service = run_service
+    first.begin_agent_run(run["id"])
+
+    async def allow_tool(_queue, _model, _tool_name, _arguments):
+        return True
+
+    first._authorize_model_tool = allow_tool
+    tool_runs_before = len(tool_registry.list_runs(session_id=session_id, limit=None))
+    first_events = []
+    first_action = {
+        "content": "只写入一次 checkpoint.md",
+        "targets": ["checkpoint-model"],
+        "mode": "project",
+        "_agent_run_id": run["id"],
+    }
+    async for event in first.stream_user_message(first_action):
+        first_events.append(event)
+        run_service.observe(run["id"], event)
+    failed = run_service.finish(run["id"])
+
+    assert failed["status"] == "failed"
+    assert any(event.get("code") == "provider_error" for event in first_events)
+    assert len(tool_registry.list_runs(session_id=session_id, limit=None)) == tool_runs_before + 1
+    assert database.latest_agent_checkpoint(run["id"], "checkpoint-model")["kind"] == "tool_round"
+
+    class ResumeProvider(_FakeProvider):
+        def __init__(self):
+            super().__init__("checkpoint-model")
+            self.calls = 0
+            self.saw_checkpoint = False
+
+        async def stream_chat(self, messages, tools=None, **kwargs):
+            self.calls += 1
+            self.saw_checkpoint = (
+                any(message.tool_calls for message in messages)
+                and any(message.tool_call_id == "checkpoint-call" for message in messages)
+            )
+            yield {"delta": "从检查点完成", "usage": None}
+            yield {"delta": "", "usage": {"prompt_tokens": 3, "completion_tokens": 2}}
+
+    retry_action, _ = run_service.prepare_retry(run["id"], session_id)
+    retry_action["_agent_run_id"] = run["id"]
+    resumed_provider = ResumeProvider()
+    resumed = SessionOrchestrator(session_id)
+    resumed.providers = {"checkpoint-model": resumed_provider}
+    resumed.refresh_providers = lambda: None
+    resumed.run_service = run_service
+    resumed.begin_agent_run(run["id"], retry_action.get("_pending_steers"))
+
+    async for event in resumed.stream_user_message(retry_action):
+        run_service.observe(run["id"], event)
+    completed = run_service.finish(run["id"])
+
+    assert completed["status"] == "completed"
+    assert resumed_provider.calls == 1
+    assert resumed_provider.saw_checkpoint is True
+    assert len(tool_registry.list_runs(session_id=session_id, limit=None)) == tool_runs_before + 1
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_applies_steer_before_stale_tool_side_effect(tmp_path):
+    database = ChatDatabase(tmp_path / "orchestrator-steer.sqlite3")
+    run_service = AgentRunService(database)
+    session_id = str(uuid4())
+    run = run_service.create(session_id, {
+        "content": "先准备旧方案",
+        "targets": ["steer-model"],
+    })
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class SteerProvider(_FakeProvider):
+        def __init__(self):
+            super().__init__("steer-model")
+            self.calls = 0
+            self.saw_steer = False
+
+        async def stream_chat(self, messages, tools=None, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                yield {"delta": "旧方案", "usage": None}
+                started.set()
+                await release.wait()
+                yield {
+                    "delta": "",
+                    "usage": None,
+                    "tool_calls": [{
+                        "id": "stale-write",
+                        "name": "write_artifact",
+                        "arguments": {
+                            "path": "must-not-exist.md",
+                            "content": "stale",
+                        },
+                    }],
+                }
+            else:
+                self.saw_steer = any(
+                    message.role == "user" and "改为只读分析" in message.content
+                    for message in messages
+                )
+                yield {"delta": "已改为只读分析", "usage": None}
+            yield {"delta": "", "usage": {"prompt_tokens": 2, "completion_tokens": 1}}
+
+    provider = SteerProvider()
+    orchestrator = SessionOrchestrator(session_id)
+    orchestrator.providers = {"steer-model": provider}
+    orchestrator.refresh_providers = lambda: None
+    orchestrator.run_service = run_service
+    orchestrator.begin_agent_run(run["id"])
+    action = {
+        "content": "先准备旧方案",
+        "targets": ["steer-model"],
+        "_agent_run_id": run["id"],
+    }
+
+    async def collect():
+        events = []
+        async for event in orchestrator.stream_user_message(action):
+            events.append(event)
+            run_service.observe(run["id"], event)
+        run_service.finish(run["id"])
+        return events
+
+    collecting = asyncio.create_task(collect())
+    await asyncio.wait_for(started.wait(), timeout=1)
+    steer = run_service.queue_steer(
+        run_id=run["id"],
+        session_id=session_id,
+        content="改为只读分析，不要写文件",
+        targets=["steer-model"],
+    )
+    orchestrator.queue_steer(steer)
+    release.set()
+    events = await asyncio.wait_for(collecting, timeout=2)
+
+    assert provider.calls == 2
+    assert provider.saw_steer is True
+    assert any(event["type"] == "stream_reset" for event in events)
+    assert any(event["type"] == "steer_applied" for event in events)
+    assert not any(event["type"] == "tool_run" for event in events)
+    assert database.list_agent_tool_calls(run["id"]) == []
+    checkpoint = database.latest_agent_checkpoint(run["id"], "steer-model")
+    assert checkpoint["kind"] == "completed"
+    assert any(
+        "改为只读分析" in message["content"]
+        for message in checkpoint["state"]["messages"]
+        if message["role"] == "user"
+    )
+
+
+@pytest.mark.asyncio
+async def test_agent_run_keeps_turn_limit_partial_output_failed(tmp_path, monkeypatch):
+    database = ChatDatabase(tmp_path / "orchestrator-turn-limit.sqlite3")
+    run_service = AgentRunService(database)
+    session_id = str(uuid4())
+    run = run_service.create(session_id, {
+        "content": "验证模型调用上限",
+        "targets": ["turn-limit-model"],
+    })
+
+    class TurnLimitProvider(_FakeProvider):
+        def __init__(self):
+            super().__init__("turn-limit-model")
+
+        async def stream_chat(self, messages, tools=None, **kwargs):
+            yield {
+                "delta": "尚未完成",
+                "usage": None,
+                "tool_calls": [{
+                    "id": "turn-limit-call",
+                    "name": "list_tasks",
+                    "arguments": {},
+                }],
+            }
+            yield {"delta": "", "usage": {"prompt_tokens": 2, "completion_tokens": 1}}
+
+    monkeypatch.setattr(orchestrator_module, "MAX_MODEL_TURNS", 1)
+    provider = TurnLimitProvider()
+    orchestrator = SessionOrchestrator(session_id)
+    orchestrator.providers = {"turn-limit-model": provider}
+    orchestrator.refresh_providers = lambda: None
+    orchestrator.run_service = run_service
+    orchestrator.begin_agent_run(run["id"])
+
+    events = []
+    async for event in orchestrator.stream_user_message({
+        "content": "验证模型调用上限",
+        "targets": ["turn-limit-model"],
+        "_agent_run_id": run["id"],
+    }):
+        events.append(event)
+        run_service.observe(run["id"], event)
+    failed = run_service.finish(run["id"])
+
+    assert failed["status"] == "failed"
+    assert database.list_agent_steps(run["id"])[0]["status"] == "failed"
+    assert any(event.get("code") == "model_turn_limit" for event in events)
+    assert any(
+        event["type"] == "message_complete"
+        and event.get("partial") is True
+        and event["message"]["content"] == "尚未完成"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_recovers_textual_pseudo_tool_call():
+    provider = _PseudoToolProvider()
+    orchestrator = _orchestrator_with([provider])
+    events = await _collect_events(orchestrator, ["pseudo-tool"])
+
+    assert provider.calls == 3
+    assert any(event["type"] == "stream_reset" for event in events)
+    assert any(event["type"] == "tool_run" for event in events)
+    completed = [
+        event["message"]
+        for event in events
+        if event["type"] == "message_complete"
+        and event["message"]["author_model"] == "pseudo-tool"
+    ]
+    assert completed[0]["content"] == "已完成真实工具调用。"
+    assert "请求执行工具" not in completed[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_pauses_for_structured_chat_approval():
+    provider = _ApprovalToolProvider()
+    orchestrator = _orchestrator_with([provider])
+    stream = orchestrator.stream_user_message({
+        "content": "请更新项目说明",
+        "targets": ["approval-model"],
+        "mode": "project",
+    })
+    events = []
+    async for event in stream:
+        events.append(event)
+        if event["type"] == "approval_required":
+            approval = event["approval"]
+            assert approval["tool_name"] == "write_artifact"
+            assert approval["arguments"]["content"].startswith("[已隐藏")
+            approval_service.decide(approval["id"], orchestrator.session_id, "allow_once")
+
+    assert any(event["type"] == "approval_resolved" and event["decision"] == "allow_once" for event in events)
+    assert any(event["type"] == "tool_run" and event["run"]["status"] == "success" for event in events)
+    assert any(
+        event["type"] == "message_complete" and event["message"]["content"] == "授权后已完成"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_uses_configured_cost_and_hard_stops_empty_budget():
+    priced = _FakeProvider("priced", cost_in=1.0, cost_out=2.0)
+    orchestrator = _orchestrator_with([priced])
+    events = await _collect_events(orchestrator, ["priced"])
+
+    complete = next(
+        event["message"]
+        for event in events
+        if event["type"] == "message_complete"
+        and event["message"]["author_model"] == "priced"
+    )
+    assert complete["cost_usd"] == 2.0
+    assert orchestrator.budget_remaining == 8.0
+
+    blocked = _FakeProvider("blocked", cost_in=1.0, cost_out=1.0)
+    exhausted = _orchestrator_with([blocked])
+    exhausted.budget_remaining = 0
+    blocked_events = await _collect_events(exhausted, ["blocked"])
+    assert blocked.called is False
+    assert any(event.get("code") == "budget_exceeded" for event in blocked_events)
+
+
+@pytest.mark.asyncio
+async def test_provider_exception_finishes_and_single_interrupt_keeps_other_model_running():
+    broken = _FakeProvider("broken", behavior="error")
+    broken_orchestrator = _orchestrator_with([broken])
+    broken_events = await asyncio.wait_for(
+        _collect_events(broken_orchestrator, ["broken"]),
+        timeout=1,
+    )
+    assert any(event.get("code") == "provider_error" for event in broken_events)
+
+    slow_started = asyncio.Event()
+    slow = _FakeProvider("slow", behavior="slow", started=slow_started)
+    survivor = _FakeProvider("survivor", behavior="slow")
+    orchestrator = _orchestrator_with([slow, survivor])
+    collecting = asyncio.create_task(_collect_events(orchestrator, ["slow", "survivor"]))
+    await asyncio.wait_for(slow_started.wait(), timeout=1)
+    await asyncio.sleep(0.04)
+    orchestrator.interrupt("slow")
+    events = await asyncio.wait_for(collecting, timeout=2)
+
+    assert any(event["type"] == "interrupted" and event["model"] == "slow" for event in events)
+    assert not any(event["type"] == "interrupted" and event["model"] == "survivor" for event in events)
+    assert any(
+        event["type"] == "message_complete"
+        and event["message"]["author_model"] == "survivor"
+        for event in events
+    )
+
+
+def test_websocket_action_error_does_not_close_connection(client):
+    session_id = str(uuid4())
+    with client.websocket_connect(f"/ws/sessions/{session_id}") as websocket:
+        websocket.send_text("{not-json")
+        error = websocket.receive_json()
+        assert error["type"] == "error"
+        assert error["code"] == "invalid_action"
+
+        websocket.send_json({"type": "interrupt", "scope": "all"})
+        acknowledgement = websocket.receive_json()
+        assert acknowledgement == {"type": "interrupt_ack", "scope": "all"}
+
+
+def test_websocket_interrupt_is_processed_while_agent_run_is_active(client, monkeypatch):
+    interrupted = threading.Event()
+
+    async def slow_stream(self, action):
+        yield {"type": "delta", "model": "slow-model", "delta": "started"}
+        while not interrupted.is_set():
+            await asyncio.sleep(0.01)
+        yield {"type": "interrupted", "model": "slow-model"}
+
+    def record_interrupt(self, scope="all"):
+        interrupted.set()
+
+    monkeypatch.setattr(SessionOrchestrator, "stream_user_message", slow_stream)
+    monkeypatch.setattr(SessionOrchestrator, "interrupt", record_interrupt)
+
+    session_id = str(uuid4())
+    with client.websocket_connect(f"/ws/sessions/{session_id}") as websocket:
+        websocket.send_json({
+            "type": "post_message",
+            "content": "start a slow run",
+            "targets": ["slow-model"],
+        })
+        assert websocket.receive_json() == {"type": "ack"}
+
+        saw_active_delta = False
+        for _ in range(5):
+            event = websocket.receive_json()
+            if event.get("type") == "delta":
+                saw_active_delta = True
+                break
+        assert saw_active_delta is True
+
+        websocket.send_json({"type": "interrupt", "scope": "all"})
+        saw_ack = False
+        for _ in range(6):
+            event = websocket.receive_json()
+            if event == {"type": "interrupt_ack", "scope": "all"}:
+                saw_ack = True
+                break
+        assert saw_ack is True
+        assert interrupted.wait(timeout=1)
+
+
+def test_websocket_interrupt_can_target_persisted_step(client, monkeypatch):
+    interrupted = threading.Event()
+    interrupted_scope = []
+
+    async def slow_stream(self, action):
+        yield {"type": "delta", "model": "model-a", "delta": "a"}
+        yield {"type": "delta", "model": "model-b", "delta": "b"}
+        while not interrupted.is_set():
+            await asyncio.sleep(0.01)
+        yield {"type": "interrupted", "model": interrupted_scope[0]}
+
+    def record_interrupt(self, scope="all"):
+        interrupted_scope.append(scope)
+        interrupted.set()
+
+    monkeypatch.setattr(SessionOrchestrator, "stream_user_message", slow_stream)
+    monkeypatch.setattr(SessionOrchestrator, "interrupt", record_interrupt)
+
+    session_id = str(uuid4())
+    with client.websocket_connect(f"/ws/sessions/{session_id}") as websocket:
+        websocket.send_json({
+            "type": "post_message",
+            "content": "run two steps",
+            "targets": ["model-a", "model-b"],
+        })
+        assert websocket.receive_json() == {"type": "ack"}
+        update = websocket.receive_json()
+        assert update["type"] == "agent_run_update"
+        run_id = update["agent_run"]["id"]
+        assert websocket.receive_json()["model"] == "model-a"
+        assert websocket.receive_json()["model"] == "model-b"
+
+        detail = client.get(
+            f"/agent-runs/{run_id}",
+            params={"session_id": session_id},
+        ).json()
+        step_id = next(step["id"] for step in detail["steps"] if step["model"] == "model-a")
+        websocket.send_json({
+            "type": "interrupt",
+            "run_id": run_id,
+            "step_id": step_id,
+        })
+        assert websocket.receive_json() == {
+            "type": "interrupt_ack",
+            "scope": "model-a",
+        }
+        assert interrupted.wait(timeout=1)
+        assert interrupted_scope == ["model-a"]
+
+
+def test_websocket_interrupt_can_target_persisted_plan_step(client, monkeypatch):
+    interrupted = threading.Event()
+    interrupted_scope = []
+
+    async def slow_plan_stream(self, action):
+        plan = self.run_service.ensure_plan(
+            run_id=action["_agent_run_id"],
+            session_id=self.session_id,
+            action={
+                **action,
+                "mode": "project",
+                "execution_strategy": "planned",
+            },
+            models=["model-a"],
+            profiles={"model-a": "Worker"},
+        )
+        worker = next(
+            step for step in plan["steps"] if step["kind"] == "worker"
+        )
+        running = self.run_service.start_plan_step(
+            action["_agent_run_id"], worker["id"]
+        )
+        yield {
+            "type": "plan_created",
+            "run_id": action["_agent_run_id"],
+            "goal": plan["goal"],
+            "plan_steps": plan["steps"],
+        }
+        yield {
+            "type": "plan_step_update",
+            "run_id": action["_agent_run_id"],
+            "plan_step": running,
+        }
+        while not interrupted.is_set():
+            await asyncio.sleep(0.01)
+        yield {"type": "interrupted", "model": interrupted_scope[0]}
+
+    def record_interrupt(self, scope="all"):
+        interrupted_scope.append(scope)
+        interrupted.set()
+
+    monkeypatch.setattr(SessionOrchestrator, "stream_user_message", slow_plan_stream)
+    monkeypatch.setattr(SessionOrchestrator, "interrupt", record_interrupt)
+
+    session_id = str(uuid4())
+    with client.websocket_connect(f"/ws/sessions/{session_id}") as websocket:
+        websocket.send_json({
+            "type": "post_message",
+            "content": "run a persisted plan step",
+            "targets": ["model-a"],
+            "mode": "project",
+            "execution_strategy": "planned",
+        })
+        assert websocket.receive_json() == {"type": "ack"}
+        assert websocket.receive_json()["type"] == "agent_run_update"
+        plan_event = websocket.receive_json()
+        assert plan_event["type"] == "plan_created"
+        update = websocket.receive_json()
+        assert update["type"] == "plan_step_update"
+        plan_step_id = update["plan_step"]["id"]
+
+        websocket.send_json({
+            "type": "interrupt",
+            "run_id": update["run_id"],
+            "step_id": plan_step_id,
+        })
+        assert websocket.receive_json() == {
+            "type": "interrupt_ack",
+            "scope": "model-a",
+        }
+        assert interrupted.wait(timeout=1)
+        assert interrupted_scope == ["model-a"]
+
+
+def test_websocket_plan_edit_and_confirmation_resume_same_run(client, monkeypatch):
+    phases = []
+
+    async def confirmation_stream(self, action):
+        run_id = action["_agent_run_id"]
+        if not action.get("_plan_confirmed"):
+            phases.append("draft")
+            plan = self.run_service.ensure_plan(
+                run_id=run_id,
+                session_id=self.session_id,
+                action=action,
+                models=["model-a"],
+                profiles={"model-a": "Architect/Reviewer"},
+            )
+            yield {
+                "type": "plan_created",
+                "run_id": run_id,
+                "goal": plan["goal"],
+                "plan_steps": plan["steps"],
+            }
+            waiting = self.run_service.database.update_agent_run(
+                run_id, "waiting_plan_confirmation", error=None
+            )
+            yield {
+                "type": "plan_confirmation_required",
+                "run_id": run_id,
+                "revision": waiting["plan_revision"],
+                "agent_run": waiting,
+            }
+            return
+
+        phases.append("execute")
+        for step in self.run_service.database.list_agent_plan_steps(run_id):
+            if step["kind"] == "planner":
+                continue
+            self.run_service.start_plan_step(run_id, step["id"])
+            self.run_service.finish_plan_step(
+                run_id,
+                step["id"],
+                status="completed",
+                content=f"completed-{step['kind']}",
+            )
+        message = Message(
+            id=uuid4(),
+            session_id=self.session_id,
+            author_model="model-a",
+            role="assistant",
+            content="confirmed final",
+            created_at=datetime.now(timezone.utc),
+        )
+        yield {
+            "type": "message_complete",
+            "message": message.model_dump(mode="json"),
+        }
+
+    monkeypatch.setattr(
+        SessionOrchestrator,
+        "stream_user_message",
+        confirmation_stream,
+    )
+    session_id = str(uuid4())
+    with client.websocket_connect(f"/ws/sessions/{session_id}") as websocket:
+        websocket.send_json({
+            "type": "post_message",
+            "content": "review this plan first",
+            "targets": ["model-a"],
+            "mode": "project",
+            "execution_strategy": "planned",
+            "plan_confirmation_required": True,
+        })
+        assert websocket.receive_json() == {"type": "ack"}
+        initial = websocket.receive_json()
+        assert initial["type"] == "agent_run_update"
+        run_id = initial["agent_run"]["id"]
+        plan_event = websocket.receive_json()
+        assert plan_event["type"] == "plan_created"
+        worker = next(
+            step for step in plan_event["plan_steps"]
+            if step["kind"] == "worker"
+        )
+        required = websocket.receive_json()
+        assert required["type"] == "plan_confirmation_required"
+        assert required["agent_run"]["status"] == "waiting_plan_confirmation"
+        waiting_update = websocket.receive_json()
+        assert waiting_update["type"] == "agent_run_update"
+        assert waiting_update["agent_run"]["status"] == "waiting_plan_confirmation"
+        assert phases == ["draft"]
+
+        websocket.send_json({
+            "type": "update_agent_plan",
+            "run_id": run_id,
+            "expected_revision": 1,
+            "goal_spec": {
+                "objective": "edited websocket goal",
+                "success_criteria": ["must be confirmed"],
+                "constraints": ["read only before approval"],
+                "deliverable": "confirmed result",
+            },
+            "plan_steps": [{
+                "id": worker["id"],
+                "title": "edited worker",
+                "description": "wait for confirmation",
+                "assigned_model": "model-a",
+                "role": "Reviewed Worker",
+            }],
+            "change_summary": "edited over websocket",
+        })
+        updated = websocket.receive_json()
+        assert updated["type"] == "plan_updated"
+        assert updated["revision"] == 2
+        assert updated["goal"]["objective"] == "edited websocket goal"
+
+        websocket.send_json({
+            "type": "confirm_agent_plan",
+            "run_id": run_id,
+            "expected_revision": 2,
+        })
+        assert websocket.receive_json() == {"type": "ack"}
+        approved = websocket.receive_json()
+        assert approved["type"] == "agent_run_update"
+        assert approved["agent_run"]["plan_status"] == "approved"
+        final_message = websocket.receive_json()
+        assert final_message["type"] == "message_complete"
+        assert final_message["message"]["content"] == "confirmed final"
+        completed = websocket.receive_json()
+        assert completed["type"] == "agent_run_update"
+        assert completed["agent_run"]["status"] == "completed"
+        assert phases == ["draft", "execute"]
+
+
+def test_websocket_second_message_becomes_persisted_steer(client, monkeypatch):
+    async def steerable_stream(self, action):
+        yield {"type": "delta", "model": "slow-model", "delta": "initial plan"}
+        for _ in range(200):
+            if self._has_pending_steers("slow-model"):
+                break
+            await asyncio.sleep(0.01)
+        steers = self._consume_steers("slow-model")
+        assert len(steers) == 1
+        for steer in steers:
+            self.run_service.mark_steer_applied(
+                action["_agent_run_id"],
+                steer["id"],
+                "slow-model",
+            )
+            yield {
+                "type": "steer_applied",
+                "model": "slow-model",
+                "steer_id": steer["id"],
+            }
+        yield {"type": "stream_reset", "model": "slow-model"}
+        yield {"type": "delta", "model": "slow-model", "delta": "replanned"}
+        message = Message(
+            id=uuid4(),
+            session_id=self.session_id,
+            author_model="slow-model",
+            role="assistant",
+            content="已按新方向完成",
+            created_at=datetime.now(timezone.utc),
+        )
+        yield {"type": "message_complete", "message": message.model_dump(mode="json")}
+
+    monkeypatch.setattr(SessionOrchestrator, "stream_user_message", steerable_stream)
+
+    session_id = str(uuid4())
+    run_id = None
+    saw_steer_ack = False
+    saw_user_steer = False
+    saw_applied = False
+    saw_completed = False
+    with client.websocket_connect(f"/ws/sessions/{session_id}") as websocket:
+        websocket.send_json({
+            "type": "post_message",
+            "content": "start a steerable run",
+            "targets": ["slow-model"],
+        })
+        assert websocket.receive_json() == {"type": "ack"}
+        while True:
+            event = websocket.receive_json()
+            if event.get("type") == "agent_run_update":
+                run_id = event["agent_run"]["id"]
+            if event.get("type") == "delta":
+                break
+
+        websocket.send_json({
+            "type": "post_message",
+            "content": "改用方案 B，并停止旧计划",
+            "targets": ["slow-model"],
+        })
+        for _ in range(12):
+            event = websocket.receive_json()
+            if event.get("type") == "steer_ack":
+                saw_steer_ack = event.get("run_id") == run_id
+            elif (
+                event.get("type") == "message_complete"
+                and event.get("message", {}).get("role") == "user"
+            ):
+                saw_user_steer = event["message"]["content"] == "改用方案 B，并停止旧计划"
+            elif event.get("type") == "steer_applied":
+                saw_applied = event.get("model") == "slow-model"
+            elif (
+                event.get("type") == "agent_run_update"
+                and event.get("agent_run", {}).get("status") == "completed"
+            ):
+                saw_completed = True
+                break
+
+    assert run_id
+    assert saw_steer_ack is True
+    assert saw_user_steer is True
+    assert saw_applied is True
+    assert saw_completed is True
+    detail = client.get(f"/agent-runs/{run_id}", params={"session_id": session_id}).json()
+    assert detail["steers"][0]["content"] == "改用方案 B，并停止旧计划"
+    assert detail["steers"][0]["applied_models"] == ["slow-model"]
+    event_types = [event["event_type"] for event in detail["events"]]
+    assert "steer_queued" in event_types
+    assert "steer_applied" in event_types
+    stored = client.get(f"/sessions/{session_id}/messages").json()
+    assert any(message["content"] == "改用方案 B，并停止旧计划" for message in stored)
+
+
+def test_workspace_artifact_merge_tool_and_export_flow(client):
+    session_id = str(uuid4())
+    other_session_id = str(uuid4())
+
+    seeded = client.get("/artifacts/", params={"session_id": session_id})
+    assert seeded.status_code == 200
+    assert {item["path"] for item in seeded.json()} >= {"README.md", "docs/PRD.md", "src/demo.ts"}
+
+    for content in ("version one", "version two"):
+        written = client.post("/artifacts/write", json={
+            "session_id": session_id,
+            "path": "notes/flow.txt",
+            "content": content,
+            "commit_message": content,
+            "author": "test",
+        })
+        assert written.status_code == 200
+
+    history = client.get("/artifacts/notes/flow.txt/history", params={"session_id": session_id})
+    assert history.status_code == 200
+    assert [item["content"] for item in history.json()[:2]] == ["version two", "version one"]
+    invalid_path = client.post("/artifacts/write", json={
+        "session_id": session_id,
+        "path": "../outside.txt",
+        "content": "blocked",
+    })
+    assert invalid_path.status_code == 400
+
+    proposal = client.post("/artifacts/merge/proposals", json={
+        "session_id": session_id,
+        "artifact_path": "notes/flow.txt",
+        "proposer": "user",
+        "rationale": "offline flow",
+        "merge_rule": "两票通过",
+    })
+    assert proposal.status_code == 200
+    proposal_id = proposal.json()["id"]
+    assert proposal.json()["merge_rule"] == "two_votes"
+    first_vote = client.post(f"/artifacts/merge/proposals/{proposal_id}/vote", json={
+        "voter": "model:a",
+        "approve": True,
+        "session_id": session_id,
+    })
+    assert first_vote.json()["status"] == "open"
+    second_vote = client.post(f"/artifacts/merge/proposals/{proposal_id}/vote", json={
+        "voter": "model:b",
+        "approve": True,
+        "session_id": session_id,
+    })
+    assert second_vote.json()["status"] == "merged"
+    late_vote = client.post(f"/artifacts/merge/proposals/{proposal_id}/vote", json={
+        "voter": "model:c",
+        "approve": False,
+        "session_id": session_id,
+    })
+    assert late_vote.json()["status"] == "merged"
+    assert late_vote.json()["vote_accepted"] is False
+
+    tools = client.get("/tools/", params={"session_id": session_id}).json()
+    by_name = {tool["name"]: tool for tool in tools}
+    assert {"list_tasks", "create_task", "read_artifact", "write_artifact"} <= set(by_name)
+
+    task_run = client.post(f"/tools/{by_name['create_task']['id']}/invoke", json={
+        "caller": "user",
+        "session_id": session_id,
+        "arguments": {"title": "created through dispatcher", "priority": 1},
+    })
+    assert task_run.status_code == 200
+    assert task_run.json()["status"] == "success", task_run.json().get("error")
+    assert isinstance(task_run.json()["output"], str)
+    assert task_run.json()["result"]["task"]["title"] == "created through dispatcher"
+
+    tool_write = client.post(f"/tools/{by_name['write_artifact']['id']}/invoke", json={
+        "caller": "user",
+        "session_id": session_id,
+        "arguments": {"path": "notes/tool.txt", "content": "written by dispatcher"},
+    })
+    assert tool_write.status_code == 200
+    assert tool_write.json()["status"] == "success"
+    read_back = client.get("/artifacts/notes/tool.txt", params={"session_id": session_id})
+    assert read_back.json()["content"] == "written by dispatcher"
+
+    session_runs = client.get("/tools/runs", params={"session_id": session_id}).json()
+    other_runs = client.get("/tools/runs", params={"session_id": other_session_id}).json()
+    assert len(session_runs) >= 2
+    assert other_runs == []
+
+    exported = client.get(f"/export/session/{session_id}", params={"format": "json"})
+    assert exported.status_code == 200
+    snapshot = exported.json()
+    assert any(task["title"] == "created through dispatcher" for task in snapshot["tasks"])
+    assert any(item["path"] == "notes/tool.txt" and item["content"] == "written by dispatcher" for item in snapshot["artifacts"])
+    assert snapshot["merge_proposals"][0]["status"] == "merged"
+    assert len(snapshot["tool_runs"]) >= 2
+
+    markdown = client.get(f"/export/session/{session_id}", params={"format": "markdown"})
+    assert markdown.status_code == 200
+    assert "## Artifacts (content and complete history)" in markdown.text
+    assert "written by dispatcher" in markdown.text
+
+
+def test_interactive_artifact_preview_versions_office_exports_and_rejections(client):
+    from docx import Document
+    from openpyxl import load_workbook
+    from pptx import Presentation
+
+    session_id = str(uuid4())
+    other_session_id = str(uuid4())
+    markdown = "# Release brief\n\n| Owner | Status |\n| --- | --- |\n| Team | Ready |\n\n---\n# Next slide\n\n- Safe export\n:::notes\nSpeaker-only context"
+    first = client.post("/artifacts/write", json={
+        "session_id": session_id,
+        "path": "reports/brief.md",
+        "content": "# Draft\n",
+        "commit_message": "draft",
+        "author": "test",
+        "source_model": "offline-model",
+        "status": "draft",
+    })
+    assert first.status_code == 200
+    second = client.post("/artifacts/write", json={
+        "session_id": session_id,
+        "path": "reports/brief.md",
+        "content": markdown,
+        "commit_message": "ready",
+        "author": "test",
+        "source_model": "offline-model",
+        "status": "ready",
+        "parent_version": 1,
+    })
+    assert second.status_code == 200
+
+    listed = client.get("/artifacts/", params={"session_id": session_id}).json()
+    artifact = next(item for item in listed if item["path"] == "reports/brief.md")
+    assert artifact["mime_type"] == "text/markdown"
+    assert artifact["current_version"] == 2
+    assert artifact["source_model"] == "offline-model"
+    assert artifact["parent_version"] == 1
+
+    preview = client.get("/artifacts/reports/brief.md/preview", params={"session_id": session_id})
+    assert preview.status_code == 200
+    assert preview.json()["mode"] == "markdown"
+    assert preview.json()["content"] == markdown
+    assert client.get(
+        "/artifacts/reports/brief.md/preview", params={"session_id": other_session_id}
+    ).status_code == 404
+
+    hostile = '<script>fetch("https://attacker.invalid")</script><img src="file:///etc/passwd"><h1>isolated</h1>'
+    assert client.post("/artifacts/write", json={
+        "session_id": session_id, "path": "preview/hostile.html", "content": hostile,
+    }).status_code == 200
+    hostile_preview = client.get(
+        "/artifacts/preview/hostile.html/preview", params={"session_id": session_id}
+    ).json()
+    assert hostile_preview["mode"] == "isolated_html"
+    assert hostile_preview["sandbox"] == "allow-none"
+    assert "attacker.invalid" not in hostile_preview["content"]
+    assert "file:///etc/passwd" not in hostile_preview["content"]
+
+    diff = client.get("/artifacts/reports/brief.md/diff", params={
+        "session_id": session_id, "from_version": 1, "to_version": 2,
+    })
+    assert diff.status_code == 200
+    assert "-# Draft" in diff.json()["diff"]
+    assert "+# Release brief" in diff.json()["diff"]
+    restored = client.post("/artifacts/reports/brief.md/restore", json={
+        "session_id": session_id, "version": 1, "author": "test",
+    })
+    assert restored.status_code == 200
+    assert restored.json()["version"] == 3
+    assert restored.json()["parent_version"] == 1
+    assert client.get("/artifacts/reports/brief.md", params={"session_id": session_id}).json()["content"] == "# Draft\n"
+    assert client.post("/artifacts/reports/brief.md/restore", json={
+        "session_id": other_session_id, "version": 1,
+    }).status_code == 400
+
+    # Restore the rich version before verifying all three Office writers.
+    assert client.post("/artifacts/reports/brief.md/restore", json={
+        "session_id": session_id, "version": 2, "author": "test",
+    }).status_code == 200
+    docx_response = client.get("/artifacts/reports/brief.md/export", params={
+        "session_id": session_id, "format": "docx",
+    })
+    assert docx_response.status_code == 200
+    document = Document(io.BytesIO(docx_response.content))
+    assert any(paragraph.text == "Release brief" for paragraph in document.paragraphs)
+    assert document.tables[0].cell(1, 0).text == "Team"
+
+    pptx_response = client.get("/artifacts/reports/brief.md/export", params={
+        "session_id": session_id, "format": "pptx",
+    })
+    assert pptx_response.status_code == 200
+    presentation = Presentation(io.BytesIO(pptx_response.content))
+    assert len(presentation.slides) == 2
+    assert presentation.slides[0].shapes.title.text == "Release brief"
+    assert "Speaker-only context" in presentation.slides[1].notes_slide.notes_text_frame.text
+
+    workbook_payload = json.dumps({"sheets": [{
+        "name": "安全报表", "rows": [["name", "value"], ["formula", "=HYPERLINK(\"https://attacker.invalid\")"]],
+    }]}, ensure_ascii=False)
+    assert client.post("/artifacts/write", json={
+        "session_id": session_id, "path": "reports/data.json", "content": workbook_payload,
+    }).status_code == 200
+    xlsx_response = client.get("/artifacts/reports/data.json/export", params={
+        "session_id": session_id, "format": "xlsx",
+    })
+    assert xlsx_response.status_code == 200
+    workbook = load_workbook(io.BytesIO(xlsx_response.content), data_only=False)
+    worksheet = workbook["安全报表"]
+    assert worksheet.freeze_panes == "A2"
+    assert worksheet["B2"].value.startswith("'=")
+    workbook.close()
+
+    assert client.post("/artifacts/write", json={
+        "session_id": session_id, "path": "../escape.svg", "content": "<svg/>",
+    }).status_code == 400
+    too_large = client.post("/artifacts/write", json={
+        "session_id": session_id, "path": "too-large.txt", "content": "x" * (5 * 1024 * 1024 + 1),
+    })
+    assert too_large.status_code == 400
+    assert client.get("/artifacts/reports/brief.md/export", params={
+        "session_id": session_id, "format": "exe",
+    }).status_code == 400
+
+
+def test_plugin_lifecycle_permissions_and_builtin_actions(client):
+    session_id = str(uuid4())
+    plugins = client.get("/plugins/")
+    assert plugins.status_code == 200
+    by_id = {plugin["id"]: plugin for plugin in plugins.json()}
+    assert {
+        "desktop-control",
+        "comfyui",
+        "browser-links",
+        "windows-inspector",
+        "documents",
+        "pdf",
+        "spreadsheets",
+        "presentations",
+        "github-readonly",
+        "visualize",
+        "qa-diagnostics",
+    } <= set(by_id)
+    assert all(plugin["enabled"] for plugin in by_id.values())
+
+    health = client.post("/plugins/qa-diagnostics/invoke", json={
+        "action": "workspace_health",
+        "session_id": session_id,
+        "arguments": {},
+    })
+    assert health.status_code == 200
+    assert health.json()["result"]["healthy"] is True
+    assert health.json()["result"]["artifacts"] >= 3
+
+    blocked_scheme = client.post("/plugins/browser-links/invoke", json={
+        "action": "open_url",
+        "session_id": session_id,
+        "arguments": {"url": "file:///C:/Windows/System32"},
+    })
+    assert blocked_scheme.status_code == 400
+
+    safe_link = client.post("/plugins/browser-links/invoke", json={
+        "action": "open_url",
+        "session_id": session_id,
+        "arguments": {"url": "https://example.com/docs"},
+    })
+    assert safe_link.status_code == 200
+    assert safe_link.json()["result"] == {
+        "kind": "open_external",
+        "url": "https://example.com/docs",
+    }
+
+    disabled = client.patch("/plugins/visualize", json={"enabled": False})
+    assert disabled.status_code == 200
+    assert disabled.json()["enabled"] is False
+    disabled_run = client.post("/plugins/visualize/invoke", json={
+        "action": "task_chart",
+        "session_id": session_id,
+        "arguments": {},
+    })
+    assert disabled_run.status_code == 403
+    assert client.patch("/plugins/visualize", json={"enabled": True}).status_code == 200
+
+    custom_manifest = {
+        "id": "local-note-helper",
+        "name": "本地备注助手",
+        "version": "1.0.0",
+        "description": "测试声明式插件",
+        "author": "test",
+        "category": "Productivity",
+        "permissions": [],
+        "actions": [{
+            "id": "echo_note",
+            "label": "回显备注",
+            "description": "不执行代码",
+            "handler": "template",
+            "input_schema": {
+                "type": "object",
+                "required": ["text"],
+                "properties": {"text": {"type": "string"}},
+            },
+            "output_template": "备注：${text}",
+        }],
+    }
+    installed = client.post("/plugins/", json=custom_manifest)
+    assert installed.status_code == 200
+    assert installed.json()["builtin"] is False
+    custom_run = client.post("/plugins/local-note-helper/invoke", json={
+        "action": "echo_note",
+        "session_id": session_id,
+        "arguments": {"text": "安全模板"},
+    })
+    assert custom_run.status_code == 200
+    assert custom_run.json()["result"]["text"] == "备注：安全模板"
+
+    tool_names = {tool.name for tool in SessionOrchestrator(session_id)._available_tools()}
+    assert "plugin__qa_diagnostics__workspace_health" in tool_names
+    assert "plugin__local_note_helper__echo_note" in tool_names
+    assert "plugin__desktop_control__capabilities" in tool_names
+    assert "plugin__desktop_control__get_state" in tool_names
+    assert "plugin__desktop_control__click" in tool_names
+    assert "plugin__desktop_control__type_text" in tool_names
+    assert "plugin__desktop_control__read_document" in tool_names
+    assert "plugin__desktop_control__write_document" in tool_names
+    assert "plugin__documents__export_to_local" in tool_names
+    assert "plugin__comfyui__status" in tool_names
+    assert "plugin__comfyui__generate_image" in tool_names
+    assert "plugin__comfyui__generate_video" in tool_names
+    assert "plugin__comfyui__run_workflow" in tool_names
+
+    example_path = PROJECT_ROOT / "plugins" / "local-note-helper" / ".aether-plugin" / "plugin.json"
+    PluginManifest.model_validate_json(example_path.read_text(encoding="utf-8"))
+
+    unsafe_manifest = {
+        **custom_manifest,
+        "id": "unsafe-runner",
+        "actions": [{**custom_manifest["actions"][0], "handler": "run_command"}],
+    }
+    assert client.post("/plugins/", json=unsafe_manifest).status_code == 400
+    assert client.delete("/plugins/browser-links").status_code == 403
+    assert client.delete("/plugins/local-note-helper").status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_workspace_document_can_be_read_and_exported_to_local_path(tmp_path, monkeypatch):
+    session_id = str(uuid4())
+    await plugin_registry.artifacts.write(
+        session_id,
+        "articles/example.md",
+        "workspace document content",
+        "test document bridge",
+        "test",
+    )
+
+    read_result = await plugin_registry.invoke_tool(
+        "plugin__desktop_control__read_document",
+        session_id,
+        "model:test",
+        {"path": "articles/example.md"},
+    )
+    assert read_result["result"]["source"] == "session_workspace"
+    assert read_result["result"]["data"]["text"] == "workspace document content"
+
+    monkeypatch.setenv("AETHERCHAT_TEST_AUTO_APPROVE_COMPUTER_USE", "1")
+    destination = tmp_path / "exported.md"
+    export_result = await plugin_registry.invoke_tool(
+        "plugin__documents__export_to_local",
+        session_id,
+        "model:test",
+        {"path": "articles/example.md", "destination_path": str(destination)},
+    )
+    assert destination.read_text(encoding="utf-8") == "workspace document content"
+    assert export_result["result"]["destination_path"] == str(destination.resolve())
+
+
+def test_comfyui_graphs_cover_local_image_and_video_pipelines():
+    from app.services.comfyui_service import ComfyUIService
+
+    service = ComfyUIService()
+    checkpoint = service._checkpoint_image_graph(
+        "test image", "bad image", "realvisXL_V50.safetensors",
+        768, 768, 6, 2.0, 123, "zhlanchangfu_v2.safetensors", 0.8,
+    )
+    assert checkpoint["1"]["inputs"]["ckpt_name"] == "realvisXL_V50.safetensors"
+    assert checkpoint["2"]["class_type"] == "LoraLoader"
+    assert checkpoint["8"]["class_type"] == "SaveImage"
+
+    qwen = service._qwen_image_graph(
+        "中文招牌", "模糊", "qwen_image_2512_fp8_e4m3fn.safetensors",
+        768, 768, 4, 1.5, 456, None, 1.0,
+    )
+    assert qwen["2"]["inputs"]["type"] == "qwen_image"
+    assert qwen["12"]["class_type"] == "SaveImage"
+
+    wan = service._wan_i2v_graph("slow camera move", "input.png", 480, 832, 17, 16, 4, 3.0, 789)
+    assert wan["1"]["inputs"]["unet_name"].startswith("wan2.1_i2v")
+    assert wan["12"]["class_type"] == "SaveWEBM"
+
+    ltx = service._ltx_t2v_graph("cinematic motion", 768, 512, 9, 16, 4, 3.0, 101)
+    assert ltx["1"]["inputs"]["ckpt_name"].startswith("ltx-2.3")
+    assert ltx["19"]["class_type"] == "SaveVideo"
+
+    rewired = service._rewire_bypassed_nodes({"nodes": [
+        {
+            "id": 1, "type": "Bypassed", "mode": 4,
+            "inputs": [{"name": "samples", "type": "LATENT", "link": 10}],
+            "outputs": [{"name": "LATENT", "type": "LATENT", "links": [20]}],
+        },
+        {
+            "id": 2, "type": "Consumer", "mode": 0,
+            "inputs": [{"name": "samples", "type": "LATENT", "link": 20}],
+            "outputs": [],
+        },
+    ]})
+    assert rewired["nodes"][1]["inputs"][0]["link"] == 10
+
+
+@pytest.mark.asyncio
+async def test_comfyui_result_does_not_embed_video_as_an_image(monkeypatch):
+    from app.services.comfyui_service import ComfyUIService
+
+    class FakeResponse:
+        content = b"video bytes"
+        headers = {"content-type": "video/webm"}
+
+        def raise_for_status(self):
+            return None
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, _url):
+            return FakeResponse()
+
+    service = ComfyUIService()
+    monkeypatch.setattr(service, "_client", lambda _timeout=30: FakeClient())
+    result = await service._result("prompt", [{
+        "filename": "clip.webm", "subfolder": "AetherChat", "type": "output", "kind": "videos",
+    }])
+    assert result["images"] == []
+    assert result["files"][0]["kind"] == "videos"
+    assert "image_data_url" not in result["files"][0]
+
+
+def test_protected_desktop_document_roundtrips_and_platform_capabilities(client, tmp_path, monkeypatch):
+    from datetime import date
+    from docx import Document
+    from openpyxl.cell.cell import MergedCell
+    from openpyxl import Workbook, load_workbook
+    from pptx import Presentation
+    from pptx.util import Inches
+    from pypdf import PdfReader
+    from reportlab.pdfgen import canvas
+
+    token = "offline-desktop-test-token"
+    monkeypatch.setenv("AETHERCHAT_DESKTOP_TOKEN", token)
+    headers = {"X-Aether-Desktop-Token": token}
+
+    assert client.get("/desktop/status").status_code == 403
+    status = client.get("/desktop/status", headers=headers)
+    assert status.status_code == 200
+    assert status.json()["mouse"] is (os.name == "nt")
+    assert status.json()["model_computer_use"] is (os.name == "nt")
+    assert {"docx", "xlsx", "pptx", "pdf"} <= set(status.json()["document_formats"])
+
+    markdown = tmp_path / "notes.md"
+    markdown.write_text("before", encoding="utf-8")
+    opened_text = client.post("/desktop/document/read", headers=headers, json={"path": str(markdown)})
+    assert opened_text.json()["data"]["text"] == "before"
+    saved_text = client.post("/desktop/document/write", headers=headers, json={
+        "path": str(markdown),
+        "source_path": str(markdown),
+        "data": {"text": "after"},
+        "create_backup": True,
+    })
+    assert saved_text.status_code == 200
+    assert markdown.read_text(encoding="utf-8") == "after"
+    assert Path(saved_text.json()["backup_path"]).read_text(encoding="utf-8") == "before"
+
+    new_markdown = tmp_path / "created.md"
+    created_text = client.post("/desktop/document/write", headers=headers, json={
+        "path": str(new_markdown),
+        "data": {"text": "created without a source file"},
+        "create_backup": True,
+    })
+    assert created_text.status_code == 200
+    assert created_text.json()["backup_path"] is None
+    assert new_markdown.read_text(encoding="utf-8") == "created without a source file"
+
+    missing_source_docx = client.post("/desktop/document/write", headers=headers, json={
+        "path": str(tmp_path / "new.docx"),
+        "data": {"paragraphs": ["new"]},
+        "create_backup": False,
+    })
+    assert missing_source_docx.status_code == 400
+    assert "source_path" in missing_source_docx.json()["detail"]
+
+    gb_text = tmp_path / "gb18030.txt"
+    gb_text.write_bytes("中文编码".encode("gb18030"))
+    opened_gb = client.post("/desktop/document/read", headers=headers, json={"path": str(gb_text)}).json()
+    assert opened_gb["data"] == {"text": "中文编码", "encoding": "gb18030"}
+    assert client.post("/desktop/document/write", headers=headers, json={
+        "path": str(gb_text), "source_path": str(gb_text), "data": opened_gb["data"], "create_backup": False,
+    }).status_code == 200
+    assert gb_text.read_bytes().decode("gb18030") == "中文编码"
+
+    source_docx = tmp_path / "source.docx"
+    output_docx = tmp_path / "edited.docx"
+    document = Document()
+    document.add_heading("Original title", level=1)
+    document.add_paragraph("Original body")
+    styled_paragraph = document.add_paragraph()
+    bold_run = styled_paragraph.add_run("Bold")
+    bold_run.bold = True
+    italic_run = styled_paragraph.add_run("Italic")
+    italic_run.italic = True
+    table = document.add_table(rows=1, cols=2)
+    table.cell(0, 0).text = "A"
+    table.cell(0, 1).text = "B"
+    document.save(source_docx)
+    docx_data = client.post("/desktop/document/read", headers=headers, json={"path": str(source_docx)}).json()["data"]
+    docx_data["paragraphs"][0] = "Edited title"
+    docx_data["tables"][0][0][1] = "Edited cell"
+    assert client.post("/desktop/document/write", headers=headers, json={
+        "path": str(output_docx), "source_path": str(source_docx), "data": docx_data, "create_backup": False,
+    }).status_code == 200
+    edited_docx = Document(output_docx)
+    assert edited_docx.paragraphs[0].text == "Edited title"
+    assert edited_docx.tables[0].cell(0, 1).text == "Edited cell"
+    assert [run.text for run in edited_docx.paragraphs[2].runs] == ["Bold", "Italic"]
+    assert edited_docx.paragraphs[2].runs[0].bold is True
+    assert edited_docx.paragraphs[2].runs[1].italic is True
+
+    source_xlsx = tmp_path / "source.xlsx"
+    output_xlsx = tmp_path / "edited.xlsx"
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Data"
+    worksheet["A1"] = "Original"
+    worksheet["B1"] = 2
+    worksheet["C1"] = "=B1*2"
+    worksheet["D1"] = date(2026, 7, 12)
+    worksheet.merge_cells("E1:F1")
+    worksheet["E1"] = "Merged"
+    workbook.save(source_xlsx)
+    xlsx_data = client.post("/desktop/document/read", headers=headers, json={"path": str(source_xlsx)}).json()["data"]
+    xlsx_data["sheets"][0]["values"][0][0] = "Edited"
+    xlsx_data["sheets"][0]["values"][0][1] = 3
+    assert client.post("/desktop/document/write", headers=headers, json={
+        "path": str(output_xlsx), "source_path": str(source_xlsx), "data": xlsx_data, "create_backup": False,
+    }).status_code == 200
+    edited_xlsx = load_workbook(output_xlsx, data_only=False)
+    assert edited_xlsx["Data"]["A1"].value == "Edited"
+    assert edited_xlsx["Data"]["B1"].value == 3
+    assert edited_xlsx["Data"]["C1"].value == "=B1*2"
+    stored_date = edited_xlsx["Data"]["D1"].value
+    assert (stored_date.date() if hasattr(stored_date, "date") else stored_date) == date(2026, 7, 12)
+    assert "E1:F1" in {str(item) for item in edited_xlsx["Data"].merged_cells.ranges}
+    assert isinstance(edited_xlsx["Data"]["F1"], MergedCell)
+
+    source_pptx = tmp_path / "source.pptx"
+    output_pptx = tmp_path / "edited.pptx"
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[1])
+    slide.shapes.title.text = "Original slide"
+    slide.placeholders[1].text = "Original body"
+    styled_box = slide.shapes.add_textbox(Inches(1), Inches(4), Inches(6), Inches(1))
+    styled_box.text_frame.clear()
+    styled_run_one = styled_box.text_frame.paragraphs[0].add_run()
+    styled_run_one.text = "Bold"
+    styled_run_one.font.bold = True
+    styled_run_two = styled_box.text_frame.paragraphs[0].add_run()
+    styled_run_two.text = "Italic"
+    styled_run_two.font.italic = True
+    presentation.save(source_pptx)
+    pptx_data = client.post("/desktop/document/read", headers=headers, json={"path": str(source_pptx)}).json()["data"]
+    title_entry = next(item for item in pptx_data["slides"][0]["texts"] if item["text"] == "Original slide")
+    title_entry["text"] = "Edited slide"
+    assert client.post("/desktop/document/write", headers=headers, json={
+        "path": str(output_pptx), "source_path": str(source_pptx), "data": pptx_data, "create_backup": False,
+    }).status_code == 200
+    edited_pptx = Presentation(output_pptx)
+    assert edited_pptx.slides[0].shapes.title.text == "Edited slide"
+    edited_styled_box = next(shape for shape in edited_pptx.slides[0].shapes if shape.name == styled_box.name)
+    edited_runs = edited_styled_box.text_frame.paragraphs[0].runs
+    assert [run.text for run in edited_runs] == ["Bold", "Italic"]
+    assert edited_runs[0].font.bold is True
+    assert edited_runs[1].font.italic is True
+
+    source_pdf = tmp_path / "source.pdf"
+    output_pdf = tmp_path / "edited.pdf"
+    pdf_canvas = canvas.Canvas(str(source_pdf))
+    pdf_canvas.drawString(72, 720, "Original PDF")
+    pdf_canvas.save()
+    source_pdf_metadata = PdfReader(source_pdf).metadata
+    pdf_data = client.post("/desktop/document/read", headers=headers, json={"path": str(source_pdf)}).json()["data"]
+    pdf_data["metadata"]["title"] = "Edited PDF"
+    pdf_data["append_note"] = "AetherChat test note"
+    assert client.post("/desktop/document/write", headers=headers, json={
+        "path": str(output_pdf), "source_path": str(source_pdf), "data": pdf_data, "create_backup": False,
+    }).status_code == 200
+    edited_pdf = PdfReader(output_pdf)
+    assert len(edited_pdf.pages) == 2
+    assert edited_pdf.metadata.title == "Edited PDF"
+    assert edited_pdf.metadata.get("/Producer") == source_pdf_metadata.get("/Producer")
+
+    paged_pdf = tmp_path / "paged-note.pdf"
+    pdf_data["append_note"] = "\n".join(f"Long note line {index}" for index in range(180))
+    assert client.post("/desktop/document/write", headers=headers, json={
+        "path": str(paged_pdf), "source_path": str(source_pdf), "data": pdf_data, "create_backup": False,
+    }).status_code == 200
+    assert len(PdfReader(paged_pdf).pages) > 2
+
+    current_mouse = client.post("/desktop/mouse", headers=headers, json={"action": "get"})
+    if os.name == "nt":
+        assert current_mouse.status_code == 200
+        assert {"x", "y"} <= set(current_mouse.json()["position"])
+        invalid_move = client.post("/desktop/mouse", headers=headers, json={
+            "action": "move", "x": 2_000_000_000, "y": 2_000_000_000,
+        })
+        assert invalid_move.status_code == 400
+    else:
+        assert current_mouse.status_code == 400
+        assert "unavailable on Linux" in current_mouse.json()["detail"]
+
+    rejected_unc = client.post("/desktop/document/read", headers=headers, json={"path": r"\\server\share\file.docx"})
+    assert rejected_unc.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_computer_use_can_observe_windows_without_performing_actions():
+    if os.name != "nt":
+        pytest.skip("Windows-only Computer Use runtime")
+    from app.services.computer_use_service import computer_use_service
+
+    windows = await computer_use_service.list_windows()
+    assert isinstance(windows["windows"], list)
+    desktop = await computer_use_service.get_state(
+        include_screenshot=False,
+        include_accessibility=True,
+    )
+    assert desktop["snapshot_id"]
+    assert isinstance(desktop["accessibility_tree"], str)
+    if windows["windows"]:
+        window = windows["windows"][0]
+        state = await computer_use_service.get_state(
+            window_id=window["window_id"],
+            include_screenshot=False,
+            include_accessibility=True,
+        )
+        assert state["window"]["window_id"] == window["window_id"]
+        assert isinstance(state["elements"], list)

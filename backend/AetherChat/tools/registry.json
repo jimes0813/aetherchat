@@ -1,0 +1,325 @@
+{
+  "version": 1,
+  "tools": [
+    {
+      "name": "list_tasks",
+      "description": "列出当前会话任务",
+      "category": "project",
+      "owner": "system",
+      "kind": "internal",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_template": "已读取任务列表。",
+      "enabled": true,
+      "session_id": null,
+      "id": "cad8d72e-aaca-5b23-8d23-cb86904465f5",
+      "created_at": "2026-07-15T04:15:17.646265+00:00",
+      "updated_at": "2026-07-15T04:15:17.646265+00:00"
+    },
+    {
+      "name": "create_task",
+      "description": "在当前会话创建任务",
+      "category": "project",
+      "owner": "system",
+      "kind": "internal",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "integer"
+          }
+        }
+      },
+      "output_template": "工具 ${name} 已执行，输入：${input}",
+      "enabled": true,
+      "session_id": null,
+      "id": "171d3a87-4b64-5b92-bde3-a02546edf442",
+      "created_at": "2026-07-15T04:15:17.646285+00:00",
+      "updated_at": "2026-07-15T04:15:17.646285+00:00"
+    },
+    {
+      "name": "claim_task",
+      "description": "认领当前会话中的待办任务",
+      "category": "project",
+      "owner": "system",
+      "kind": "internal",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "task_id"
+        ],
+        "properties": {
+          "task_id": {
+            "type": "string"
+          }
+        }
+      },
+      "output_template": "工具 ${name} 已执行，输入：${input}",
+      "enabled": true,
+      "session_id": null,
+      "id": "525ef3c9-6941-5e06-b7e2-81557e3c774c",
+      "created_at": "2026-07-15T04:15:17.646292+00:00",
+      "updated_at": "2026-07-15T04:15:17.646292+00:00"
+    },
+    {
+      "name": "subdivide_task",
+      "description": "把当前会话任务拆分为多个待办子任务",
+      "category": "project",
+      "owner": "system",
+      "kind": "internal",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "task_id",
+          "subtasks"
+        ],
+        "properties": {
+          "task_id": {
+            "type": "string"
+          },
+          "subtasks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "output_template": "工具 ${name} 已执行，输入：${input}",
+      "enabled": true,
+      "session_id": null,
+      "id": "dc22a446-0190-5fec-a929-11ae1cbce729",
+      "created_at": "2026-07-15T04:15:17.646297+00:00",
+      "updated_at": "2026-07-15T04:15:17.646297+00:00"
+    },
+    {
+      "name": "get_progress_summary",
+      "description": "汇总当前会话各任务状态",
+      "category": "project",
+      "owner": "system",
+      "kind": "internal",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_template": "工具 ${name} 已执行，输入：${input}",
+      "enabled": true,
+      "session_id": null,
+      "id": "70a798fe-a02d-5b77-80a5-9c0d16c118dd",
+      "created_at": "2026-07-15T04:15:17.646302+00:00",
+      "updated_at": "2026-07-15T04:15:17.646302+00:00"
+    },
+    {
+      "name": "read_artifact",
+      "description": "读取当前会话工件内容",
+      "category": "artifact",
+      "owner": "system",
+      "kind": "internal",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "output_template": "工具 ${name} 已执行，输入：${input}",
+      "enabled": true,
+      "session_id": null,
+      "id": "75e129f4-8797-55f4-b088-3776c50b9333",
+      "created_at": "2026-07-15T04:15:17.646306+00:00",
+      "updated_at": "2026-07-15T04:15:17.646306+00:00"
+    },
+    {
+      "name": "write_artifact",
+      "description": "写入当前会话工件并保存完整版本",
+      "category": "artifact",
+      "owner": "system",
+      "kind": "internal",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "path",
+          "content"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "commit_message": {
+            "type": "string"
+          }
+        }
+      },
+      "output_template": "工具 ${name} 已执行，输入：${input}",
+      "enabled": true,
+      "session_id": null,
+      "id": "1c64b029-0979-58c3-96e1-db8be776e377",
+      "created_at": "2026-07-15T04:15:17.646311+00:00",
+      "updated_at": "2026-07-15T04:15:17.646311+00:00"
+    },
+    {
+      "name": "run_command",
+      "description": "在受控沙箱中运行命令",
+      "category": "sandbox",
+      "owner": "system",
+      "kind": "internal",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "cmd"
+        ],
+        "properties": {
+          "cmd": {
+            "type": "string"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "timeout": {
+            "type": "integer"
+          }
+        }
+      },
+      "output_template": "工具 ${name} 已执行，输入：${input}",
+      "enabled": true,
+      "session_id": null,
+      "id": "35fcf9ce-52ab-5097-b041-d2f5cd008637",
+      "created_at": "2026-07-15T04:15:17.646319+00:00",
+      "updated_at": "2026-07-15T04:15:17.646319+00:00"
+    },
+    {
+      "name": "create_merge_proposal",
+      "description": "为当前会话创建合并提案",
+      "category": "merge",
+      "owner": "system",
+      "kind": "internal",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "artifact_path",
+          "rationale"
+        ],
+        "properties": {
+          "artifact_path": {
+            "type": "string"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "merge_rule": {
+            "type": "string",
+            "enum": [
+              "two_votes",
+              "facilitator",
+              "manual_confirmation"
+            ]
+          }
+        }
+      },
+      "output_template": "工具 ${name} 已执行，输入：${input}",
+      "enabled": true,
+      "session_id": null,
+      "id": "227a1b1d-e50b-5b5e-ba13-c49a86ecd141",
+      "created_at": "2026-07-15T04:15:17.646324+00:00",
+      "updated_at": "2026-07-15T04:15:17.646324+00:00"
+    },
+    {
+      "name": "propose_merge",
+      "description": "为当前会话创建合并提案",
+      "category": "merge",
+      "owner": "system",
+      "kind": "internal",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "artifact_path",
+          "rationale"
+        ],
+        "properties": {
+          "artifact_path": {
+            "type": "string"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "merge_rule": {
+            "type": "string"
+          }
+        }
+      },
+      "output_template": "工具 ${name} 已执行，输入：${input}",
+      "enabled": true,
+      "session_id": null,
+      "id": "6c7a1b14-194c-5c9e-88d4-3229ebd73e82",
+      "created_at": "2026-07-15T04:15:17.646328+00:00",
+      "updated_at": "2026-07-15T04:15:17.646328+00:00"
+    },
+    {
+      "name": "vote_on_proposal",
+      "description": "对当前会话的合并提案投票",
+      "category": "merge",
+      "owner": "system",
+      "kind": "internal",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "proposal_id",
+          "approve"
+        ],
+        "properties": {
+          "proposal_id": {
+            "type": "string"
+          },
+          "approve": {
+            "type": "boolean"
+          }
+        }
+      },
+      "output_template": "工具 ${name} 已执行，输入：${input}",
+      "enabled": true,
+      "session_id": null,
+      "id": "3af74387-fdff-5097-96bc-ad10dc5ded65",
+      "created_at": "2026-07-15T04:15:17.646332+00:00",
+      "updated_at": "2026-07-15T04:15:17.646332+00:00"
+    },
+    {
+      "name": "summarize_cn",
+      "description": "将输入内容整理成中文摘要",
+      "category": "model",
+      "owner": "system",
+      "kind": "template",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "output_template": "中文摘要：${text}",
+      "enabled": true,
+      "session_id": null,
+      "id": "b201900e-6650-512b-9077-e5146d0401eb",
+      "created_at": "2026-07-15T04:15:17.646337+00:00",
+      "updated_at": "2026-07-15T04:15:17.646337+00:00"
+    }
+  ]
+}

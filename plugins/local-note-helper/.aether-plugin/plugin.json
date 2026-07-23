@@ -1,0 +1,29 @@
+{
+  "id": "local-note-helper",
+  "name": "本地备注助手",
+  "version": "1.0.0",
+  "description": "把输入内容格式化为本地备注。",
+  "author": "AetherChat User",
+  "category": "Productivity",
+  "icon": "FileText",
+  "permissions": [],
+  "actions": [
+    {
+      "id": "echo_note",
+      "label": "生成备注",
+      "description": "声明式文本模板，不执行代码。",
+      "handler": "template",
+      "input_schema": {
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "备注内容"
+          }
+        }
+      },
+      "output_template": "备注：${text}"
+    }
+  ]
+}

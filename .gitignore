@@ -1,0 +1,62 @@
+# ── Python ──────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.Python
+
+# 虚拟环境（任意命名，含本项目的 .venv-linux）
+.venv/
+.venv-*/
+venv/
+env/
+
+# ── Node / 前端 ─────────────────────────────────────────
+node_modules/
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ── 构建产物（均可由源码重新生成）──────────────────────
+# 后端 PyInstaller 输出
+backend/build/
+backend/dist/
+# electron 打包时拷入的后端副本（aetherchat-backend + _internal）
+frontend/backend/
+# 前端构建与发布产物（AppImage / deb / nsis / SBOM 等）
+frontend/dist/
+frontend/release/
+# CI 生成的发布元数据
+release-meta/
+
+# ── 静态检查 / 测试缓存 ─────────────────────────────────
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ── 运行/调试输出 ───────────────────────────────────────
+# Playwright CLI 调试转储与截图输出
+.playwright-cli/
+output/
+playwright-report/
+test-results/
+
+# ── 环境变量与密钥（务必不入库）────────────────────────
+.env
+.env.*
+# 但保留示例模板
+!.env.example
+# 发布验签私钥/证书等（CI 从 secret 注入，不应提交）
+*.pem
+*.key
+*.p12
+*.pfx
+
+# ── 编辑器 / 操作系统 ───────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
