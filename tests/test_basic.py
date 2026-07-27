@@ -630,7 +630,14 @@ def _initialize_test_git_repository(root: Path) -> str:
         ["git", "-C", str(root), "config", "user.name", "AetherChat Tests"],
         check=True,
     )
-    (root / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    # The workspace service deliberately ignores global Git configuration.
+    # Keep this fixture independent from Git for Windows' global autocrlf
+    # default so the committed bytes and working tree remain identical.
+    subprocess.run(
+        ["git", "-C", str(root), "config", "core.autocrlf", "false"],
+        check=True,
+    )
+    (root / "app.py").write_bytes(b"VALUE = 1\n")
     subprocess.run(["git", "-C", str(root), "add", "app.py"], check=True)
     subprocess.run(
         ["git", "-C", str(root), "commit", "-qm", "initial"],

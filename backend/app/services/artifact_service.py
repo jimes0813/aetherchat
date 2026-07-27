@@ -176,7 +176,10 @@ class ArtifactService:
         await self.prepare_checkout(session_id)
         full_path, normalized, repo_path = self._artifact_path(session_id, path)
         full_path.parent.mkdir(parents=True, exist_ok=True)
-        full_path.write_text(content, encoding="utf-8")
+        # Preserve the exact UTF-8 snapshot on every platform. Text-mode
+        # writes would translate LF to CRLF on Windows and could translate a
+        # restored CRLF snapshot a second time, producing extra blank lines.
+        full_path.write_bytes(encoded)
         entry = self._append_history(
             repo_path,
             normalized,
