@@ -6,7 +6,7 @@ import redis.asyncio as redis
 
 
 class RedisLock:
-    def __init__(self, redis_client: redis.Redis, key: str, timeout: int = 30):
+    def __init__(self, redis_client: redis.Redis | None, key: str, timeout: int = 30):
         self.redis = redis_client
         self.key = f"lock:{key}"
         self.timeout = timeout
@@ -22,7 +22,8 @@ class RedisLock:
         if not self.redis:
             return
         current = await self.redis.get(self.key)
-        if current and current.decode() == self.lock_value:
+        current_value = current.decode() if isinstance(current, bytes) else current
+        if current_value == self.lock_value:
             await self.redis.delete(self.key)
 
 @asynccontextmanager

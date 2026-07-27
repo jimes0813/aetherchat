@@ -80,11 +80,13 @@ class AgentRunService:
             "read_document", "inventory", "status", "git_status",
             "workspace_health", "task_chart",
         }
-        if name.startswith("plugin__") and name.rsplit("__", 1)[-1] in read_only_suffixes:
-            return False
+        is_read_only_plugin = (
+            name.startswith("plugin__")
+            and name.rsplit("__", 1)[-1] in read_only_suffixes
+        )
         # Remote MCP tools are treated as side effects unless the connector can
         # eventually provide an explicit read-only annotation.
-        return True
+        return not is_read_only_plugin
 
     def is_side_effecting_tool(self, tool_name: str) -> bool:
         return self._is_side_effecting_tool(tool_name)

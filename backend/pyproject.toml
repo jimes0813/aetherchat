@@ -1,7 +1,7 @@
 # 后端静态检查配置（ruff + mypy）。
 # 接入策略见 docs/OPTIMIZATION_ROADMAP.md：
 #   - ruff 为“硬门禁”，当前存量违规通过下方 ignore 债务清单 grandfather，逐条修复后删除对应行。
-#   - mypy 为“非阻塞”，115 个存量问题在 CI 日志可见但不挡合并，分批清零后去掉 CI 里的 continue-on-error。
+#   - mypy 为“硬门禁”，存量问题已清零，并检查未注解函数体与 Any 返回泄漏。
 
 [tool.ruff]
 line-length = 120
@@ -19,21 +19,9 @@ select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "PIE"]
 # datetime.UTC、TimeoutError 等，行为等价、测试 77 passed 验证）。
 # B023（循环变量闭包捕获）经人工核查全部为误报，已在源码逐行 `# noqa: B023` 标注原因，
 # 因此 B023 保持强制启用，不在此豁免——未来其它闭包若命中会被拦下。
-# 以下为剩余、需人工判断（非自动修）的规则；修复后删除对应行，目标清空本列表。方括号为剩余数。
+# 非格式类债务已清零；E501 单独保留，等待一次可审阅的全量格式化。
 ignore = [
-    "E501",    # [~660] 行过长——待格式化收敛（可 `ruff format` 处理）
-    "SIM105",  # [6]   try/except/pass → contextlib.suppress
-    "B905",    # [4]   zip() 未显式 strict=
-    "B007",    # [2]   未使用的循环控制变量
-    "SIM117",  # [2]   多个 with 可合并
-    "B008",    # [1]   默认参数中调用函数
-    "B904",    # [1]   except 内 raise 未接 `from`
-    "PIE810",  # [1]   多次 startswith/endswith 可合并为元组
-    "SIM102",  # [1]   可合并的嵌套 if
-    "SIM103",  # [1]   可直接 return 条件
-    "SIM108",  # [1]   if-else 可用三元表达式
-    "SIM118",  # [1]   用 `in dict` 取代 `in dict.keys()`
-    "UP022",   # [1]
+    "E501",    # [67] 行过长——待格式化收敛（可 `ruff format` 处理）
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -43,11 +31,11 @@ ignore = [
 [tool.mypy]
 python_version = "3.12"
 files = ["app"]
-# 渐进式：先不 strict。第三方库多无 stub，忽略缺失 import 以聚焦自有代码。
+# 渐进式：第三方库多无 stub，忽略缺失 import 以聚焦自有代码。
 ignore_missing_imports = true
 warn_unused_ignores = true
 warn_redundant_casts = true
-# 存量 115 个错误通过 CI 的 continue-on-error 暴露；分批清零后再逐步打开下列开关：
-#   check_untyped_defs = true
+check_untyped_defs = true
+warn_return_any = true
+# 所有函数补全签名后再打开：
 #   disallow_untyped_defs = true
-#   warn_return_any = true

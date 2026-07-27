@@ -6,20 +6,33 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from typing import Any
 
-try:
-    from openai import AsyncOpenAI, DefaultAsyncHttpxClient
-except ImportError:
-    AsyncOpenAI = None
-    DefaultAsyncHttpxClient = None
-
-try:
-    from anthropic import AsyncAnthropic
-except ImportError:
-    AsyncAnthropic = None
-
 from ..models.schemas import ChatMessage, ProviderConfig, ToolDefinition
 from ..services.local_model_runtime import local_model_runtime
 from ..services.vault import vault
+
+AsyncOpenAI: Any
+DefaultAsyncHttpxClient: Any
+try:
+    from openai import (
+        AsyncOpenAI as _AsyncOpenAI,
+    )
+    from openai import (
+        DefaultAsyncHttpxClient as _DefaultAsyncHttpxClient,
+    )
+except ImportError:
+    AsyncOpenAI = None
+    DefaultAsyncHttpxClient = None
+else:
+    AsyncOpenAI = _AsyncOpenAI
+    DefaultAsyncHttpxClient = _DefaultAsyncHttpxClient
+
+AsyncAnthropic: Any
+try:
+    from anthropic import AsyncAnthropic as _AsyncAnthropic
+except ImportError:
+    AsyncAnthropic = None
+else:
+    AsyncAnthropic = _AsyncAnthropic
 
 _DATA_IMAGE_RE = re.compile(r"^data:(image/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$")
 
@@ -159,35 +172,35 @@ def _anthropic_messages(messages: list[ChatMessage]) -> tuple[str, list[dict[str
             continue
 
         if message.role == "assistant" and message.tool_calls:
-            blocks: list[dict[str, Any]] = []
+            assistant_blocks: list[dict[str, Any]] = []
             if message.content:
-                blocks.append({"type": "text", "text": message.content})
-            blocks.extend({
+                assistant_blocks.append({"type": "text", "text": message.content})
+            assistant_blocks.extend({
                 "type": "tool_use",
                 "id": call.id,
                 "name": call.name,
                 "input": call.arguments,
             } for call in message.tool_calls)
-            converted.append({"role": "assistant", "content": blocks})
+            converted.append({"role": "assistant", "content": assistant_blocks})
             index += 1
             continue
 
         if message.role == "tool":
             # Anthropic requires all results for parallel calls in one user
             # message immediately after the assistant tool_use blocks.
-            blocks: list[dict[str, Any]] = []
+            tool_result_blocks: list[dict[str, Any]] = []
             while index < len(messages) and messages[index].role == "tool":
                 tool_message = messages[index]
                 if tool_message.tool_call_id:
-                    blocks.append(_anthropic_tool_result(tool_message))
+                    tool_result_blocks.append(_anthropic_tool_result(tool_message))
                 else:
                     legacy_content = _anthropic_content(tool_message)
                     if isinstance(legacy_content, str):
-                        blocks.append({"type": "text", "text": legacy_content})
+                        tool_result_blocks.append({"type": "text", "text": legacy_content})
                     else:
-                        blocks.extend(legacy_content)
+                        tool_result_blocks.extend(legacy_content)
                 index += 1
-            converted.append({"role": "user", "content": blocks})
+            converted.append({"role": "user", "content": tool_result_blocks})
             continue
 
         converted.append({
@@ -251,7 +264,7 @@ class LLMProvider(ABC):
         self.api_key = vault.get_key(config.api_key_ref) or os.getenv(config.api_key_ref, "")
 
     @abstractmethod
-    async def stream_chat(
+    def stream_chat(
         self,
         messages: list[ChatMessage],
         tools: list[ToolDefinition] | None = None,
@@ -433,7 +446,7 @@ class OpenAICompatProvider(LLMProvider):
             return "https://api.x.ai/v1"
         if name == "qwen" or model.startswith("qwen"):
             return "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        if name == "kimi" or model.startswith("kimi") or model.startswith("moonshot"):
+        if name == "kimi" or model.startswith(("kimi", "moonshot")):
             return "https://api.moonshot.cn/v1"
         return None
 
@@ -515,9 +528,9 @@ class AnthropicProvider(LLMProvider):
                             }
                     if event.type == "content_block_delta":
                         delta = getattr(event, "delta", None)
-                        text = getattr(delta, "text", None)
-                        if text:
-                            yield {"delta": text, "usage": None}
+                        delta_text = getattr(delta, "text", None)
+                        if delta_text:
+                            yield {"delta": delta_text, "usage": None}
                         partial = getattr(delta, "partial_json", None)
                         if partial is not None:
                             index = int(getattr(event, "index", 0) or 0)

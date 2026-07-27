@@ -31,7 +31,7 @@ from .services.local_auth import demo_token_response, require_api_access
 from .services.local_model_runtime import local_model_runtime
 
 # 全局 Redis
-redis_client: redis.Redis = None
+redis_client: redis.Redis | None = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -89,7 +89,7 @@ async def login_for_token():
     return demo_token_response()
 
 # PR12: Simple rate limiting (per IP)
-rate_limit_store = defaultdict(list)
+rate_limit_store: defaultdict[str, list[float]] = defaultdict(list)
 RATE_LIMIT = 60  # requests per minute
 RATE_WINDOW = 60
 

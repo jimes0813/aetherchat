@@ -119,8 +119,7 @@ class GitWorkspaceService:
             result = subprocess.run(
                 command,
                 input=input_bytes,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 timeout=timeout,
                 check=False,
                 env=cls._git_environment(),

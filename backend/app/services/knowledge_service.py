@@ -446,7 +446,7 @@ class KnowledgeService:
         stored.frombytes(blob)
         if len(stored) != len(query_vector):
             return 0.0
-        return sum(left * right for left, right in zip(query_vector, stored))
+        return sum(left * right for left, right in zip(query_vector, stored, strict=True))
 
     def context_for_attachments(
         self, session_id: str, attachment_ids: Iterable[str], query: str, max_chars: int = 12_000
@@ -522,10 +522,13 @@ class KnowledgeService:
             image.load()
             image.thumbnail((8192, 8192))
             image_format = "JPEG" if extension in {".jpg", ".jpeg"} else extension[1:].upper()
-            if image_format == "JPEG" and image.mode not in {"RGB", "L"}:
-                image = image.convert("RGB")
+            safe_image = (
+                image.convert("RGB")
+                if image_format == "JPEG" and image.mode not in {"RGB", "L"}
+                else image.copy()
+            )
             save_options = {"quality": 92, "optimize": True} if image_format in {"JPEG", "WEBP"} else {"optimize": True}
-            image.save(output, format=image_format, **save_options)
+            safe_image.save(output, format=image_format, **save_options)
         sanitized = output.getvalue()
         if len(sanitized) > MAX_UPLOAD_BYTES:
             raise KnowledgeError("规范化后的图片仍超过 25 MB 限制")

@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from uuid import UUID, uuid4
 
+import redis.asyncio as redis
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -11,7 +12,7 @@ from ..models.schemas import Task
 from ..services.chat_database import chat_database
 from ..services.redis_lock import with_lock
 
-redis_client = None
+redis_client: redis.Redis | None = None
 
 router = APIRouter()
 

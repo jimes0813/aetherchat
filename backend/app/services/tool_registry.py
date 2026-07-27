@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -489,7 +490,11 @@ class ToolRegistry:
             self._save_runs_unlocked()
         return deepcopy(run)
 
-    def list_runs(self, session_id: str | None = None, limit: int | None = 50) -> list[dict[str, Any]]:
+    def list_runs(
+        self,
+        session_id: str | None = None,
+        limit: int | None = 50,
+    ) -> builtins.list[dict[str, Any]]:
         self._reload_runs()
         runs = self.runs
         if session_id is not None:
@@ -532,7 +537,7 @@ class ToolRegistry:
             return {str(key): value for key, value in payload.items() if isinstance(value, dict)}
         return {}
 
-    def _load_runs_unlocked(self) -> list[dict[str, Any]]:
+    def _load_runs_unlocked(self) -> builtins.list[dict[str, Any]]:
         if not self.runs_path.exists():
             return []
         try:

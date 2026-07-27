@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import builtins
 import csv
 import hashlib
 import io
@@ -396,8 +397,7 @@ class ArtifactService:
                 if image_match.group(1):
                     document.add_paragraph(image_match.group(1), style="Caption")
             elif re.fullmatch(r"\[citation:\s*.+\]", line.strip(), flags=re.IGNORECASE):
-                citation = document.add_paragraph(line.strip()[1:-1])
-                citation.style = "Quote"
+                document.add_paragraph(line.strip()[1:-1], style="Quote")
             elif re.match(r"^#{1,6}\s+", line):
                 hashes, text = line.split(" ", 1)
                 document.add_heading(text.strip(), level=min(len(hashes), 6))
@@ -441,7 +441,7 @@ class ArtifactService:
                         sheets.append((str(item.get("name", "Sheet")), item["rows"][:5000]))
             elif isinstance(parsed, list):
                 if parsed and all(isinstance(row, dict) for row in parsed):
-                    keys = list(dict.fromkeys(key for row in parsed for key in row.keys()))[:100]
+                    keys = list(dict.fromkeys(key for row in parsed for key in row))[:100]
                     sheets.append(("Data", [keys] + [[row.get(key) for key in keys] for row in parsed[:4999]]))
                 else:
                     sheets.append(("Data", [[value] if not isinstance(value, list) else value for value in parsed[:5000]]))
@@ -544,7 +544,7 @@ class ArtifactService:
             raise ArtifactPathError("Office artifact exceeds the 5 MB preview limit")
         if suffix == ".docx":
             from docx import Document
-            document = Document(path)
+            document = Document(str(path))
             return "\n".join(paragraph.text for paragraph in document.paragraphs if paragraph.text)[:MAX_PREVIEW_CHARS]
         if suffix == ".xlsx":
             from openpyxl import load_workbook
@@ -557,7 +557,7 @@ class ArtifactService:
             workbook.close()
             return "\n".join(lines)[:MAX_PREVIEW_CHARS]
         from pptx import Presentation
-        presentation = Presentation(path)
+        presentation = Presentation(str(path))
         return "\n\n".join(
             f"## Slide {index + 1}\n" + "\n".join(shape.text for shape in slide.shapes if hasattr(shape, "text") and shape.text)
             for index, slide in enumerate(presentation.slides[:100])
@@ -818,7 +818,7 @@ class MergeProposalStore:
             raise ValueError(f"Unsupported merge_rule: {rule}")
         return normalized
 
-    def _load_unlocked(self) -> list[dict[str, Any]]:
+    def _load_unlocked(self) -> builtins.list[dict[str, Any]]:
         if not self.storage_path.exists():
             return []
         try:
@@ -829,7 +829,7 @@ class MergeProposalStore:
             payload = payload.get("proposals", [])
         return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
 
-    def _save_unlocked(self, proposals: list[dict[str, Any]]) -> None:
+    def _save_unlocked(self, proposals: builtins.list[dict[str, Any]]) -> None:
         payload = {"version": 1, "proposals": proposals}
         temp_path = self.storage_path.with_suffix(self.storage_path.suffix + ".tmp")
         temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

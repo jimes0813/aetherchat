@@ -1,0 +1,1 @@
+"""AetherChat backend application package."""

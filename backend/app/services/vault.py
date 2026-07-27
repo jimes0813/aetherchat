@@ -1,17 +1,22 @@
 import base64
 import json
 import os
+from contextlib import suppress
 from pathlib import Path
+from types import ModuleType
 
 try:
     import win32crypt
 except ImportError:  # pragma: no cover - non-Windows development
     win32crypt = None
 
+system_keyring: ModuleType | None
 try:
-    import keyring as system_keyring
+    import keyring as _system_keyring
 except ImportError:  # pragma: no cover - reported when a key is saved
     system_keyring = None
+else:
+    system_keyring = _system_keyring
 
 
 DPAPI_PREFIX = "dpapi:"
@@ -87,10 +92,8 @@ class SimpleVault:
             else dict.fromkeys(sorted(self._refs), KEYRING_MARKER)
         )
         self.path.write_text(json.dumps(stored, ensure_ascii=False, indent=2), encoding="utf-8")
-        try:
+        with suppress(OSError):
             self.path.chmod(0o600)
-        except OSError:
-            pass
 
     def _encode_value(self, value: str) -> str:
         if win32crypt is None or os.name != "nt":
@@ -114,7 +117,7 @@ class SimpleVault:
         try:
             encrypted = base64.b64decode(stored[len(DPAPI_PREFIX):], validate=True)
             decrypted = win32crypt.CryptUnprotectData(encrypted, None, None, None, 0)[1]
-            return decrypted.decode("utf-8")
+            return str(decrypted.decode("utf-8"))
         except Exception:
             return None
 
@@ -127,7 +130,8 @@ class SimpleVault:
         if system_keyring is None or ref not in self._refs:
             return None
         try:
-            return system_keyring.get_password(KEYRING_SERVICE, ref)
+            stored = system_keyring.get_password(KEYRING_SERVICE, ref)
+            return stored if isinstance(stored, str) else None
         except Exception:
             return None
 
@@ -151,10 +155,8 @@ class SimpleVault:
             self._save()
             return
         if system_keyring is not None and ref in self._refs:
-            try:
+            with suppress(Exception):
                 system_keyring.delete_password(KEYRING_SERVICE, ref)
-            except Exception:
-                pass
         self._refs.discard(ref)
         self._save()
 

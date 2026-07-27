@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from contextlib import suppress
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -80,14 +81,10 @@ def _run_container(
         }
     finally:
         if container is not None:
-            try:
+            with suppress(Exception):
                 container.remove(force=True)
-            except Exception:
-                pass
-        try:
+        with suppress(Exception):
             client.close()
-        except Exception:
-            pass
 
 
 async def execute_in_sandbox(

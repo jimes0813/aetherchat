@@ -35,7 +35,10 @@ class ComfyUIService:
             async with self._client(timeout) as client:
                 response = await client.get(f"{self.base_url}{path}")
                 response.raise_for_status()
-                return response.json()
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise ComfyUIError("ComfyUI returned a non-object JSON response")
+                return payload
         except (httpx.HTTPError, ValueError) as exc:
             raise ComfyUIError(f"ComfyUI request failed: {exc}") from exc
 
@@ -610,8 +613,8 @@ class ComfyUIService:
         raise ComfyUIError(f"ComfyUI generation timed out after {timeout} seconds (prompt_id={prompt_id})")
 
     async def _result(self, prompt_id: str, files: list[dict[str, Any]]) -> dict[str, Any]:
-        result_files = []
-        image_data_urls = []
+        result_files: list[dict[str, Any]] = []
+        image_data_urls: list[str] = []
         async with self._client(180) as client:
             for item in files:
                 query = (

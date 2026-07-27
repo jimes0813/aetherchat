@@ -7,6 +7,7 @@ import io
 import os
 import time
 from collections import OrderedDict
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -33,13 +34,14 @@ class _Snapshot:
 def _initialize_dpi_awareness() -> None:
     if os.name != "nt":
         return
+    windll = getattr(ctypes, "windll", None)
+    if windll is None:
+        return
     try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        windll.shcore.SetProcessDpiAwareness(2)
     except Exception:
-        try:
-            ctypes.windll.user32.SetProcessDPIAware()
-        except Exception:
-            pass
+        with suppress(Exception):
+            windll.user32.SetProcessDPIAware()
 
 
 _initialize_dpi_awareness()
@@ -431,7 +433,11 @@ class ComputerUseService:
         bitmap.CreateCompatibleBitmap(source_dc, width, height)
         memory_dc.SelectObject(bitmap)
         try:
-            printed = ctypes.windll.user32.PrintWindow(hwnd, memory_dc.GetSafeHdc(), 2)
+            printed = ctypes.windll.user32.PrintWindow(  # type: ignore[attr-defined]
+                hwnd,
+                memory_dc.GetSafeHdc(),
+                2,
+            )
             if not printed:
                 raise ComputerUseError("PrintWindow did not return an image")
             info = bitmap.GetInfo()
@@ -638,7 +644,7 @@ class ComputerUseService:
 
         key_event_unicode = 0x0004
         key_event_up = 0x0002
-        send_input = ctypes.windll.user32.SendInput
+        send_input = ctypes.windll.user32.SendInput  # type: ignore[attr-defined]
         send_input.argtypes = (wintypes.UINT, ctypes.POINTER(Input), ctypes.c_int)
         send_input.restype = wintypes.UINT
         encoded = text.encode("utf-16-le")
@@ -750,7 +756,7 @@ class ComputerUseService:
         path = Path(executable).expanduser().resolve(strict=True)
         if not path.is_file() or path.suffix.lower() not in {".exe", ".lnk"}:
             raise ComputerUseError("Only an existing .exe or .lnk may be launched")
-        os.startfile(str(path))
+        os.startfile(str(path))  # type: ignore[attr-defined]
         return {"launched": True, "display_name": path.name}
 
     @staticmethod

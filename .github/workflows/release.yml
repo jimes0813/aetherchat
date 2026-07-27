@@ -75,9 +75,8 @@ jobs:
         if: matrix.target == 'linux-x64'
         working-directory: backend
         run: ruff check app
-      - name: Backend type check (mypy, non-blocking)
+      - name: Backend type check (mypy)
         if: matrix.target == 'linux-x64'
-        continue-on-error: true
         working-directory: backend
         run: mypy
       - name: Backend tests

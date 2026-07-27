@@ -1,4 +1,5 @@
 import asyncio
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, File, HTTPException, Query, Response, UploadFile, status
@@ -9,7 +10,7 @@ router = APIRouter()
 
 
 @router.post("/{session_id}/attachments", status_code=status.HTTP_201_CREATED)
-async def upload_attachment(session_id: UUID, file: UploadFile = File(...)):
+async def upload_attachment(session_id: UUID, file: Annotated[UploadFile, File()]):
     data = bytearray()
     while chunk := await file.read(1024 * 1024):
         data.extend(chunk)

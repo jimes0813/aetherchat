@@ -1,6 +1,6 @@
 # AetherChat 优化推进记录
 
-更新日期：2026-07-19
+更新日期：2026-07-27
 
 ## 已完成：阶段 0 / 第一批 P0
 
@@ -271,8 +271,10 @@
 配置：`backend/pyproject.toml`；工具依赖：`backend/requirements-dev.txt`（`ruff==0.14.4` / `mypy==1.13.0`，与运行时依赖同样固定版本）。CI 在 `linux-x64` 目标上执行（避免跨矩阵重复）。
 
 - [x] **ruff = 硬门禁**。规则集 `E,F,W,I,UP,B,C4,SIM,PIE`，`line-length=120`。CI `ruff check app` 绿灯（exit 0）。
-- [x] **mypy = 非阻塞**。CI 步骤设 `continue-on-error: true`，115 个存量类型问题在日志可见但不挡合并。
+- [x] **mypy = 硬门禁**。115 个存量类型问题已清零；CI 不再使用 `continue-on-error`。
 - [x] **自动修可自动修项**。`ruff check --fix`（仅安全修复）清除 189 处：import 排序(`I001`)、typing 现代化(`UP006`/`UP045`)、`datetime.UTC`(`UP017`)、内置 `TimeoutError`(`UP041`)、弃用 import(`UP035`)、行尾空白等。改动 39/42 个 `app` 文件，**行为等价**：`pytest` 77 passed / 1 skipped，与接入前基线一致。
 - [x] **B023 人工核查完成**。6 处“循环变量被闭包捕获”经核查**全部为误报**：闭包均在同一迭代内同步消费、不逃逸（orchestrator `remember_tool_result` 5 处 + comfyui `internal_link` 1 处）。已在源码逐行 `# noqa: B023` 并注明原因；**B023 保持强制启用**，未来其它闭包命中会被拦下。
-- [ ] **收敛剩余 ruff 债务**（`pyproject.toml` 的 `ignore` 现仅剩需人工判断项）：`SIM105`×6、`B905`×4、`B007`×2、`SIM117`×2，及 `B008`/`B904`/`PIE810`/`SIM102`/`SIM103`/`SIM108`/`SIM118`/`UP022` 各 1，外加 `E501`（行长，待 `ruff format`）。
-- [ ] **清零 mypy 存量后转硬门禁**。分批消化 115 个错误（`misc` 53 / `attr-defined` 14 / `assignment`·`arg-type` 各 13 为主），达标后打开 `pyproject.toml` 中预留的 `check_untyped_defs` 等开关并去掉 CI 的 `continue-on-error`。
+- [x] **清零非格式类 ruff 债务**。已处理 `SIM105`、`B905`、`B007`、`SIM117`、`B008`、`B904`、`PIE810`、`SIM102`、`SIM103`、`SIM108`、`SIM118`、`UP022`；配置中只剩 `E501`。
+- [ ] **收敛 E501 行长**。当前 67 处，等待一次独立、可审阅的格式化改动。
+- [x] **清零 mypy 存量并转硬门禁**。新增明确包边界，修复 Optional、平台 API、第三方返回值和容器类型；48 个源码文件 0 issue，并启用 `check_untyped_defs` 与 `warn_return_any`。
+- [ ] **补全所有函数签名**。完成后启用 `disallow_untyped_defs`，进一步收紧类型边界。

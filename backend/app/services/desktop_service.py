@@ -8,6 +8,7 @@ import os
 import secrets
 import shutil
 import textwrap
+from collections.abc import Mapping
 from datetime import UTC, date, datetime
 from datetime import time as datetime_time
 from pathlib import Path
@@ -96,25 +97,27 @@ def _set_paragraph_text_preserving_runs(paragraph: Any, new_text: str) -> None:
 
     assigned: list[int | None] = [None] * len(new_text)
     matcher = difflib.SequenceMatcher(a=old_text, b=new_text, autojunk=False)
-    for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
+    for tag, old_start, _old_end, new_start, new_end in matcher.get_opcodes():
         if tag == "equal":
             for offset in range(new_end - new_start):
                 assigned[new_start + offset] = old_character_runs[old_start + offset]
             continue
         if new_start == new_end:
             continue
-        if old_start < len(old_character_runs):
-            style_index = old_character_runs[old_start]
-        else:
-            style_index = old_character_runs[-1]
+        style_index = (
+            old_character_runs[old_start]
+            if old_start < len(old_character_runs)
+            else old_character_runs[-1]
+        )
         for position in range(new_start, new_end):
             assigned[position] = style_index
 
-    buckets = [[] for _ in runs]
+    buckets: list[list[str]] = [[] for _ in runs]
     for position, character in enumerate(new_text):
-        run_index = assigned[position] if assigned[position] is not None else 0
+        assigned_index = assigned[position]
+        run_index = assigned_index if assigned_index is not None else 0
         buckets[run_index].append(character)
-    for run, characters in zip(runs, buckets):
+    for run, characters in zip(runs, buckets, strict=True):
         run.text = "".join(characters)
 
 
@@ -213,7 +216,7 @@ class DesktopDocumentService:
         if extension == ".docx":
             from docx import Document
 
-            document = Document(path)
+            document = Document(str(path))
             tables = [
                 [[cell.text for cell in row.cells] for row in table.rows]
                 for table in document.tables
@@ -249,7 +252,7 @@ class DesktopDocumentService:
         if extension == ".pptx":
             from pptx import Presentation
 
-            presentation = Presentation(path)
+            presentation = Presentation(str(path))
             slides = []
             for slide_index, slide in enumerate(presentation.slides):
                 texts = []
@@ -269,7 +272,7 @@ class DesktopDocumentService:
             extracted = []
             for page in reader.pages[:100]:
                 extracted.append(page.extract_text() or "")
-            metadata = reader.metadata or {}
+            metadata: Mapping[str, Any] = reader.metadata or {}
             return {
                 **base,
                 "editor_mode": "pdf_note",
@@ -355,7 +358,7 @@ class DesktopDocumentService:
     def _write_docx(source: Path, destination: Path, data: dict[str, Any]) -> None:
         from docx import Document
 
-        document = Document(source)
+        document = Document(str(source))
         paragraphs = data.get("paragraphs") or []
         if not isinstance(paragraphs, list):
             raise DesktopCapabilityError("DOCX paragraphs must be an array")
@@ -385,9 +388,9 @@ class DesktopDocumentService:
                         raise DesktopCapabilityError(
                             "Changing the paragraph count inside a DOCX table cell is not supported"
                         )
-                    for paragraph, part in zip(cell.paragraphs, parts):
+                    for paragraph, part in zip(cell.paragraphs, parts, strict=True):
                         _set_paragraph_text_preserving_runs(paragraph, part)
-        document.save(destination)
+        document.save(str(destination))
 
     @staticmethod
     def _write_xlsx(source: Path, destination: Path, data: dict[str, Any]) -> None:
@@ -433,7 +436,7 @@ class DesktopDocumentService:
     def _write_pptx(source: Path, destination: Path, data: dict[str, Any]) -> None:
         from pptx import Presentation
 
-        presentation = Presentation(source)
+        presentation = Presentation(str(source))
         slides = data.get("slides") or []
         if not isinstance(slides, list):
             raise DesktopCapabilityError("PPTX slides must be an array")
@@ -460,9 +463,9 @@ class DesktopDocumentService:
                             raise DesktopCapabilityError(
                                 "Changing the paragraph count inside a PPTX text shape is not supported"
                             )
-                        for paragraph, paragraph_text in zip(paragraphs, new_paragraphs):
+                        for paragraph, paragraph_text in zip(paragraphs, new_paragraphs, strict=True):
                             _set_paragraph_text_preserving_runs(paragraph, paragraph_text)
-        presentation.save(destination)
+        presentation.save(str(destination))
 
     @staticmethod
     def _write_pdf(source: Path, destination: Path, data: dict[str, Any]) -> None:

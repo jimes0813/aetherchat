@@ -29,6 +29,12 @@ async def ws_endpoint(
     active_run_id: str | None = None
     active_run: dict | None = None
 
+    def expected_revision(action: dict) -> int:
+        value = action.get("expected_revision")
+        if value is None:
+            raise ValueError("expected_revision is required")
+        return int(value)
+
     async def send_payload(payload: dict):
         async with send_lock:
             await websocket.send_text(json.dumps(payload, ensure_ascii=False))
@@ -91,7 +97,7 @@ async def ws_endpoint(
             action, run = agent_run_service.prepare_confirmed_plan(
                 run_id=run_id,
                 session_id=session_id,
-                expected_revision=int(action.get("expected_revision")),
+                expected_revision=expected_revision(action),
             )
         else:
             action, run = agent_run_service.prepare_retry(run_id, session_id)
@@ -197,7 +203,7 @@ async def ws_endpoint(
                     updated = agent_run_service.edit_plan(
                         run_id=str(action.get("run_id") or ""),
                         session_id=session_id,
-                        expected_revision=int(action.get("expected_revision")),
+                        expected_revision=expected_revision(action),
                         goal_spec=action.get("goal_spec"),
                         plan_steps=action.get("plan_steps"),
                         change_summary=str(
@@ -222,7 +228,7 @@ async def ws_endpoint(
                     rejected = agent_run_service.reject_plan(
                         run_id=str(action.get("run_id") or ""),
                         session_id=session_id,
-                        expected_revision=int(action.get("expected_revision")),
+                        expected_revision=expected_revision(action),
                     )
                     await send_payload({
                         "type": "plan_rejected",

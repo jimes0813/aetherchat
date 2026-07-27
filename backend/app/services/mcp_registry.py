@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import json
 import os
 import re
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict
 from urllib.parse import urlparse
 
 import httpx
@@ -19,7 +20,7 @@ from mcp.client.auth import OAuthClientProvider, TokenStorage
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import AnyUrl, BaseModel, Field, field_validator, model_validator
 
 from ..models.schemas import ToolDefinition
 from .vault import SimpleVault, vault
@@ -90,6 +91,14 @@ class MCPConnectionPatch(BaseModel):
     clear_token: bool = False
 
 
+class OAuthFlow(TypedDict):
+    redirect_event: asyncio.Event
+    callback_event: asyncio.Event
+    authorization_url: str | None
+    code: str | None
+    state: str | None
+
+
 class VaultOAuthStorage(TokenStorage):
     def __init__(self, credential_vault: SimpleVault, connection_id: str):
         self.vault = credential_vault
@@ -137,7 +146,7 @@ class MCPRegistry:
         self.vault = credential_vault or vault
         self._lock = RLock()
         self._connections: dict[str, dict[str, Any]] = {}
-        self._oauth_flows: dict[str, dict[str, Any]] = {}
+        self._oauth_flows: dict[str, OAuthFlow] = {}
         self._load()
 
     def _load(self) -> None:
@@ -161,10 +170,8 @@ class MCPRegistry:
         for connection in self._connections.values():
             rows.append({key: value for key, value in connection.items() if key not in {"status", "error", "has_token"}})
         temporary.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
-        try:
+        with suppress(OSError):
             temporary.chmod(0o600)
-        except OSError:
-            pass
         temporary.replace(self.path)
 
     @staticmethod
@@ -255,7 +262,7 @@ class MCPRegistry:
         return item
 
     @asynccontextmanager
-    async def _session(self, connection: dict[str, Any]) -> AsyncIterator[ClientSession]:
+    async def _session(self, connection: dict[str, Any]) -> AsyncIterator[tuple[ClientSession, Any]]:
         if connection["transport"] == "stdio":
             cwd = None
             if connection.get("cwd"):
@@ -269,8 +276,7 @@ class MCPRegistry:
             )
             async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
                 initialized = await session.initialize()
-                session._aether_initialize_result = initialized
-                yield session
+                yield session, initialized
             return
 
         headers = {"Accept": "application/json, text/event-stream"}
@@ -286,12 +292,19 @@ class MCPRegistry:
                 raise PermissionError("MCP 连接器尚未完成 OAuth 授权")
             oauth_provider = self._oauth_provider(connection, redirect_uri)
         timeout = httpx.Timeout(30.0, connect=10.0)
-        async with httpx.AsyncClient(headers=headers, timeout=timeout, follow_redirects=False, trust_env=False, auth=oauth_provider) as client:
-            async with streamable_http_client(connection["url"], http_client=client) as (read, write, _):
-                async with ClientSession(read, write) as session:
-                    initialized = await session.initialize()
-                    session._aether_initialize_result = initialized
-                    yield session
+        async with (
+            httpx.AsyncClient(
+                headers=headers,
+                timeout=timeout,
+                follow_redirects=False,
+                trust_env=False,
+                auth=oauth_provider,
+            ) as client,
+            streamable_http_client(connection["url"], http_client=client) as (read, write, _),
+            ClientSession(read, write) as session,
+        ):
+            initialized = await session.initialize()
+            yield session, initialized
 
     def _oauth_provider(
         self,
@@ -301,7 +314,7 @@ class MCPRegistry:
         callback_handler=None,
     ) -> OAuthClientProvider:
         metadata = OAuthClientMetadata(
-            redirect_uris=[redirect_uri],
+            redirect_uris=[AnyUrl(redirect_uri)],
             client_name="AetherChat Desktop",
             software_id="aetherchat-desktop",
             software_version="0.2.0",
@@ -330,7 +343,7 @@ class MCPRegistry:
         callback_url = self._validate_oauth_callback(callback_url, connection_id)
         if connection_id in self._oauth_flows:
             raise ValueError("此连接器已有进行中的 OAuth 授权")
-        flow = {
+        flow: OAuthFlow = {
             "redirect_event": asyncio.Event(), "callback_event": asyncio.Event(),
             "authorization_url": None, "code": None, "state": None,
         }
@@ -348,35 +361,42 @@ class MCPRegistry:
             try:
                 provider = self._oauth_provider(connection, callback_url, redirect_handler, callback_handler)
                 timeout = httpx.Timeout(30.0, connect=10.0)
-                async with httpx.AsyncClient(auth=provider, timeout=timeout, follow_redirects=False, trust_env=False) as client:
-                    async with streamable_http_client(connection["url"], http_client=client) as (read, write, _):
-                        async with ClientSession(read, write) as session:
-                            initialized = await session.initialize()
-                            tools_result = await session.list_tools()
-                            tools = [{
-                                "name": tool.name, "title": getattr(tool, "title", None),
-                                "description": tool.description or "",
-                                "input_schema": tool.inputSchema or {"type": "object", "properties": {}},
-                            } for tool in tools_result.tools]
-                            exposed = [self.tool_name(connection_id, tool["name"]) for tool in tools]
-                            if len(exposed) != len(set(exposed)):
-                                raise ValueError("MCP 服务器工具名称规范化后发生冲突")
-                            with self._lock:
-                                current = self._connections[connection_id]
-                                current["tools"] = tools
-                                current["server_info"] = initialized.serverInfo.model_dump(mode="json")
-                                current["oauth_redirect_uri"] = callback_url
-                                current["status"] = "ready"
-                                current["error"] = None
-                                current["updated_at"] = _utc_now()
-                                self._save()
+                async with (
+                    httpx.AsyncClient(
+                        auth=provider,
+                        timeout=timeout,
+                        follow_redirects=False,
+                        trust_env=False,
+                    ) as client,
+                    streamable_http_client(connection["url"], http_client=client) as (read, write, _),
+                    ClientSession(read, write) as session,
+                ):
+                    initialized = await session.initialize()
+                    tools_result = await session.list_tools()
+                    tools: builtins.list[dict[str, Any]] = [{
+                        "name": tool.name, "title": getattr(tool, "title", None),
+                        "description": tool.description or "",
+                        "input_schema": tool.inputSchema or {"type": "object", "properties": {}},
+                    } for tool in tools_result.tools]
+                    exposed = [self.tool_name(connection_id, tool["name"]) for tool in tools]
+                    if len(exposed) != len(set(exposed)):
+                        raise ValueError("MCP 服务器工具名称规范化后发生冲突")
+                    with self._lock:
+                        active_connection = self._connections[connection_id]
+                        active_connection["tools"] = tools
+                        active_connection["server_info"] = initialized.serverInfo.model_dump(mode="json")
+                        active_connection["oauth_redirect_uri"] = callback_url
+                        active_connection["status"] = "ready"
+                        active_connection["error"] = None
+                        active_connection["updated_at"] = _utc_now()
+                        self._save()
             except Exception as exc:
                 with self._lock:
-                    current = self._connections.get(connection_id)
-                    if current:
-                        current["status"] = "error"
-                        current["error"] = f"OAuth 授权失败：{str(exc)[:1800]}"
-                        current["updated_at"] = _utc_now()
+                    failed_connection = self._connections.get(connection_id)
+                    if failed_connection:
+                        failed_connection["status"] = "error"
+                        failed_connection["error"] = f"OAuth 授权失败：{str(exc)[:1800]}"
+                        failed_connection["updated_at"] = _utc_now()
                         self._save()
             finally:
                 self._oauth_flows.pop(connection_id, None)
@@ -407,9 +427,9 @@ class MCPRegistry:
         connection = self._connection(connection_id)
         try:
             async with asyncio.timeout(35):
-                async with self._session(connection) as session:
+                async with self._session(connection) as (session, initialized):
                     result = await session.list_tools()
-                    tools = [
+                    tools: builtins.list[dict[str, Any]] = [
                         {
                             "name": tool.name,
                             "title": getattr(tool, "title", None),
@@ -421,7 +441,6 @@ class MCPRegistry:
                     exposed_names = [self.tool_name(connection_id, tool["name"]) for tool in tools]
                     if len(exposed_names) != len(set(exposed_names)):
                         raise ValueError("MCP 服务器工具名称规范化后发生冲突，已拒绝暴露")
-                    initialized = getattr(session, "_aether_initialize_result", None)
                     server_info = initialized.serverInfo.model_dump(mode="json") if initialized else {}
         except Exception as exc:
             with self._lock:
@@ -441,8 +460,8 @@ class MCPRegistry:
             self._save()
         return self.get(connection_id) or {}
 
-    def tool_definitions(self) -> list[ToolDefinition]:
-        definitions = []
+    def tool_definitions(self) -> builtins.list[ToolDefinition]:
+        definitions: builtins.list[ToolDefinition] = []
         for connection in self.list():
             if not connection["enabled"] or connection["status"] != "ready":
                 continue
@@ -478,7 +497,7 @@ class MCPRegistry:
         if allowed is not None and remote_name not in allowed:
             raise PermissionError("此 MCP 工具未获准暴露给模型")
         async with asyncio.timeout(120):
-            async with self._session(connection) as session:
+            async with self._session(connection) as (session, _initialized):
                 result = await session.call_tool(remote_name, arguments)
         content = []
         for item in result.content[:50]:

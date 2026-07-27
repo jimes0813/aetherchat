@@ -1,9 +1,9 @@
 import asyncio
 import json
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from ..models.schemas import ChatMessage, Message, ProviderConfig, ToolCall, ToolDefinition
 from ..providers.base import LLMProvider, get_provider
@@ -111,7 +111,7 @@ class SessionOrchestrator:
     def record_steer_message(self, content: str) -> dict:
         message = Message(
             id=uuid4(),
-            session_id=self.session_id,
+            session_id=UUID(self.session_id),
             author_model="user",
             role="user",
             content=str(content).strip(),
@@ -159,8 +159,9 @@ class SessionOrchestrator:
             for steer in pending_steers:
                 if isinstance(steer, dict):
                     self.queue_steer(steer)
-        if action.get("mode"):
-            self.mode = action.get("mode")
+        requested_mode = action.get("mode")
+        if isinstance(requested_mode, str):
+            self.mode = requested_mode
             self.facilitator.mode = self.mode
         raw_attachment_ids = action.get("attachment_ids") or []
         if not isinstance(raw_attachment_ids, list) or len(raw_attachment_ids) > 10:
@@ -199,16 +200,15 @@ class SessionOrchestrator:
         targets = self._parse_targets(content, raw_targets)
 
         # Mode-aware filtering
-        if self.mode == "roundtable":
-            if targets:
-                index = self._roundtable_cursor % len(targets)
-                targets = [targets[index]]
-                self._roundtable_cursor += 1
+        if self.mode == "roundtable" and targets:
+            index = self._roundtable_cursor % len(targets)
+            targets = [targets[index]]
+            self._roundtable_cursor += 1
 
         if not action.get("_aether_retry"):
             user_message = Message(
                 id=uuid4(),
-                session_id=self.session_id,
+                session_id=UUID(self.session_id),
                 author_model="user",
                 role="user",
                 content=content,
@@ -336,7 +336,10 @@ class SessionOrchestrator:
             provider: LLMProvider,
             execution: dict | None = None,
         ):
-            self._running_tasks[name] = asyncio.current_task()
+            current_task = asyncio.current_task()
+            if current_task is None:  # pragma: no cover - only possible outside a running loop
+                raise RuntimeError("Provider task is not attached to an event loop")
+            self._running_tasks[name] = current_task
             execution = execution or {}
             plan_step_id = str(execution.get("plan_step_id") or "") or None
             workspace_id = str(execution.get("workspace_id") or "") or None
@@ -689,8 +692,9 @@ class SessionOrchestrator:
                             )
                             await queue.put({"type": "tool_run", "run": run})
                             continue
-                        if call_record := tool_call_records.get(tool_call.id):
-                            self.run_service.update_tool_call_status(call_record["id"], "running")
+                        active_call_record = tool_call_records.get(tool_call.id)
+                        if active_call_record is not None:
+                            self.run_service.update_tool_call_status(active_call_record["id"], "running")
                         plugin_match = plugin_registry.resolve_tool_name(tool_name)
                         if plugin_match is not None:
                             started_at = datetime.now(UTC).isoformat()
@@ -894,7 +898,7 @@ class SessionOrchestrator:
                     if publish_message:
                         message = Message(
                             id=uuid4(),
-                            session_id=self.session_id,
+                            session_id=UUID(self.session_id),
                             author_model=name,
                             role="assistant",
                             content=final_content,
@@ -936,7 +940,7 @@ class SessionOrchestrator:
                     if publish_message:
                         message = Message(
                             id=uuid4(),
-                            session_id=self.session_id,
+                            session_id=UUID(self.session_id),
                             author_model=name,
                             role="assistant",
                             content=final_content,
@@ -1819,7 +1823,7 @@ class SessionOrchestrator:
         return restored, next_tool_round
 
     @staticmethod
-    def _normalize_tool_calls(calls: list[dict | ToolCall]) -> list[ToolCall]:
+    def _normalize_tool_calls(calls: Sequence[dict | ToolCall]) -> list[ToolCall]:
         normalized: list[ToolCall] = []
         seen_ids: set[str] = set()
         for raw_call in calls:
@@ -1949,7 +1953,7 @@ class SessionOrchestrator:
     async def start_model_streams(self, prompt: str):
         # 并行启动多个模型
         tasks = []
-        for name, prov in self.providers.items():
+        for prov in self.providers.values():
             tasks.append(self._run_one(prov, prompt))
         await asyncio.gather(*tasks)
 

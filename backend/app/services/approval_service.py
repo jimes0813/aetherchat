@@ -10,6 +10,11 @@ from uuid import uuid4
 ApprovalDecision = Literal["allow_once", "allow_session", "deny"]
 
 
+def _resolve_future(future: asyncio.Future[str], decision: str) -> None:
+    if not future.done():
+        future.set_result(decision)
+
+
 @dataclass
 class PendingApproval:
     id: str
@@ -119,7 +124,9 @@ class ApprovalService:
                 self._session_grants.add((pending.session_id, pending.risk))
             if not pending.future.done():
                 pending.future.get_loop().call_soon_threadsafe(
-                    lambda: None if pending.future.done() else pending.future.set_result(decision)
+                    _resolve_future,
+                    pending.future,
+                    decision,
                 )
         return {"id": pending.id, "decision": decision, "resolved": True}
 
@@ -131,7 +138,9 @@ class ApprovalService:
         for item in pending:
             if not item.future.done():
                 item.future.get_loop().call_soon_threadsafe(
-                    lambda future=item.future: None if future.done() else future.set_result("deny")
+                    _resolve_future,
+                    item.future,
+                    "deny",
                 )
 
 

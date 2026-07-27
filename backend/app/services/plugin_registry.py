@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import json
 import subprocess
 from copy import deepcopy
@@ -528,8 +529,8 @@ class PluginRegistry:
             "created_at": _utc_now(),
         }
 
-    def tool_definitions(self) -> list[ToolDefinition]:
-        definitions: list[ToolDefinition] = []
+    def tool_definitions(self) -> builtins.list[ToolDefinition]:
+        definitions: builtins.list[ToolDefinition] = []
         for plugin in self.list():
             if not plugin["enabled"]:
                 continue
@@ -889,12 +890,12 @@ class PluginRegistry:
         }
 
     @staticmethod
-    def _visible_windows() -> list[dict[str, Any]]:
+    def _visible_windows() -> builtins.list[dict[str, Any]]:
         try:
             import win32gui
         except ImportError:
             return []
-        windows: list[dict[str, Any]] = []
+        windows: builtins.list[dict[str, Any]] = []
 
         def collect(hwnd: int, _extra: Any) -> None:
             if win32gui.IsWindowVisible(hwnd):
@@ -912,7 +913,7 @@ class PluginRegistry:
         for name in schema.get("required") or []:
             if name not in arguments or arguments[name] is None or arguments[name] == "":
                 raise ValueError(f"Missing required argument: {name}")
-        expected_types = {
+        expected_types: dict[str, type[Any] | tuple[type[Any], ...]] = {
             "string": str,
             "boolean": bool,
             "object": dict,
@@ -928,14 +929,14 @@ class PluginRegistry:
             if expected and (not isinstance(value, expected) or spec["type"] in {"integer", "number"} and isinstance(value, bool)):
                 raise ValueError(f"Invalid argument type for {name}: expected {spec['type']}")
 
-    def _load_custom(self) -> list[PluginManifest]:
+    def _load_custom(self) -> builtins.list[PluginManifest]:
         with _lock_for(self.registry_path):
             return self._load_custom_unlocked()
 
-    def _load_custom_unlocked(self) -> list[PluginManifest]:
+    def _load_custom_unlocked(self) -> builtins.list[PluginManifest]:
         payload = self._read_json(self.registry_path)
         rows = payload.get("plugins", []) if isinstance(payload, dict) else []
-        plugins = []
+        plugins: builtins.list[PluginManifest] = []
         for row in rows:
             try:
                 plugins.append(PluginManifest.model_validate(row))

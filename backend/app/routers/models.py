@@ -39,7 +39,7 @@ async def create_model(payload: ModelCreate):
     try:
         return model_registry.create(payload)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/{name}/verify")

@@ -4,13 +4,15 @@ import asyncio
 from typing import Any
 from uuid import UUID, uuid4
 
+import redis.asyncio as redis
+
 from ..sandbox.executor import execute_in_sandbox
 from .artifact_service import ArtifactService, MergeProposalStore, _utc_now
 from .redis_lock import with_lock
 
 artifact_service = ArtifactService()
 merge_store = MergeProposalStore()
-redis_client = None
+redis_client: redis.Redis | None = None
 
 
 async def execute_tool(
@@ -164,7 +166,7 @@ async def execute_tool(
             created = [
                 Task(
                     id=uuid4(),
-                    session_id=session_id,
+                    session_id=UUID(str(session_id)),
                     title=title,
                     description=f"拆分自：{parent.title}",
                     status="backlog",
@@ -195,7 +197,7 @@ async def execute_tool(
                 raise ValueError("title is required")
             task = Task(
                 id=uuid4(),
-                session_id=session_id,
+                session_id=UUID(str(session_id)),
                 title=title,
                 description=str(arguments.get("description") or ""),
                 status="backlog",
@@ -224,14 +226,14 @@ async def execute_tool(
             current = merge_store.get(proposal_id)
             if current is None or str(current.get("session_id")) != str(session_id):
                 raise KeyError("Merge proposal not found")
-            proposal, accepted = merge_store.vote(
+            updated_proposal, accepted = merge_store.vote(
                 proposal_id,
                 voter=str(arguments.get("voter") or caller),
                 approve=bool(arguments.get("approve", True)),
                 role=arguments.get("role"),
                 manual_confirmation=bool(arguments.get("manual_confirmation", False)),
             )
-            output = {"proposal": proposal, "vote_accepted": accepted}
+            output = {"proposal": updated_proposal, "vote_accepted": accepted}
 
         else:
             raise KeyError(f"Unknown internal tool: {name}")
