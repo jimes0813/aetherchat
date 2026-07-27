@@ -14,7 +14,8 @@ if (-not (Test-Path (Join-Path $InstallDir "AetherChat.exe"))) { throw "Installe
 New-Item -ItemType Directory -Force $SentinelDir | Out-Null
 Set-Content -NoNewline $Sentinel "preserve-user-data"
 
-$Upgrade = Start-Process -FilePath $Installer -ArgumentList $Arguments -Wait -PassThru
+$UpgradeArguments = "--updated /S /D=$InstallDir"
+$Upgrade = Start-Process -FilePath $Installer -ArgumentList $UpgradeArguments -Wait -PassThru
 if ($Upgrade.ExitCode -ne 0) { throw "Silent upgrade failed with $($Upgrade.ExitCode)" }
 if (-not (Test-Path $Sentinel) -or (Get-Content -Raw $Sentinel) -ne "preserve-user-data") {
   throw "Upgrade modified user data"

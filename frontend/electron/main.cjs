@@ -6,6 +6,7 @@ const fs = require('fs');
 const http = require('http');
 const net = require('net');
 const { stageUpdate } = require('./update-verifier.cjs');
+const { launchWindowsInstaller } = require('./update-launcher.cjs');
 
 const isDev = !app.isPackaged;
 let backendProcess = null;
@@ -68,8 +69,13 @@ async function checkForSignedUpdate() {
       buttons: ['启动安装程序', '稍后'], defaultId: 1, cancelId: 1, noLink: true,
     });
     if (install.response === 0) {
-      const error = await shell.openPath(staged.path);
-      if (error) throw new Error(error);
+      if (process.platform === 'win32') {
+        await launchWindowsInstaller(staged.path);
+        app.quit();
+      } else {
+        const error = await shell.openPath(staged.path);
+        if (error) throw new Error(error);
+      }
     }
   } catch (error) {
     await dialog.showMessageBox(owner, {
