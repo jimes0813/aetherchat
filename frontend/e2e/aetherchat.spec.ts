@@ -158,7 +158,17 @@ const pluginFixtures = [
 async function installMockWebSocket(page: Page, autoOpen = true) {
   await page.addInitScript(({ mockSessionId, shouldOpen }) => {
     const actions: unknown[] = [];
-    (window as typeof window & { __aetherWsActions?: unknown[] }).__aetherWsActions = actions;
+    let activeSocket: { onmessage: ((event: MessageEvent) => void) | null } | null = null;
+    const testWindow = window as typeof window & {
+      __aetherWsActions?: unknown[];
+      __emitAetherWs?: (payload: unknown) => void;
+    };
+    testWindow.__aetherWsActions = actions;
+    testWindow.__emitAetherWs = (payload: unknown) => {
+      activeSocket?.onmessage?.(new MessageEvent('message', {
+        data: JSON.stringify(payload),
+      }));
+    };
 
     class MockWebSocket {
       static readonly CONNECTING = 0;
@@ -175,6 +185,7 @@ async function installMockWebSocket(page: Page, autoOpen = true) {
 
       constructor(url: string | URL) {
         this.url = String(url);
+        activeSocket = this;
         if (!shouldOpen) return;
         queueMicrotask(() => {
           this.readyState = MockWebSocket.OPEN;
@@ -420,6 +431,14 @@ async function installMockApi(page: Page) {
     decisions: ['决定使用 SQLite'],
     preferences: ['优先使用中文'],
     open_items: ['下一步补充恢复测试'],
+    entities: [{
+      key: 'asset:comfyui:cover',
+      kind: 'generated_asset',
+      value: 'generated/comfyui/cover.metadata.json',
+      source: 'model:qwen:generate_image',
+      metadata: { seed: 42 },
+      updated_at: '2026-07-15T00:00:00Z',
+    }],
     message_count: 2,
     updated_at: '2026-07-15T00:00:00Z',
   };
@@ -664,6 +683,50 @@ async function installMockApi(page: Page) {
       return json(route, sessionMemory);
     }
     if (pathname === '/agent-runs' && request.method() === 'GET') return json(route, agentRuns);
+    if (/^\/agent-runs\/[^/]+$/.test(pathname) && request.method() === 'GET') {
+      const runId = pathname.split('/')[2];
+      const run = agentRuns.find((item) => item.id === runId) || agentRuns[0];
+      return json(route, {
+        ...run,
+        events: [
+          {
+            id: 'audit-event-1',
+            run_id: runId,
+            step_id: 'plan-2',
+            event_type: 'tool_call',
+            payload: {
+              model: 'deepseek',
+              tool_name: 'plugin__comfyui__run_workflow',
+              status: 'running',
+            },
+            created_at: '2026-07-15T00:00:30Z',
+          },
+          {
+            id: 'audit-event-2',
+            run_id: runId,
+            step_id: 'plan-2',
+            event_type: 'message_complete',
+            payload: {
+              author_model: 'deepseek',
+              content_preview: '已将工作流参数交给 ComfyUI。',
+            },
+            created_at: '2026-07-15T00:00:36Z',
+          },
+        ],
+        tool_calls: [{
+          id: 'audit-tool-1',
+          run_id: runId,
+          model: 'deepseek',
+          tool_name: 'plugin__comfyui__run_workflow',
+          status: 'completed',
+          arguments: { name: 'cover', overrides: { 6: { seed: 42 } } },
+          result: { prompt_id: 'cover' },
+          error: null,
+          created_at: '2026-07-15T00:00:30Z',
+          updated_at: '2026-07-15T00:00:35Z',
+        }],
+      });
+    }
     if (pathname === '/mcp-connections' && request.method() === 'GET') return json(route, mcpConnections);
     if (pathname === '/mcp-connections' && request.method() === 'POST') {
       const payload = request.postDataJSON();
@@ -816,6 +879,26 @@ test.describe('AetherChat Frontend E2E', () => {
     await expect(page.getByText('已连接', { exact: true })).toBeVisible();
   });
 
+  test('shows the active Agent and current tool in the live header', async ({ page }) => {
+    await page.evaluate(() => (
+      window as typeof window & { __emitAetherWs?: (payload: unknown) => void }
+    ).__emitAetherWs?.({
+      type: 'delta',
+      model: 'deepseek',
+      delta: '正在分析',
+    }));
+    await expect(page.getByText('deepseek · 正在生成', { exact: true })).toBeVisible();
+    await page.evaluate(() => (
+      window as typeof window & { __emitAetherWs?: (payload: unknown) => void }
+    ).__emitAetherWs?.({
+      type: 'tool_call',
+      model: 'deepseek',
+      tool_name: 'plugin__comfyui__run_workflow',
+    }));
+    await expect(page.getByText('deepseek · 调用 plugin__comfyui__run_workflow', { exact: true })).toBeVisible();
+    await expect(page.getByText(/预计剩余：估算中/)).toBeVisible();
+  });
+
   test('switches collaboration modes', async ({ page }) => {
     await expect(page.getByText('当前: project')).toBeVisible();
     await page.getByRole('button', { name: '休闲' }).click();
@@ -930,6 +1013,22 @@ test.describe('AetherChat Frontend E2E', () => {
     await expect(page.getByText('记忆已保存，下一次模型调用会使用更新内容')).toBeVisible();
   });
 
+  test('shows and removes structured Agent shared entities', async ({ page }) => {
+    await page.getByRole('button', { name: '记忆' }).click();
+    await expect(page.getByText('asset:comfyui:cover', { exact: true })).toBeVisible();
+    await expect(page.getByText('generated/comfyui/cover.metadata.json', { exact: true })).toBeVisible();
+
+    const patchRequest = page.waitForRequest((request) => (
+      request.url().endsWith(`/memory/${sessionId}`)
+      && request.method() === 'PATCH'
+      && Array.isArray(request.postDataJSON().entities)
+    ));
+    await page.getByRole('button', { name: '删除共享实体 asset:comfyui:cover' }).click();
+    const request = await patchRequest;
+    expect(request.postDataJSON().entities).toEqual([]);
+    await expect(page.getByText('共享实体 asset:comfyui:cover 已删除')).toBeVisible();
+  });
+
   test('renders markdown blocks without injecting raw HTML', async ({ page }) => {
     await page.locator('[data-aether-composer]').fill('## 安全标题\n\n|项目|状态|\n|---|---|\n|授权|完成|\n\n<script>window.__unsafe = true</script>');
     await page.getByRole('button', { name: '发送' }).click();
@@ -954,7 +1053,20 @@ test.describe('AetherChat Frontend E2E', () => {
     await expect(page.getByText('评审', { exact: true })).toBeVisible();
     await expect(page.getByText('已合并', { exact: true })).toBeVisible();
     await expect(page.getByText('已完成', { exact: true })).toBeVisible();
-    await expect(page.getByText('已完成任务')).toBeVisible();
+    await expect(page.getByText('已完成任务', { exact: true })).toBeVisible();
+  });
+
+  test('creates a task with explicit dependencies', async ({ page }) => {
+    await page.getByTitle('任务').click();
+    await page.getByLabel('前置依赖（可多选）').selectOption(['task-done', 'task-merged']);
+    await page.getByPlaceholder('新建任务').fill('发布图片说明');
+    const createRequest = page.waitForRequest((request) => (
+      new URL(request.url()).pathname === '/tasks/'
+      && request.method() === 'POST'
+    ));
+    await page.getByRole('button', { name: '添加', exact: true }).click();
+    const request = await createRequest;
+    expect(request.postDataJSON().depends_on).toEqual(['task-merged', 'task-done']);
   });
 
   test('opens the command palette with Ctrl+K and navigates to a panel', async ({ page }) => {
@@ -1036,6 +1148,18 @@ test.describe('AetherChat Frontend E2E', () => {
       (window as typeof window & { __aetherWsActions?: Array<{ type?: string; run_id?: string }> }).__aetherWsActions
         ?.some((action) => action.type === 'retry_agent_run' && action.run_id === '88888888-8888-4888-8888-888888888888')
     ))).toBe(true);
+  });
+
+  test('opens the Agent collaboration audit log without exposing hidden reasoning', async ({ page }) => {
+    await page.getByTitle('运行').click();
+    const run = page.getByRole('article').filter({ hasText: '继续实现可恢复 Agent' });
+    await run.getByRole('button', { name: '协作日志' }).click();
+    await expect(run.getByText('Agent 协作审计日志')).toBeVisible();
+    await expect(run.getByText('不记录或暴露模型私密思维链')).toBeVisible();
+    await expect(run.getByText('deepseek → plugin__comfyui__run_workflow')).toBeVisible();
+    await expect(run.getByText('tool_call', { exact: true })).toBeVisible();
+    await expect(run.getByText(/已将工作流参数交给 ComfyUI/)).toBeVisible();
+    await expect(run.getByText(/结果：/)).toContainText('cover');
   });
 
   test('edits and confirms a persisted plan before workers start', async ({ page }) => {

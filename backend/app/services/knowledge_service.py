@@ -476,6 +476,44 @@ class KnowledgeService:
             used += len(section)
         return "".join(parts)
 
+    def context_for_query(
+        self,
+        session_id: str,
+        query: str,
+        max_chars: int = 8_000,
+    ) -> str:
+        """Retrieve relevant evidence from all local session attachments.
+
+        This is intentionally local-only: it uses the existing FTS/hash-vector
+        index and never sends project documents to an embedding service.
+        """
+
+        candidates = [
+            item for item in self.search(session_id, query, limit=12)
+            if float(item.get("score") or 0) >= 0.18
+        ]
+        if not candidates:
+            return ""
+        heading = (
+            "以下内容由 AetherChat 从当前会话的本地知识库自动检索。"
+            "只在与问题相关时使用；事实结论必须用 [来源: 文件名 · 位置] 标注，"
+            "若证据不足应明确说明而不是猜测："
+        )
+        parts = [heading]
+        used = len(heading)
+        seen: set[tuple[str, str]] = set()
+        for item in candidates:
+            identity = (str(item["attachment_id"]), str(item["locator"]))
+            if identity in seen:
+                continue
+            seen.add(identity)
+            section = f"\n\n[来源: {item['citation']}]\n{item['content']}"
+            if used + len(section) > max_chars:
+                break
+            parts.append(section)
+            used += len(section)
+        return "".join(parts) if len(parts) > 1 else ""
+
     def image_data_urls(self, session_id: str, attachment_ids: Iterable[str]) -> list[str]:
         urls: list[str] = []
         total = 0

@@ -179,6 +179,11 @@ class SessionOrchestrator:
             attachment_context = knowledge_service.context_for_attachments(
                 self.session_id, attachment_ids, content
             )
+            project_knowledge_context = (
+                ""
+                if attachment_ids
+                else knowledge_service.context_for_query(self.session_id, content)
+            )
             attachment_images = knowledge_service.image_data_urls(self.session_id, attachment_ids)
         except (KeyError, KnowledgeError, ValueError) as exc:
             message = exc.args[0] if isinstance(exc, KeyError) and exc.args else str(exc)
@@ -296,8 +301,17 @@ class SessionOrchestrator:
         memory_context = memory_service.context(self.session_id)
         if memory_context:
             context_msgs.insert(0, ChatMessage(role="system", content=memory_context))
+        context_msgs.insert(0, ChatMessage(
+            role="system",
+            content=(
+                "当用户确认了后续 Agent 会复用的稳定实体（角色、项目 URL、资源标识或关键事实）时，"
+                "使用 upsert_memory_entity 写入会话共享记忆，避免重复确认；不要把密码、令牌或其他秘密写入共享记忆。"
+            ),
+        ))
         if attachment_context:
             context_msgs.insert(0, ChatMessage(role="system", content=attachment_context))
+        if project_knowledge_context:
+            context_msgs.insert(0, ChatMessage(role="system", content=project_knowledge_context))
         language = str(action.get("language") or "").strip()
         if language == "中文优先":
             context_msgs.insert(0, ChatMessage(role="system", content="请优先使用清晰、准确的中文回复。"))
@@ -308,7 +322,8 @@ class SessionOrchestrator:
                 role="system",
                 content=(
                     "你可以使用 AetherChat Computer Use 工具观察并操作本机。"
-                    "先 list_windows/list_apps，再 get_state；优先引用 snapshot_id 与 element_index，"
+                    "先 list_windows/list_apps，再 get_state；优先引用 snapshot_id 与稳定 element_id，"
+                    "也可用 element_text+control_type 模糊定位；临时 element_index 只作为兼容回退。"
                     "每次点击、输入、滚动或拖拽后必须重新 get_state 验证结果。"
                     "write_artifact 只写入当前会话工件库；run_command 在隔离的 /workspace 中执行，"
                     "不能访问或写入本机桌面。要在本机新建 TXT/MD/JSON/CSV/TSV 文件，"
@@ -325,9 +340,11 @@ class SessionOrchestrator:
                 content=(
                     "你可以与本机 ComfyUI 图像/视频模型协作。用户要求生成视觉内容时，"
                     "先调用 comfyui.status 获取当前真实模型和工作流，再选择 generate_image、"
-                    "generate_video 或 run_workflow；不要声称已经生成而不调用工具。"
+                    "generate_video 或 run_workflow；复杂工作流可先调用 workflow_schema 获取节点映射、"
+                    "依赖与可覆盖输入，不要猜节点 ID。不要声称已经生成而不调用工具。"
                     "你负责把用户意图整理为包含主体、环境、构图、光线、风格及动作的完整提示词，"
-                    "ComfyUI 负责生成。工具返回文件后必须明确报告实际 filename 或 URL。"
+                    "ComfyUI 负责生成。工具返回文件后必须明确报告实际 filename 或 URL，"
+                    "并引用 metadata_artifact；该 JSON 已保存 prompt、模型、seed、尺寸和工作流来源。"
                 ),
             ))
 

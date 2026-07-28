@@ -51,16 +51,22 @@ export const TaskBoard = ({ onPatchTask }: TaskBoardProps) => {
                 <div key={task.id} className="rounded-lg border border-[#ded6ca] bg-[#fbfaf7] p-3 shadow-sm">
                   <div className="text-sm font-medium leading-5">{task.title}</div>
                   {task.description && <div className="mt-1 text-xs leading-5 text-[#7a7065]">{task.description}</div>}
+                  {!!task.blocked_by?.length && (
+                    <div className="mt-2 rounded bg-[#f5e7d1] px-2 py-1 text-[11px] text-[#7b571e]">
+                      被 {task.blocked_by.length} 个前置任务阻塞
+                    </div>
+                  )}
                   <div className="mt-3 flex items-center justify-between text-xs text-[#7a7065]">
                     <span>{task.claimed_by ? `@${task.claimed_by}` : ui('未分配')}</span>
-                    <span>P{task.priority ?? 0}</span>
+                    <span>{task.depends_on?.length ? `依赖 ${task.depends_on.length} · ` : ''}P{task.priority ?? 0}</span>
                   </div>
                   {onPatchTask && (
                     <div className="mt-3 flex gap-2">
                       {!task.claimed_by && (
                         <button
                           onClick={() => onPatchTask(task, { status: 'claimed', claimed_by: 'user' })}
-                          className="flex items-center gap-1 rounded-md border border-[#ded6ca] px-2 py-1 text-xs"
+                          disabled={Boolean(task.blocked_by?.length)}
+                          className="flex items-center gap-1 rounded-md border border-[#ded6ca] px-2 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-45"
                         >
                           <UserPlus size={13} />
                           {ui('认领')}
@@ -69,7 +75,8 @@ export const TaskBoard = ({ onPatchTask }: TaskBoardProps) => {
                       {nextStatus[task.status] && (
                         <button
                           onClick={() => onPatchTask(task, { status: nextStatus[task.status] })}
-                          className="flex items-center gap-1 rounded-md bg-[#2f2a24] px-2 py-1 text-xs text-white"
+                          disabled={Boolean(task.blocked_by?.length)}
+                          className="flex items-center gap-1 rounded-md bg-[#2f2a24] px-2 py-1 text-xs text-white disabled:cursor-not-allowed disabled:opacity-45"
                         >
                           <Play size={13} />
                           {ui('推进')}

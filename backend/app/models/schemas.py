@@ -80,6 +80,7 @@ class Task(BaseModel):
     status: Literal["backlog", "claimed", "in_progress", "review", "merged", "done"]
     claimed_by: str | None = None
     priority: int = 0
+    depends_on: list[UUID] = Field(default_factory=list)
 
 class Artifact(BaseModel):
     id: UUID

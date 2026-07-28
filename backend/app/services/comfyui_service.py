@@ -6,6 +6,7 @@ import json
 import os
 import random
 from copy import deepcopy
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -53,7 +54,7 @@ class ComfyUIService:
             "inventory": inventory,
         }
 
-    async def inventory(self) -> dict[str, Any]:
+    async def inventory(self, *, include_workflow_details: bool = True) -> dict[str, Any]:
         info = await self._get_json("/object_info", 20)
 
         def choices(node: str, field: str) -> list[str]:
@@ -70,13 +71,39 @@ class ComfyUIService:
         checkpoints = choices("CheckpointLoaderSimple", "ckpt_name")
         diffusion_models = choices("UNETLoader", "unet_name")
         loras = choices("LoraLoader", "lora_name")
-        workflows_by_name: dict[str, dict[str, str]] = {}
+        workflows_by_name: dict[str, dict[str, Any]] = {}
         for root in self.workflow_roots:
             if not root.is_dir():
                 continue
             for path in sorted(root.glob("*.json")):
                 if path.is_file() and os.access(path, os.R_OK):
-                    workflows_by_name.setdefault(path.stem, {"name": path.stem, "path": str(path)})
+                    if path.stem in workflows_by_name:
+                        continue
+                    if not include_workflow_details:
+                        workflows_by_name[path.stem] = {
+                            "name": path.stem,
+                            "path": str(path),
+                        }
+                        continue
+                    try:
+                        graph = await self._read_workflow_graph(path, info)
+                        descriptor = self._describe_graph(graph, info)
+                        workflows_by_name[path.stem] = {
+                            "name": path.stem,
+                            "path": str(path),
+                            **descriptor,
+                        }
+                    except ComfyUIError as exc:
+                        workflows_by_name[path.stem] = {
+                            "name": path.stem,
+                            "path": str(path),
+                            "error": str(exc),
+                            "node_count": 0,
+                            "node_map": {},
+                            "dependencies": [],
+                            "dependency_text": [],
+                            "overridable_inputs": [],
+                        }
         workflows = list(workflows_by_name.values())
         return {
             "checkpoints": checkpoints,
@@ -116,7 +143,7 @@ class ComfyUIService:
         lora_strength: float = 1.0,
     ) -> dict[str, Any]:
         width, height = self._dimensions(width, height)
-        inventory = await self.inventory()
+        inventory = await self.inventory(include_workflow_details=False)
         if model in inventory["checkpoints"]:
             graph = self._checkpoint_image_graph(
                 prompt, negative_prompt, model, width, height, steps, cfg, seed, lora, lora_strength
@@ -127,7 +154,26 @@ class ComfyUIService:
             )
         else:
             raise ComfyUIError(f"Unsupported image model: {model}")
-        return await self._submit_and_wait(graph, timeout=1800)
+        resolved_seed = self._first_graph_input(graph, "seed", "noise_seed")
+        return await self._submit_and_wait(
+            graph,
+            timeout=1800,
+            metadata={
+                "operation": "generate_image",
+                "parameters": {
+                    "prompt": prompt,
+                    "negative_prompt": negative_prompt,
+                    "model": model,
+                    "width": width,
+                    "height": height,
+                    "steps": max(1, min(100, steps)),
+                    "cfg": max(0.1, min(30.0, cfg)),
+                    "seed": resolved_seed,
+                    "lora": lora,
+                    "lora_strength": lora_strength if lora else None,
+                },
+            },
+        )
 
     @staticmethod
     def _checkpoint_image_graph(
@@ -244,7 +290,25 @@ class ComfyUIService:
             graph = self._ltx_t2v_graph(prompt, width, height, frames, fps, steps, cfg, seed)
         else:
             raise ComfyUIError("pipeline must be wan-i2v or ltx-t2v")
-        return await self._submit_and_wait(graph, timeout=3600)
+        return await self._submit_and_wait(
+            graph,
+            timeout=3600,
+            metadata={
+                "operation": "generate_video",
+                "parameters": {
+                    "prompt": prompt,
+                    "pipeline": pipeline,
+                    "input_image": input_image,
+                    "width": width,
+                    "height": height,
+                    "frames": frames,
+                    "fps": fps,
+                    "steps": max(1, min(100, steps)),
+                    "cfg": max(0.1, min(30.0, cfg)),
+                    "seed": self._first_graph_input(graph, "seed", "noise_seed"),
+                },
+            },
+        )
 
     async def _upload_image(self, path_value: str) -> str:
         path = Path(path_value).expanduser().resolve(strict=True)
@@ -355,16 +419,70 @@ class ComfyUIService:
 
     async def run_workflow(self, name: str, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
         path = self._workflow_path(name)
+        info = await self._get_json("/object_info", 20)
+        graph = await self._read_workflow_graph(path, info)
+        descriptor = self._describe_graph(graph, info)
+        allowed = {
+            (str(item["node_id"]), str(item["input"])): item
+            for item in descriptor["overridable_inputs"]
+        }
+        normalized_overrides: dict[str, dict[str, Any]] = {}
+        for node_id, values in (overrides or {}).items():
+            normalized_node_id = str(node_id)
+            if normalized_node_id not in graph or not isinstance(values, dict):
+                raise ComfyUIError(
+                    f"Invalid workflow override node: {node_id}. "
+                    f"Available nodes: {', '.join(descriptor['node_map'])}"
+                )
+            normalized_overrides[normalized_node_id] = {}
+            for input_name, value in values.items():
+                specification = allowed.get((normalized_node_id, str(input_name)))
+                if specification is None:
+                    available = [
+                        item["input"]
+                        for item in descriptor["overridable_inputs"]
+                        if item["node_id"] == normalized_node_id
+                    ]
+                    raise ComfyUIError(
+                        f"Node {normalized_node_id} ({descriptor['node_map'][normalized_node_id]}) "
+                        f"input {input_name!r} is not overridable. Available inputs: "
+                        f"{', '.join(available) or '(none)'}"
+                    )
+                self._validate_override_value(specification, value)
+                normalized_overrides[normalized_node_id][str(input_name)] = value
+        for node_id, values in normalized_overrides.items():
+            graph[node_id]["inputs"].update(values)
+        return await self._submit_and_wait(
+            graph,
+            timeout=3600,
+            metadata={
+                "operation": "run_workflow",
+                "workflow_name": path.stem,
+                "parameters": {"overrides": normalized_overrides},
+                "workflow": descriptor,
+            },
+        )
+
+    async def workflow_schema(self, name: str) -> dict[str, Any]:
+        path = self._workflow_path(name)
+        info = await self._get_json("/object_info", 20)
+        graph = await self._read_workflow_graph(path, info)
+        return {
+            "name": path.stem,
+            "path": str(path),
+            **self._describe_graph(graph, info),
+        }
+
+    async def _read_workflow_graph(
+        self,
+        path: Path,
+        info: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         try:
             source = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             raise ComfyUIError(f"Unable to read workflow: {exc}") from exc
-        graph = source if self._is_api_graph(source) else await self._litegraph_to_api(source)
-        for node_id, values in (overrides or {}).items():
-            if str(node_id) not in graph or not isinstance(values, dict):
-                raise ComfyUIError(f"Invalid workflow override node: {node_id}")
-            graph[str(node_id)]["inputs"].update(values)
-        return await self._submit_and_wait(graph, timeout=3600)
+        return source if self._is_api_graph(source) else await self._litegraph_to_api(source, info)
 
     def _workflow_path(self, name: str) -> Path:
         candidate_name = name[:-5] if name.endswith(".json") else name
@@ -382,12 +500,205 @@ class ComfyUIService:
             isinstance(value, dict) and "class_type" in value for value in source.values()
         )
 
-    async def _litegraph_to_api(self, source: dict[str, Any]) -> dict[str, Any]:
+    @staticmethod
+    def _is_link(value: Any, graph: dict[str, Any]) -> bool:
+        return (
+            isinstance(value, list)
+            and len(value) == 2
+            and str(value[0]) in graph
+            and isinstance(value[1], int)
+        )
+
+    @staticmethod
+    def _first_graph_input(graph: dict[str, Any], *names: str) -> Any:
+        for node in graph.values():
+            inputs = node.get("inputs") or {}
+            for name in names:
+                if name in inputs:
+                    return inputs[name]
+        return None
+
+    @staticmethod
+    def _input_specification(
+        info: dict[str, Any],
+        class_type: str,
+        input_name: str,
+    ) -> tuple[str, bool, list[Any], dict[str, Any]]:
+        groups = info.get(class_type, {}).get("input", {})
+        required = input_name in groups.get("required", {})
+        raw = (
+            groups.get("required", {}).get(input_name)
+            if required
+            else groups.get("optional", {}).get(input_name)
+        )
+        choices: list[Any] = []
+        options: dict[str, Any] = {}
+        type_name = "ANY"
+        if isinstance(raw, (list, tuple)) and raw:
+            raw_type = raw[0]
+            if isinstance(raw_type, list):
+                type_name = "COMBO"
+                choices = raw_type[:200]
+            else:
+                type_name = str(raw_type)
+            if len(raw) > 1 and isinstance(raw[1], dict):
+                options = {
+                    str(key): value
+                    for key, value in list(raw[1].items())[:30]
+                    if isinstance(value, (str, int, float, bool)) or value is None
+                }
+                if type_name == "COMBO" and isinstance(raw[1].get("options"), list):
+                    choices = raw[1]["options"][:200]
+        elif raw is not None:
+            type_name = str(raw)
+        return type_name, required, choices, options
+
+    @classmethod
+    def _describe_graph(
+        cls,
+        graph: dict[str, Any],
+        info: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        object_info = info or {}
+        node_map: dict[str, str] = {}
+        nodes: list[dict[str, Any]] = []
+        dependencies: list[dict[str, str]] = []
+        overridable: list[dict[str, Any]] = []
+        for raw_node_id, node in graph.items():
+            node_id = str(raw_node_id)
+            class_type = str(node.get("class_type") or "Unknown")
+            metadata = node.get("_meta") if isinstance(node.get("_meta"), dict) else {}
+            label = str(
+                metadata.get("title")
+                or object_info.get(class_type, {}).get("display_name")
+                or class_type
+            )[:240]
+            node_map[node_id] = label
+            nodes.append({"id": node_id, "name": label, "class_type": class_type})
+            node_inputs = node.get("inputs") or {}
+            for input_name, value in node_inputs.items():
+                if cls._is_link(value, graph):
+                    dependencies.append({
+                        "from": str(value[0]),
+                        "to": node_id,
+                        "input": str(input_name),
+                    })
+                    continue
+                input_type, required, choices, options = cls._input_specification(
+                    object_info,
+                    class_type,
+                    str(input_name),
+                )
+                current = value
+                if isinstance(current, str) and len(current) > 1000:
+                    current = current[:1000] + "…"
+                entry: dict[str, Any] = {
+                    "node_id": node_id,
+                    "node_name": label,
+                    "class_type": class_type,
+                    "input": str(input_name),
+                    "type": input_type,
+                    "required": required,
+                    "current": current,
+                    "present": True,
+                }
+                if choices:
+                    entry["choices"] = choices
+                if options:
+                    entry["options"] = options
+                overridable.append(entry)
+            defined_inputs = object_info.get(class_type, {}).get("input", {})
+            for group_name in ("required", "optional"):
+                group = defined_inputs.get(group_name, {})
+                if not isinstance(group, dict):
+                    continue
+                for input_name in group:
+                    if input_name in node_inputs:
+                        continue
+                    input_type, required, choices, options = cls._input_specification(
+                        object_info,
+                        class_type,
+                        str(input_name),
+                    )
+                    if (
+                        not choices
+                        and input_type.upper()
+                        not in {"INT", "FLOAT", "BOOLEAN", "STRING", "COMBO"}
+                    ):
+                        continue
+                    entry = {
+                        "node_id": node_id,
+                        "node_name": label,
+                        "class_type": class_type,
+                        "input": str(input_name),
+                        "type": input_type,
+                        "required": required,
+                        "current": None,
+                        "present": False,
+                    }
+                    if choices:
+                        entry["choices"] = choices
+                    if options:
+                        entry["options"] = options
+                    overridable.append(entry)
+        dependency_text = [
+            (
+                f"{edge['from']} ({node_map.get(edge['from'], 'Unknown')}) -> "
+                f"{edge['to']} ({node_map.get(edge['to'], 'Unknown')}) "
+                f"via {edge['input']}"
+            )
+            for edge in dependencies
+        ]
+        return {
+            "node_count": len(nodes),
+            "nodes": nodes,
+            "node_map": node_map,
+            "dependencies": dependencies,
+            "dependency_text": dependency_text,
+            "overridable_inputs": overridable,
+        }
+
+    @staticmethod
+    def _validate_override_value(specification: dict[str, Any], value: Any) -> None:
+        input_type = str(specification.get("type") or "ANY").upper()
+        choices = specification.get("choices") or []
+        label = f"{specification['node_id']}.{specification['input']}"
+        if choices and value not in choices:
+            preview = ", ".join(map(str, choices[:20]))
+            raise ComfyUIError(f"Override {label} must be one of: {preview}")
+        valid = True
+        if input_type == "INT":
+            valid = isinstance(value, int) and not isinstance(value, bool)
+        elif input_type == "FLOAT":
+            valid = isinstance(value, (int, float)) and not isinstance(value, bool)
+        elif input_type == "BOOLEAN":
+            valid = isinstance(value, bool)
+        elif input_type == "STRING":
+            valid = isinstance(value, str)
+        if not valid:
+            raise ComfyUIError(
+                f"Override {label} expects {input_type}, got {type(value).__name__}"
+            )
+        options = specification.get("options") or {}
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            minimum = options.get("min")
+            maximum = options.get("max")
+            if isinstance(minimum, (int, float)) and value < minimum:
+                raise ComfyUIError(f"Override {label} must be >= {minimum}")
+            if isinstance(maximum, (int, float)) and value > maximum:
+                raise ComfyUIError(f"Override {label} must be <= {maximum}")
+
+    async def _litegraph_to_api(
+        self,
+        source: dict[str, Any],
+        info: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         source = self._expand_subgraphs(source)
         nodes = source.get("nodes")
         if not isinstance(nodes, list):
             raise ComfyUIError("Workflow is neither API format nor ComfyUI LiteGraph format")
-        info = await self._get_json("/object_info", 20)
+        if info is None:
+            info = await self._get_json("/object_info", 20)
         link_sources: dict[Any, list[Any]] = {}
         for node in nodes:
             if node.get("mode", 0) == 4:
@@ -568,18 +879,147 @@ class ComfyUIService:
                     input_item["link"] = resolved(input_item["link"])
         return rewired
 
-    async def _submit_and_wait(self, graph: dict[str, Any], timeout: int) -> dict[str, Any]:
+    @classmethod
+    def _format_node_error(cls, payload: Any, graph: dict[str, Any]) -> str:
+        descriptor = cls._describe_graph(graph)
+        node_map = descriptor["node_map"]
+
+        def annotate(value: Any) -> Any:
+            if isinstance(value, dict):
+                result = {str(key): annotate(child) for key, child in value.items()}
+                node_id = value.get("node_id")
+                if node_id is not None:
+                    normalized = str(node_id)
+                    result["node_label"] = node_map.get(normalized, "Unknown")
+                return result
+            if isinstance(value, list):
+                return [annotate(child) for child in value]
+            return value
+
+        mapping = ", ".join(f"{node_id}={name}" for node_id, name in node_map.items())
+        details = json.dumps(annotate(payload), ensure_ascii=False, default=str)[:4000]
+        return f"{details}. Node map: {mapping}"
+
+    @classmethod
+    def _generation_metadata(
+        cls,
+        *,
+        prompt_id: str,
+        graph: dict[str, Any],
+        metadata: dict[str, Any] | None,
+        files: list[dict[str, Any]],
+        submitted_at: str,
+    ) -> dict[str, Any]:
+        supplied = deepcopy(metadata or {})
+        workflow = supplied.pop("workflow", None) or cls._describe_graph(graph)
+        models: list[str] = []
+        seeds: list[int] = []
+        dimensions: list[dict[str, int]] = []
+        prompts: list[dict[str, str]] = []
+        node_map = workflow.get("node_map") if isinstance(workflow, dict) else {}
+        for raw_node_id, node in graph.items():
+            node_id = str(raw_node_id)
+            node_metadata = (
+                node.get("_meta")
+                if isinstance(node.get("_meta"), dict)
+                else {}
+            )
+            inputs = node.get("inputs") or {}
+            for key, value in inputs.items():
+                if key in {
+                    "ckpt_name", "unet_name", "model_name", "lora_name",
+                    "vae_name", "clip_name",
+                } and isinstance(value, str) and value not in models:
+                    models.append(value)
+                if (
+                    key in {"seed", "noise_seed"}
+                    and isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and value not in seeds
+                ):
+                    seeds.append(value)
+                normalized_key = str(key).casefold()
+                if (
+                    isinstance(value, str)
+                    and (
+                        "prompt" in normalized_key
+                        or normalized_key in {"text", "positive", "negative"}
+                    )
+                ):
+                    prompts.append({
+                        "node_id": node_id,
+                        "node_name": str(
+                            (node_map or {}).get(node_id)
+                            or node_metadata.get("title")
+                            or node.get("class_type")
+                            or "Unknown"
+                        ),
+                        "input": str(key),
+                        "value": value[:20_000],
+                    })
+            width, height = inputs.get("width"), inputs.get("height")
+            if isinstance(width, int) and isinstance(height, int):
+                item = {"width": width, "height": height}
+                if item not in dimensions:
+                    dimensions.append(item)
+        clean_files = [
+            {
+                key: value
+                for key, value in file.items()
+                if key != "image_data_url"
+            }
+            for file in files
+        ]
+        return {
+            "schema": "aetherchat.agent-artifact/v1",
+            "schema_version": "1.0",
+            "artifact_type": "comfyui_generation",
+            "engine": "ComfyUI",
+            "operation": supplied.pop("operation", "run_workflow"),
+            "prompt_id": prompt_id,
+            "submitted_at": submitted_at,
+            "completed_at": datetime.now(UTC).isoformat(),
+            "parameters": supplied.pop("parameters", {}),
+            "workflow_name": supplied.pop("workflow_name", None),
+            "workflow": workflow,
+            "provenance": {
+                "models": models,
+                "seeds": seeds,
+                "dimensions": dimensions,
+                "prompts": prompts,
+            },
+            "outputs": clean_files,
+            **supplied,
+        }
+
+    async def _submit_and_wait(
+        self,
+        graph: dict[str, Any],
+        timeout: int,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        submitted_at = datetime.now(UTC).isoformat()
         payload = {"prompt": graph, "client_id": str(uuid4())}
         try:
             async with self._client(60) as client:
                 response = await client.post(f"{self.base_url}/prompt", json=payload)
                 if response.status_code >= 400:
-                    raise ComfyUIError(f"ComfyUI rejected workflow: {response.text[:1000]}")
+                    try:
+                        rejection: Any = response.json()
+                    except ValueError:
+                        rejection = response.text[:1000]
+                    raise ComfyUIError(
+                        "ComfyUI rejected workflow: "
+                        + self._format_node_error(rejection, graph)
+                    )
                 queued = response.json()
         except httpx.HTTPError as exc:
             raise ComfyUIError(f"Unable to queue ComfyUI workflow: {exc}") from exc
         if queued.get("node_errors"):
-            raise ComfyUIError(f"ComfyUI node validation failed: {json.dumps(queued['node_errors'], ensure_ascii=False)[:1000]}")
+            raise ComfyUIError(
+                "ComfyUI node validation failed: "
+                + self._format_node_error(queued["node_errors"], graph)
+            )
         prompt_id = queued.get("prompt_id")
         if not prompt_id:
             raise ComfyUIError(f"ComfyUI did not return a prompt id: {queued}")
@@ -591,7 +1031,10 @@ class ComfyUIService:
                 continue
             entry = history[prompt_id]
             if entry.get("status", {}).get("status_str") == "error":
-                raise ComfyUIError(f"ComfyUI execution failed: {json.dumps(entry.get('status'), ensure_ascii=False)[:1200]}")
+                raise ComfyUIError(
+                    "ComfyUI execution failed: "
+                    + self._format_node_error(entry.get("status"), graph)
+                )
             files = []
             for output in entry.get("outputs", {}).values():
                 for kind in ("images", "gifs", "videos", "audio"):
@@ -607,9 +1050,25 @@ class ComfyUIService:
                                 normalized_kind = "gifs"
                             files.append({**item, "kind": normalized_kind})
             if files:
-                return await self._result(prompt_id, files)
+                result = await self._result(prompt_id, files)
+                result["generation_metadata"] = self._generation_metadata(
+                    prompt_id=prompt_id,
+                    graph=graph,
+                    metadata=metadata,
+                    files=result["files"],
+                    submitted_at=submitted_at,
+                )
+                return result
             if entry.get("status", {}).get("completed"):
-                return {"prompt_id": prompt_id, "completed": True, "files": []}
+                result = {"prompt_id": prompt_id, "completed": True, "files": []}
+                result["generation_metadata"] = self._generation_metadata(
+                    prompt_id=prompt_id,
+                    graph=graph,
+                    metadata=metadata,
+                    files=[],
+                    submitted_at=submitted_at,
+                )
+                return result
         raise ComfyUIError(f"ComfyUI generation timed out after {timeout} seconds (prompt_id={prompt_id})")
 
     async def _result(self, prompt_id: str, files: list[dict[str, Any]]) -> dict[str, Any]:

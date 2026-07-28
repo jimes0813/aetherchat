@@ -49,6 +49,13 @@ import type { AgentRun, AgentWorkspaceCandidate, ApprovalRequest, Conversation, 
 const API_BASE = window.aetherRuntime?.apiBase ?? import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
 let apiAuthToken = '';
 
+type AgentActivityItem = {
+  model: string;
+  phase: 'thinking' | 'tool' | 'waiting' | 'running';
+  toolName?: string;
+  startedAt: number;
+};
+
 function withApiAuth(init: RequestInit = {}): RequestInit {
   const headers = new Headers(init.headers);
   if (apiAuthToken) headers.set('Authorization', `Bearer ${apiAuthToken}`);
@@ -287,6 +294,7 @@ function App() {
     运行: t('runs'), 设置: t('settings'),
   } as Record<string, string>)[activePanel] : ui('检查器');
   const wsClient = useRef<ReturnType<typeof connectWS> | null>(null);
+  const approvalActivity = useRef<Record<string, { model: string; toolName: string }>>({});
   const [authToken, setAuthToken] = useState('');
   const [authReady, setAuthReady] = useState(false);
   const [tokenStatus, setTokenStatus] = useState('正在授权');
@@ -296,6 +304,7 @@ function App() {
   const [taskEvents, setTaskEvents] = useState<TaskEvent[]>([]);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [agentRuns, setAgentRuns] = useState<AgentRun[]>([]);
+  const [agentActivity, setAgentActivity] = useState<Record<string, AgentActivityItem>>({});
   const [gitRepository, setGitRepository] = useState<GitRepository | null>(null);
   const [verificationCommands, setVerificationCommands] = useState('');
   const inspectorDialog = useDialogFocus<HTMLDivElement>(Boolean(activePanel), () => setActivePanel(null));
@@ -304,6 +313,11 @@ function App() {
     document.documentElement.lang = locale;
     document.title = locale === 'en-US' ? 'AetherChat Desktop' : 'AetherChat 中文协作工作台';
   }, [locale]);
+
+  useEffect(() => {
+    setAgentActivity({});
+    approvalActivity.current = {};
+  }, [sessionId]);
 
   useEffect(() => {
     if (window.aetherRuntime?.backendStatus === 'unavailable') {
@@ -479,25 +493,101 @@ function App() {
     if (!authReady || !authToken) return;
     setConnection('connecting');
     wsClient.current = connectWS(sessionId, (event: WSMessage) => {
-      if (event.type === 'delta' && event.model && event.delta) addDelta(event.model, event.delta);
+      if (event.type === 'delta' && event.model && event.delta) {
+        addDelta(event.model, event.delta);
+        setAgentActivity((items) => ({
+          ...items,
+          [event.model!]: {
+            model: event.model!,
+            phase: 'thinking',
+            startedAt: items[event.model!]?.startedAt ?? Date.now(),
+          },
+        }));
+      }
       if (event.type === 'stream_reset' && event.model) resetStream(event.model);
       if (event.type === 'message_complete' && event.message) {
         addMessage(event.message);
-        if (event.message.author_model !== 'user') finishStream(event.message.author_model);
+        if (event.message.author_model !== 'user') {
+          finishStream(event.message.author_model);
+          setAgentActivity((items) => {
+            const next = { ...items };
+            delete next[event.message!.author_model];
+            return next;
+          });
+        }
         void loadConversations();
       }
       if (event.type === 'task_update' && event.task) updateTask(event.task);
       if (event.type === 'tool_update' && event.tool) upsertTool(event.tool);
-      if (event.type === 'tool_run' && event.run) addToolRun(event.run);
+      if (event.type === 'tool_run' && event.run) {
+        addToolRun(event.run);
+        if (typeof event.run.arguments?.task_id === 'string') {
+          loadTasks();
+          loadTaskEvents();
+        }
+        if (event.run.status === 'success' && event.run.tool_name.includes('comfyui')) {
+          void loadArtifacts();
+        }
+      }
       if (event.type === 'approval_required' && event.approval) {
+        approvalActivity.current[event.approval.id] = {
+          model: event.approval.model,
+          toolName: event.approval.tool_name,
+        };
+        setAgentActivity((items) => ({
+          ...items,
+          [event.approval!.model]: {
+            model: event.approval!.model,
+            phase: 'waiting',
+            toolName: event.approval!.tool_name,
+            startedAt: items[event.approval!.model]?.startedAt ?? Date.now(),
+          },
+        }));
         setApprovals((items) => items.some((item) => item.id === event.approval?.id)
           ? items
           : [...items, event.approval as ApprovalRequest]);
       }
       if (event.type === 'approval_resolved' && event.approval_id && event.decision) {
+        const resumed = approvalActivity.current[event.approval_id];
+        if (resumed) {
+          setAgentActivity((items) => ({
+            ...items,
+            [resumed.model]: {
+              model: resumed.model,
+              phase: 'tool',
+              toolName: resumed.toolName,
+              startedAt: items[resumed.model]?.startedAt ?? Date.now(),
+            },
+          }));
+          delete approvalActivity.current[event.approval_id];
+        }
         setApprovals((items) => items.map((item) => item.id === event.approval_id
           ? { ...item, decision: event.decision }
           : item));
+      }
+      if (event.type === 'tool_call' && event.model && event.tool_name) {
+        setAgentActivity((items) => ({
+          ...items,
+          [event.model!]: {
+            model: event.model!,
+            phase: 'tool',
+            toolName: event.tool_name,
+            startedAt: items[event.model!]?.startedAt ?? Date.now(),
+          },
+        }));
+      }
+      if (
+        (event.type === 'tool_result' || event.type === 'tool_result_replayed')
+        && event.model
+      ) {
+        setAgentActivity((items) => ({
+          ...items,
+          [event.model!]: {
+            model: event.model!,
+            phase: 'thinking',
+            startedAt: items[event.model!]?.startedAt ?? Date.now(),
+          },
+        }));
       }
       if (event.type === 'agent_run_update' && event.agent_run) {
         setAgentRuns((items) => items.some((item) => item.id === event.agent_run?.id)
@@ -574,6 +664,24 @@ function App() {
         setNotice('计划已拒绝，未调用任何 Worker');
       }
       if (event.type === 'plan_step_update' && event.run_id && event.plan_step) {
+        if (event.plan_step.assigned_model) {
+          const model = event.plan_step.assigned_model;
+          setAgentActivity((items) => {
+            if (event.plan_step?.status === 'running') {
+              return {
+                ...items,
+                [model]: {
+                  model,
+                  phase: 'running',
+                  startedAt: items[model]?.startedAt ?? Date.now(),
+                },
+              };
+            }
+            const next = { ...items };
+            delete next[model];
+            return next;
+          });
+        }
         setAgentRuns((items) => items.map((item) => {
           if (item.id !== event.run_id) return item;
           const current = item.plan_steps || [];
@@ -619,6 +727,13 @@ function App() {
       if (event.type === 'steer_ack') setNotice(t('steerQueued'));
       if (event.type === 'cost_update' && typeof event.budget_remaining === 'number') setBudget(event.budget_remaining);
       if (event.type === 'error' && (event as any).message) {
+        if (event.model) {
+          setAgentActivity((items) => {
+            const next = { ...items };
+            delete next[event.model!];
+            return next;
+          });
+        }
         addMessage({
           id: crypto.randomUUID(),
           session_id: sessionId,
@@ -876,11 +991,17 @@ function App() {
     return uploaded;
   };
 
-  const createTask = async (title: string) => {
+  const createTask = async (title: string, dependsOn: string[] = []) => {
     const task = await fetchJson<Task>(`${API_BASE}/tasks/`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId, title, description: '由中文工作台创建', priority: 1 }),
+      body: JSON.stringify({
+        session_id: sessionId,
+        title,
+        description: '由中文工作台创建',
+        priority: 1,
+        depends_on: dependsOn,
+      }),
     });
     updateTask(task);
     loadTaskEvents();
@@ -1009,6 +1130,8 @@ function App() {
             connection={connection}
             providerCount={providers.length}
             activeProviderCount={modelConfigs.filter((model) => model.type === 'local' || model.has_api_key).length}
+            agentActivity={agentActivity}
+            agentRuns={agentRuns}
             budgetRemaining={budget.remaining}
             spendPct={spendPct}
             mode={workspaceSettings.mode}
@@ -1347,6 +1470,12 @@ function TaskHistory({ tasks, events }: { tasks: Task[]; events: TaskEvent[] }) 
                 </div>
                 {task.description && <p className="mt-1 text-xs leading-5 text-[#74695e]">{task.description}</p>}
                 {task.claimed_by && <div className="mt-2 text-[11px] text-[#93887d]">{ui('执行者：{name}', { name: task.claimed_by })}</div>}
+                {!!task.depends_on?.length && (
+                  <div className="mt-1 text-[11px] text-[#93887d]">
+                    依赖 {task.depends_on.length} 项
+                    {task.blocked_by?.length ? ` · 仍阻塞 ${task.blocked_by.length} 项` : ' · 已满足'}
+                  </div>
+                )}
               </div>
             ))}
             {!tasks.length && <div className="py-10 text-center text-sm text-[#8b8176]">{ui('当前会话暂无任务')}</div>}
@@ -1435,6 +1564,8 @@ interface CommandHeaderProps {
   connection: ReturnType<typeof useSessionStore.getState>['connection'];
   providerCount: number;
   activeProviderCount: number;
+  agentActivity: Record<string, AgentActivityItem>;
+  agentRuns: AgentRun[];
   budgetRemaining: number;
   spendPct: number;
   mode: string;
@@ -1442,8 +1573,58 @@ interface CommandHeaderProps {
   onOpenSearch: () => void;
 }
 
-function CommandHeader({ connection, providerCount, activeProviderCount, budgetRemaining, spendPct, mode, mergeRule, onOpenSearch }: CommandHeaderProps) {
+function CommandHeader({
+  connection,
+  providerCount,
+  activeProviderCount,
+  agentActivity,
+  agentRuns,
+  budgetRemaining,
+  spendPct,
+  mode,
+  mergeRule,
+  onOpenSearch,
+}: CommandHeaderProps) {
   const { ui } = useI18n();
+  const [now, setNow] = useState(Date.now());
+  const activeAgents = Object.values(agentActivity);
+  useEffect(() => {
+    if (!activeAgents.length) return undefined;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [activeAgents.length]);
+  const activeRun = agentRuns.find((run) => (
+    ['queued', 'running', 'waiting_approval'].includes(run.status)
+  ));
+  const historicalDurations = agentRuns
+    .filter((run) => run.status === 'completed' && run.completed_at)
+    .map((run) => (
+      Date.parse(run.completed_at!) - Date.parse(run.started_at || run.created_at)
+    ))
+    .filter((duration) => duration > 0 && duration < 24 * 60 * 60 * 1000)
+    .sort((left, right) => left - right);
+  const medianDuration = historicalDurations.length
+    ? historicalDurations[Math.floor(historicalDurations.length / 2)]
+    : null;
+  const elapsed = activeRun
+    ? Math.max(0, now - Date.parse(activeRun.started_at || activeRun.created_at))
+    : 0;
+  const estimatedRemaining = medianDuration === null
+    ? null
+    : Math.max(0, medianDuration - elapsed);
+  const durationLabel = (milliseconds: number) => {
+    const seconds = Math.max(0, Math.round(milliseconds / 1000));
+    if (seconds < 60) return `${seconds} 秒`;
+    return `${Math.ceil(seconds / 60)} 分钟`;
+  };
+  const primaryActivity = activeAgents[0];
+  const phaseLabel = primaryActivity?.phase === 'tool'
+    ? `调用 ${primaryActivity.toolName || '工具'}`
+    : primaryActivity?.phase === 'waiting'
+      ? `等待授权${primaryActivity.toolName ? ` · ${primaryActivity.toolName}` : ''}`
+      : primaryActivity?.phase === 'running'
+        ? '执行计划步骤'
+        : '正在生成';
   return (
     <header className="flex h-14 items-center gap-3 border-b border-[#e7dfd3] bg-[#fbfaf7] px-4">
       <div className="min-w-0">
@@ -1455,6 +1636,28 @@ function CommandHeader({ connection, providerCount, activeProviderCount, budgetR
         {ui('Ctrl+K 搜索命令、文件、模型或任务')}
       </button>
       <div className="ml-auto flex items-center gap-2">
+        {primaryActivity && (
+          <div
+            className="flex max-w-64 items-center gap-2 rounded-lg border border-[#b8cbd6] bg-[#edf5f8] px-2 py-2 text-xs text-[#315f78] xl:px-3"
+            aria-live="polite"
+            aria-label={`${primaryActivity.model} · ${phaseLabel}`}
+          >
+            <span className="h-2 w-2 shrink-0 rounded-full bg-[#397c9d] motion-safe:animate-pulse" />
+            <div className="min-w-0 xl:hidden">
+              <div className="max-w-36 truncate font-semibold">{primaryActivity.model} / {phaseLabel}</div>
+            </div>
+            <div className="hidden min-w-0 xl:block">
+              <div className="truncate font-semibold">
+                {primaryActivity.model}{activeAgents.length > 1 ? ` +${activeAgents.length - 1}` : ''} · {phaseLabel}
+              </div>
+              <div className="truncate text-[10px] text-[#58788a]">
+                已运行 {durationLabel(now - primaryActivity.startedAt)}
+                {' · '}
+                {estimatedRemaining === null ? '预计剩余：估算中' : `预计剩余约 ${durationLabel(estimatedRemaining)}`}
+              </div>
+            </div>
+          </div>
+        )}
         <div className="flex items-center gap-2 rounded-lg border border-[#e1d9cd] bg-white px-3 py-2 text-xs text-[#6d6258]">
           <Users size={15} />
           {ui('{active}/{total} 个模型已配置', { active: activeProviderCount, total: providerCount })}
@@ -1568,7 +1771,7 @@ interface InspectorProps {
   sessionId: string;
   selectedArtifactPath: string;
   onSelectArtifact: (path: string) => void;
-  onCreateTask: (title: string) => void;
+  onCreateTask: (title: string, dependsOn?: string[]) => void;
   onPatchTask: (task: Task, patch: Partial<Task>) => void;
   onCreateMerge: (artifactPath: string, rationale: string) => void;
   onVoteMerge: (proposal: MergeProposal, approve: boolean) => void;
@@ -1620,6 +1823,7 @@ function InspectorPanel(props: InspectorProps) {
     activePanel,
     setActivePanel,
     artifacts,
+    tasks,
     mergeProposals,
     tools,
     toolRuns,
@@ -1640,6 +1844,7 @@ function InspectorPanel(props: InspectorProps) {
   const [artifactDiff, setArtifactDiff] = useState('');
   const [artifactStatus, setArtifactStatus] = useState('');
   const [taskTitle, setTaskTitle] = useState('');
+  const [taskDependencies, setTaskDependencies] = useState<string[]>([]);
   const [commitMessage, setCommitMessage] = useState('中文工作台更新');
   const [toolName, setToolName] = useState('');
   const [toolDescription, setToolDescription] = useState('');
@@ -1862,6 +2067,23 @@ function InspectorPanel(props: InspectorProps) {
       setMemoryStatus('记忆已保存，下一次模型调用会使用更新内容');
     } catch (error) {
       setMemoryStatus(`记忆保存失败：${String(error)}`);
+    }
+  };
+
+  const removeMemoryEntity = async (key: string) => {
+    if (!sessionMemory) return;
+    try {
+      const memory = await fetchJson<SessionMemory>(`${props.apiBase}/memory/${props.sessionId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entities: sessionMemory.entities.filter((entity) => entity.key !== key),
+        }),
+      });
+      setSessionMemory(memory);
+      setMemoryStatus(`共享实体 ${key} 已删除`);
+    } catch (error) {
+      setMemoryStatus(`共享实体删除失败：${String(error)}`);
     }
   };
 
@@ -2133,7 +2355,7 @@ function InspectorPanel(props: InspectorProps) {
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#e5d9ca] text-[#684827]"><Brain size={17} /></div>
             <div>
               <h2 className="text-sm font-semibold">{ui('本机会话记忆')}</h2>
-              <p className="mt-1 text-xs leading-5 text-[#7a7065]">决定和偏好只从用户明确表达中提取。所有内容按会话隔离，可在这里检查、修改或删除。</p>
+              <p className="mt-1 text-xs leading-5 text-[#7a7065]">决定和偏好只从用户明确表达中提取；工具可写入结构化共享实体，供同一会话中的所有 Agent 直接引用。所有内容均可检查或删除。</p>
             </div>
           </div>
           {memoryStatus && <div className="mb-3 rounded-md bg-[#e9e0d5] px-3 py-2 text-xs text-[#6e5d4b]" aria-live="polite">{ui(memoryStatus)}</div>}
@@ -2157,6 +2379,42 @@ function InspectorPanel(props: InspectorProps) {
               <span className="ml-2 text-[10px] text-[#897b6d]">完成后可直接删除对应行</span>
               <textarea value={memoryDraft.open_items} onChange={(event) => setMemoryDraft((value) => ({ ...value, open_items: event.target.value }))} className="mt-1 min-h-20 w-full rounded-lg border border-[#d8cdbf] bg-white p-3 text-xs leading-5 outline-none" />
             </label>
+            <div>
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-xs font-semibold">Agent 共享实体</span>
+                <span className="text-[10px] text-[#897b6d]">{sessionMemory?.entities?.length ?? 0} 项 · 自动进入模型上下文</span>
+              </div>
+              <div className="space-y-2">
+                {(sessionMemory?.entities || []).map((entity) => (
+                  <div key={entity.key} className="rounded-lg border border-[#d8cdbf] bg-[#f8f4ee] p-3 text-xs">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="break-all font-mono font-semibold text-[#5d4937]">{entity.key}</div>
+                        <div className="mt-1 break-all leading-5 text-[#5b5147]">{entity.value}</div>
+                        <div className="mt-1 text-[10px] text-[#897b6d]">{entity.kind} · {entity.source}</div>
+                        {typeof entity.metadata?.artifact_path === 'string' && (
+                          <button
+                            onClick={() => {
+                              props.onSelectArtifact(String(entity.metadata?.artifact_path));
+                              setActivePanel('工件');
+                            }}
+                            className="mt-1 break-all text-left font-mono text-[10px] text-[#356a82] underline"
+                          >
+                            元数据：{entity.metadata.artifact_path}
+                          </button>
+                        )}
+                      </div>
+                      <button onClick={() => void removeMemoryEntity(entity.key)} className="shrink-0 rounded border border-[#cdbfb0] p-1 text-[#744438]" aria-label={`删除共享实体 ${entity.key}`}>
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                {!sessionMemory?.entities?.length && (
+                  <div className="rounded-lg border border-dashed border-[#d8cdbf] p-3 text-center text-[11px] text-[#897b6d]">生成图片或由 Agent 记录关键实体后会显示在这里。</div>
+                )}
+              </div>
+            </div>
             <div>
               <div className="mb-1 flex items-center justify-between text-xs font-semibold">
                 <span>滚动摘要</span>
@@ -2273,8 +2531,9 @@ function InspectorPanel(props: InspectorProps) {
             <button
               onClick={() => {
                 if (!taskTitle.trim()) return;
-                props.onCreateTask(taskTitle.trim());
+                props.onCreateTask(taskTitle.trim(), taskDependencies);
                 setTaskTitle('');
+                setTaskDependencies([]);
               }}
               className="flex h-10 items-center gap-1 rounded-lg bg-[#2f2a24] px-3 text-sm font-medium text-white"
             >
@@ -2282,6 +2541,26 @@ function InspectorPanel(props: InspectorProps) {
               {ui('添加')}
             </button>
           </div>
+          {!!tasks.length && (
+            <label className="mb-4 block text-xs text-[#6d6258]">
+              <span className="mb-1 block font-semibold">前置依赖（可多选）</span>
+              <select
+                multiple
+                value={taskDependencies}
+                onChange={(event) => setTaskDependencies(
+                  Array.from(event.currentTarget.selectedOptions, (option) => option.value),
+                )}
+                className="min-h-20 w-full rounded-lg border border-[#ded6ca] bg-white p-2 text-xs outline-none"
+              >
+                {tasks.map((task) => (
+                  <option key={task.id} value={task.id}>
+                    [{taskStatusLabel[task.status]}] {task.title}
+                  </option>
+                ))}
+              </select>
+              <span className="mt-1 block text-[10px] text-[#897b6d]">依赖未完成时，任务不能被认领或推进；Agent 工具也会拒绝执行。</span>
+            </label>
+          )}
           <TaskBoard onPatchTask={props.onPatchTask} />
         </div>
       )}
@@ -2688,6 +2967,7 @@ function InspectorPanel(props: InspectorProps) {
 
       {activePanel === '运行' && (
         <RunPanel
+          sessionId={props.sessionId}
           exportSession={props.exportSession || (() => {})}
           agentRuns={props.agentRuns}
           gitRepository={props.gitRepository}
@@ -3188,6 +3468,7 @@ function PluginCenter({ apiBase, sessionId }: { apiBase: string; sessionId: stri
 }
 
 interface RunPanelProps {
+  sessionId: string;
   exportSession: (fmt?: 'markdown' | 'json') => void;
   agentRuns: AgentRun[];
   gitRepository: GitRepository | null;
@@ -3231,7 +3512,43 @@ type RunCheckRow = {
   tone: RunCheckTone;
 };
 
+function auditEventSummary(payload: Record<string, unknown>): string {
+  const labels = [
+    payload.model,
+    payload.author_model,
+    payload.tool_name,
+    payload.status,
+    payload.decision,
+    payload.code,
+  ]
+    .filter((value): value is string | number | boolean => (
+      ['string', 'number', 'boolean'].includes(typeof value)
+    ))
+    .map(String);
+  const narrative = [
+    payload.content_preview,
+    payload.message,
+    payload.error,
+    payload.reason,
+  ].find((value) => typeof value === 'string' && value.trim());
+  if (typeof narrative === 'string') labels.push(narrative.slice(0, 500));
+  return labels.join(' · ') || '状态已记录';
+}
+
+function auditJsonPreview(value: unknown, maxLength = 2000): string {
+  try {
+    const encoded = JSON.stringify(value, null, 2);
+    if (!encoded) return '';
+    return encoded.length > maxLength
+      ? `${encoded.slice(0, maxLength)}\n…`
+      : encoded;
+  } catch {
+    return String(value).slice(0, maxLength);
+  }
+}
+
 function RunPanel({
+  sessionId,
   exportSession,
   agentRuns,
   gitRepository,
@@ -3251,6 +3568,9 @@ function RunPanel({
   const [verifyingModels, setVerifyingModels] = useState(false);
   const [lastChecked, setLastChecked] = useState<string>('尚未检查');
   const [planDraft, setPlanDraft] = useState<PlanEditorDraft | null>(null);
+  const [expandedAuditRunId, setExpandedAuditRunId] = useState<string | null>(null);
+  const [runDetails, setRunDetails] = useState<Record<string, AgentRun>>({});
+  const [auditLoading, setAuditLoading] = useState<string | null>(null);
   useEffect(() => {
     if (!planDraft?.saving) return;
     const current = agentRuns.find((run) => run.id === planDraft.runId);
@@ -3258,6 +3578,28 @@ function RunPanel({
       setPlanDraft(null);
     }
   }, [agentRuns, planDraft]);
+  const toggleAuditLog = async (run: AgentRun) => {
+    if (expandedAuditRunId === run.id) {
+      setExpandedAuditRunId(null);
+      return;
+    }
+    setExpandedAuditRunId(run.id);
+    if (runDetails[run.id]) return;
+    setAuditLoading(run.id);
+    try {
+      const detail = await fetchJson<AgentRun>(
+        `${API_BASE}/agent-runs/${run.id}?session_id=${encodeURIComponent(sessionId)}`,
+      );
+      setRunDetails((items) => ({ ...items, [run.id]: detail }));
+    } catch {
+      setRunDetails((items) => ({
+        ...items,
+        [run.id]: { ...run, events: [], tool_calls: [] },
+      }));
+    } finally {
+      setAuditLoading(null);
+    }
+  };
   const frontendDetail = window.aetherRuntime?.appVersion
     ? `AetherChat ${window.aetherRuntime.appVersion} · 本地桌面前端`
     : '本地桌面前端';
@@ -3590,6 +3932,9 @@ function RunPanel({
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
                     <span className={`rounded-md px-2 py-1 text-xs ${status.className}`}>{ui(status.label)}</span>
+                    <button onClick={() => void toggleAuditLog(run)} className="rounded-md border border-[#8d735d] px-2 py-1 text-xs text-[#654927]">
+                      {expandedAuditRunId === run.id ? ui('收起协作日志') : ui('协作日志')}
+                    </button>
                     {retryable && <button onClick={() => onRetry(run)} className="rounded-md border border-[#8d5f35] px-2 py-1 text-xs text-[#6b4525]">{ui('重试未完成步骤')}</button>}
                   </div>
                 </div>
@@ -3817,6 +4162,60 @@ function RunPanel({
                       })}
                     </div>
                     <div>{run.reviews[run.reviews.length - 1].summary}</div>
+                  </div>
+                )}
+                {expandedAuditRunId === run.id && (
+                  <div className="mt-3 rounded-lg border border-[#d8cec1] bg-white p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-xs font-semibold text-[#574a3e]">Agent 协作审计日志</div>
+                        <div className="mt-1 text-[10px] leading-4 text-[#897b6d]">展示可核验的状态、消息交接、工具调用和结果；不记录或暴露模型私密思维链。</div>
+                      </div>
+                      <span className="shrink-0 text-[10px] text-[#897b6d]">
+                        {auditLoading === run.id ? '载入中…' : `${runDetails[run.id]?.events?.length || 0} 个事件`}
+                      </span>
+                    </div>
+                    {auditLoading !== run.id && (
+                      <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                        <div>
+                          <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-[#897b6d]">事件时间线</div>
+                          <ol className="max-h-64 space-y-2 overflow-auto border-l border-[#d8cec1] pl-3">
+                            {(runDetails[run.id]?.events || []).map((event) => (
+                              <li key={event.id} className="relative text-[11px] leading-4 text-[#5f554b]">
+                                <span className="absolute -left-[16px] top-1 h-1.5 w-1.5 rounded-full bg-[#8d5f35]" />
+                                <div className="flex justify-between gap-2">
+                                  <span className="font-semibold">{event.event_type}</span>
+                                  <time className="shrink-0 text-[9px] text-[#9b8d80]">{new Date(event.created_at).toLocaleTimeString()}</time>
+                                </div>
+                                <div className="mt-0.5 break-all text-[10px] text-[#897b6d]">
+                                  {auditEventSummary(event.payload)}
+                                </div>
+                              </li>
+                            ))}
+                            {!runDetails[run.id]?.events?.length && <li className="text-[10px] text-[#897b6d]">暂无事件记录。</li>}
+                          </ol>
+                        </div>
+                        <div>
+                          <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-[#897b6d]">工具参数传递</div>
+                          <div className="max-h-64 space-y-2 overflow-auto">
+                            {(runDetails[run.id]?.tool_calls || []).map((call) => (
+                              <div key={call.id} className="rounded border border-[#e1d8cd] bg-[#f8f4ee] p-2 text-[10px]">
+                                <div className="flex justify-between gap-2">
+                                  <span className="font-semibold">{call.model} → {call.tool_name}</span>
+                                  <span className={call.status === 'completed' ? 'text-[#477257]' : 'text-[#8a6240]'}>{call.status}</span>
+                                </div>
+                                <pre className="mt-1 max-h-20 overflow-auto whitespace-pre-wrap break-all text-[9px] leading-4 text-[#76695d]">{auditJsonPreview(call.arguments)}</pre>
+                                {call.result !== undefined && call.result !== null && (
+                                  <pre className="mt-1 max-h-20 overflow-auto whitespace-pre-wrap break-all border-t border-[#e1d8cd] pt-1 text-[9px] leading-4 text-[#526f5c]">结果：{auditJsonPreview(call.result)}</pre>
+                                )}
+                                {call.error && <div className="mt-1 break-all text-[9px] text-[#9a4237]">错误：{call.error}</div>}
+                              </div>
+                            ))}
+                            {!runDetails[run.id]?.tool_calls?.length && <div className="text-[10px] text-[#897b6d]">本次运行没有工具调用。</div>}
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
                 {!!run.workspace_candidates?.length && (

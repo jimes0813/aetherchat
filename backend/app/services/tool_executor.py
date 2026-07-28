@@ -32,9 +32,22 @@ async def execute_tool(
     status = "success"
     output: Any = None
     error: str | None = None
+    linked_task_id = str(arguments.get("task_id") or "").strip()
+    task_started = False
 
     try:
         artifact_service.normalize_session_id(session_id)
+        if linked_task_id and name in {
+            "write_artifact",
+            "run_command",
+            "workspace_write_file",
+            "workspace_delete_file",
+            "workspace_run_command",
+        }:
+            from ..routers.tasks import begin_task_tool
+
+            begin_task_tool(linked_task_id, session_id, caller)
+            task_started = True
 
         if name.startswith("workspace_"):
             from .git_workspace_service import (
@@ -120,19 +133,43 @@ async def execute_tool(
                     or f"Sandbox command exited with code {sandbox_result.get('exit_code', 1)}"
                 )
 
+        elif name == "upsert_memory_entity":
+            from .memory_service import memory_service
+
+            key = str(arguments.get("key") or "").strip()
+            value = str(arguments.get("value") or "").strip()
+            if not key or not value:
+                raise ValueError("key and value are required")
+            metadata = arguments.get("metadata")
+            if metadata is not None and not isinstance(metadata, dict):
+                raise ValueError("metadata must be an object")
+            updated_memory = memory_service.upsert_entity(
+                session_id,
+                key=key,
+                value=value,
+                kind=str(arguments.get("kind") or "fact"),
+                source=caller,
+                metadata=metadata,
+            )
+            entity = next(
+                item for item in updated_memory.get("entities") or []
+                if item.get("key") == key
+            )
+            output = {"entity": entity}
+
         elif name == "list_tasks":
-            from ..routers.tasks import _save_tasks, fake_tasks
+            from ..routers.tasks import _public_task, fake_tasks
 
             output = {
                 "tasks": [
-                    task.model_dump(mode="json")
+                    _public_task(task)
                     for task in fake_tasks
                     if str(task.session_id) == str(session_id)
                 ]
             }
 
         elif name == "claim_task":
-            from ..routers.tasks import _save_tasks, fake_tasks
+            from ..routers.tasks import _blocked_by, _public_task, _save_tasks, fake_tasks
 
             task_id = UUID(str(arguments.get("task_id") or ""))
             async with with_lock(redis_client, f"claim:{task_id}", timeout=10):
@@ -141,13 +178,19 @@ async def execute_tool(
                     if task.id == task_id and str(task.session_id) == str(session_id):
                         if task.status != "backlog":
                             raise ValueError("Task is not available for claiming")
+                        blockers = _blocked_by(task)
+                        if blockers:
+                            raise ValueError(
+                                "Task is blocked by: "
+                                + ", ".join(str(blocker) for blocker in blockers)
+                            )
                         matched = task.model_copy(update={"status": "claimed", "claimed_by": caller})
                         fake_tasks[index] = matched
                         _save_tasks()
                         break
             if matched is None:
                 raise KeyError("Task not found")
-            output = {"task": matched.model_dump(mode="json")}
+            output = {"task": _public_task(matched)}
 
         elif name == "subdivide_task":
             from ..models.schemas import Task
@@ -179,33 +222,54 @@ async def execute_tool(
             output = {"parent_task_id": str(parent.id), "tasks": [task.model_dump(mode="json") for task in created]}
 
         elif name == "get_progress_summary":
-            from ..routers.tasks import fake_tasks
+            from ..routers.tasks import _blocked_by, fake_tasks
 
             session_tasks = [task for task in fake_tasks if str(task.session_id) == str(session_id)]
             counts = {
                 status_name: sum(task.status == status_name for task in session_tasks)
                 for status_name in ("backlog", "claimed", "in_progress", "review", "merged", "done")
             }
-            output = {"total": len(session_tasks), "counts": counts}
+            output = {
+                "total": len(session_tasks),
+                "counts": counts,
+                "blocked": sum(bool(_blocked_by(task)) for task in session_tasks),
+                "ready": sum(not _blocked_by(task) for task in session_tasks),
+            }
 
         elif name in {"create_task", "create"}:
             from ..models.schemas import Task
-            from ..routers.tasks import _save_tasks, fake_tasks
+            from ..routers.tasks import (
+                _public_task,
+                _save_tasks,
+                _validate_dependencies,
+                fake_tasks,
+            )
 
             title = str(arguments.get("title") or "").strip()
             if not title:
                 raise ValueError("title is required")
+            task_id = uuid4()
+            parsed_session_id = UUID(str(session_id))
+            raw_dependencies = arguments.get("depends_on") or []
+            if not isinstance(raw_dependencies, list):
+                raise ValueError("depends_on must be an array of task IDs")
+            dependencies = _validate_dependencies(
+                session_id=parsed_session_id,
+                task_id=task_id,
+                dependencies=[UUID(str(value)) for value in raw_dependencies],
+            )
             task = Task(
-                id=uuid4(),
-                session_id=UUID(str(session_id)),
+                id=task_id,
+                session_id=parsed_session_id,
                 title=title,
                 description=str(arguments.get("description") or ""),
                 status="backlog",
                 priority=int(arguments.get("priority", 0)),
+                depends_on=dependencies,
             )
             fake_tasks.append(task)
             _save_tasks()
-            output = {"task": task.model_dump(mode="json")}
+            output = {"task": _public_task(task)}
 
         elif name in {"create_merge_proposal", "propose_merge"}:
             path = artifact_service.normalize_path(arguments.get("artifact_path", "src/main.py"))
@@ -242,6 +306,17 @@ async def execute_tool(
         status = "error"
         error = str(exc)
         output = None
+
+    if task_started:
+        from ..routers.tasks import finish_task_tool
+
+        synchronized_task = finish_task_tool(
+            linked_task_id,
+            session_id,
+            success=status == "success",
+        )
+        if isinstance(output, dict) and synchronized_task is not None:
+            output["task_sync"] = synchronized_task
 
     if registry is None:
         from .tool_registry import tool_registry

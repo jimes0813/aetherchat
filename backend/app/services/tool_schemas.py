@@ -6,6 +6,20 @@ from ..models.schemas import ToolDefinition
 
 CORE_TOOLS: list[ToolDefinition] = [
     ToolDefinition(
+        name="upsert_memory_entity",
+        description="写入或更新当前会话的跨 Agent 共享实体。",
+        parameters={
+            "type": "object",
+            "properties": {
+                "key": {"type": "string"},
+                "value": {"type": "string"},
+                "kind": {"type": "string"},
+                "metadata": {"type": "object"},
+            },
+            "required": ["key", "value"],
+        },
+    ),
+    ToolDefinition(
         name="claim_task",
         description="从 backlog 认领任务。执行自由（用户决策）。",
         parameters={
@@ -34,7 +48,11 @@ CORE_TOOLS: list[ToolDefinition] = [
             "properties": {
                 "path": {"type": "string"},
                 "content": {"type": "string"},
-                "commit_message": {"type": "string"}
+                "commit_message": {"type": "string"},
+                "task_id": {
+                    "type": "string",
+                    "description": "可选关联任务；执行时自动转为进行中，成功后转为评审",
+                },
             },
             "required": ["path", "content"]
         }
@@ -52,7 +70,11 @@ CORE_TOOLS: list[ToolDefinition] = [
             "properties": {
                 "cmd": {"type": "string"},
                 "cwd": {"type": "string", "default": "."},
-                "timeout": {"type": "integer", "default": 30}
+                "timeout": {"type": "integer", "default": 30},
+                "task_id": {
+                    "type": "string",
+                    "description": "可选关联任务；依赖完成后才能执行，成功后自动转为评审",
+                },
             },
             "required": ["cmd"]
         }

@@ -81,6 +81,7 @@ class ChatDatabase:
                     status TEXT NOT NULL,
                     claimed_by TEXT,
                     priority INTEGER NOT NULL DEFAULT 0,
+                    depends_on_json TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -104,6 +105,7 @@ class ChatDatabase:
                     decisions_json TEXT NOT NULL DEFAULT '[]',
                     preferences_json TEXT NOT NULL DEFAULT '[]',
                     open_items_json TEXT NOT NULL DEFAULT '[]',
+                    entities_json TEXT NOT NULL DEFAULT '[]',
                     message_count INTEGER NOT NULL DEFAULT 0,
                     updated_at TEXT NOT NULL
                 );
@@ -352,6 +354,17 @@ class ChatDatabase:
                 connection.execute(
                     "ALTER TABLE session_memory ADD COLUMN project_note TEXT NOT NULL DEFAULT ''"
                 )
+            if "entities_json" not in memory_columns:
+                connection.execute(
+                    "ALTER TABLE session_memory ADD COLUMN entities_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            task_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(tasks)").fetchall()
+            }
+            if "depends_on_json" not in task_columns:
+                connection.execute(
+                    "ALTER TABLE tasks ADD COLUMN depends_on_json TEXT NOT NULL DEFAULT '[]'"
+                )
             tool_call_columns = {
                 row["name"] for row in connection.execute(
                     "PRAGMA table_info(agent_tool_calls)"
@@ -479,10 +492,10 @@ class ChatDatabase:
         if row is None:
             return {
                 "session_id": str(session_id), "summary": "", "project_note": "", "decisions": [],
-                "preferences": [], "open_items": [], "message_count": 0, "updated_at": None,
+                "preferences": [], "open_items": [], "entities": [], "message_count": 0, "updated_at": None,
             }
         item = dict(row)
-        for field in ("decisions", "preferences", "open_items"):
+        for field in ("decisions", "preferences", "open_items", "entities"):
             try:
                 item[field] = json.loads(item.pop(f"{field}_json"))
             except (json.JSONDecodeError, TypeError):
@@ -499,20 +512,24 @@ class ChatDatabase:
         preferences: list[str],
         open_items: list[str],
         message_count: int,
+        entities: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         self.ensure_session(session_id)
         now = _utc_now()
+        if entities is None:
+            entities = list(self.get_memory(session_id).get("entities") or [])
         with self._lock, self._connect() as connection:
             connection.execute(
                 """INSERT INTO session_memory
-                   (session_id, summary, project_note, decisions_json, preferences_json, open_items_json, message_count, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   (session_id, summary, project_note, decisions_json, preferences_json, open_items_json, entities_json, message_count, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(session_id) DO UPDATE SET
                      summary=excluded.summary,
                      project_note=excluded.project_note,
                      decisions_json=excluded.decisions_json,
                      preferences_json=excluded.preferences_json,
                      open_items_json=excluded.open_items_json,
+                     entities_json=excluded.entities_json,
                      message_count=excluded.message_count,
                      updated_at=excluded.updated_at""",
                 (
@@ -520,6 +537,7 @@ class ChatDatabase:
                     json.dumps(decisions[:30], ensure_ascii=False),
                     json.dumps(preferences[:30], ensure_ascii=False),
                     json.dumps(open_items[:30], ensure_ascii=False),
+                    json.dumps(entities[:100], ensure_ascii=False, default=str),
                     max(0, int(message_count)), now,
                 ),
             )
@@ -528,11 +546,19 @@ class ChatDatabase:
     def list_tasks_for_session(self, session_id: str) -> list[dict[str, Any]]:
         with self._lock, self._connect() as connection:
             rows = connection.execute(
-                """SELECT id, title, description, status, claimed_by, priority
+                """SELECT id, title, description, status, claimed_by, priority, depends_on_json
                    FROM tasks WHERE session_id = ? ORDER BY priority DESC, updated_at DESC""",
                 (str(session_id),),
             ).fetchall()
-        return [dict(row) for row in rows]
+        result = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["depends_on"] = json.loads(item.pop("depends_on_json", "[]"))
+            except (json.JSONDecodeError, TypeError):
+                item["depends_on"] = []
+            result.append(item)
+        return result
 
     def list_sessions(self, limit: int = 100) -> list[dict[str, Any]]:
         bounded = max(1, min(500, int(limit)))
@@ -571,21 +597,30 @@ class ChatDatabase:
                     previous[key] != payload.get(key)
                     for key in ("title", "description", "status", "claimed_by", "priority")
                 )
+                encoded_dependencies = json.dumps(
+                    [str(value) for value in task.depends_on],
+                    ensure_ascii=False,
+                )
+                changed = changed or (
+                    previous is not None
+                    and previous["depends_on_json"] != encoded_dependencies
+                )
                 created_at = previous["created_at"] if previous else now
                 connection.execute(
                     """
                     INSERT INTO tasks
-                        (id, session_id, title, description, status, claimed_by, priority, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        (id, session_id, title, description, status, claimed_by, priority, depends_on_json, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         session_id=excluded.session_id, title=excluded.title,
                         description=excluded.description, status=excluded.status,
                         claimed_by=excluded.claimed_by, priority=excluded.priority,
+                        depends_on_json=excluded.depends_on_json,
                         updated_at=excluded.updated_at
                     """,
                     (
                         str(task.id), session_id, task.title, task.description, task.status,
-                        task.claimed_by, task.priority, created_at, now,
+                        task.claimed_by, task.priority, encoded_dependencies, created_at, now,
                     ),
                 )
                 if changed and record_events:
@@ -616,9 +651,18 @@ class ChatDatabase:
     def load_all_tasks(self) -> list[dict[str, Any]]:
         with self._lock, self._connect() as connection:
             rows = connection.execute(
-                "SELECT id, session_id, title, description, status, claimed_by, priority FROM tasks ORDER BY created_at"
+                """SELECT id, session_id, title, description, status, claimed_by, priority, depends_on_json
+                   FROM tasks ORDER BY created_at"""
             ).fetchall()
-        return [dict(row) for row in rows]
+        result = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["depends_on"] = json.loads(item.pop("depends_on_json", "[]"))
+            except (json.JSONDecodeError, TypeError):
+                item["depends_on"] = []
+            result.append(item)
+        return result
 
     def list_task_events(self, session_id: str, limit: int = 300) -> list[dict[str, Any]]:
         bounded = max(1, min(2000, int(limit)))

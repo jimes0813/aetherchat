@@ -46,8 +46,18 @@ export interface SessionMemory {
   decisions: string[];
   preferences: string[];
   open_items: string[];
+  entities: SharedMemoryEntity[];
   message_count: number;
   updated_at?: string | null;
+}
+
+export interface SharedMemoryEntity {
+  key: string;
+  kind: string;
+  value: string;
+  source: string;
+  metadata?: Record<string, string | number | boolean | null>;
+  updated_at: string;
 }
 
 export type AgentRunStatus =
@@ -220,6 +230,7 @@ export interface AgentRun {
   error?: string | null;
   created_at: string;
   updated_at: string;
+  started_at?: string | null;
   completed_at?: string | null;
   steps: AgentStep[];
   tool_call_count?: number;
@@ -234,6 +245,30 @@ export interface AgentRun {
   plan_revisions?: AgentPlanRevision[];
   workspace_candidate_count?: number;
   workspace_candidates?: AgentWorkspaceCandidate[];
+  events?: AgentEvent[];
+  tool_calls?: AgentToolCall[];
+}
+
+export interface AgentEvent {
+  id: string;
+  run_id: string;
+  step_id?: string | null;
+  event_type: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface AgentToolCall {
+  id: string;
+  run_id: string;
+  model: string;
+  tool_name: string;
+  status: string;
+  arguments: Record<string, unknown>;
+  result?: unknown;
+  error?: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface MCPToolInfo {
@@ -271,6 +306,9 @@ export interface Task {
   status: 'backlog' | 'claimed' | 'in_progress' | 'review' | 'merged' | 'done';
   claimed_by?: string;
   priority?: number;
+  depends_on: string[];
+  blocked_by?: string[];
+  ready?: boolean;
 }
 
 export interface Artifact {

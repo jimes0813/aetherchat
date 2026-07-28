@@ -1,3 +1,4 @@
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
@@ -13,6 +14,7 @@ class MemoryPatch(BaseModel):
     decisions: list[str] | None = None
     preferences: list[str] | None = None
     open_items: list[str] | None = None
+    entities: list[dict[str, Any]] | None = None
 
 
 @router.get("/{session_id}")

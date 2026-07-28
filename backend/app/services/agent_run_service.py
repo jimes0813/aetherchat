@@ -77,7 +77,7 @@ class AgentRunService:
             return False
         read_only_suffixes = {
             "capabilities", "list_apps", "list_windows", "get_state",
-            "read_document", "inventory", "status", "git_status",
+            "read_document", "inventory", "status", "workflow_schema", "git_status",
             "workspace_health", "task_chart",
         }
         is_read_only_plugin = (
@@ -800,9 +800,15 @@ class AgentRunService:
                 "role": role,
                 "message_id": message.get("id"),
                 "partial": partial,
+                "content_preview": str(message.get("content") or "")[:1000],
             })
             if role == "assistant" and author and not partial:
                 self.database.update_agent_step(run_id, author, "completed")
+        elif event_type == "plan_step_output":
+            payload.update({
+                "partial": bool(event.get("partial")),
+                "content_preview": str(event.get("content") or "")[:1000],
+            })
         elif event_type == "error":
             error = str(event.get("message") or "运行失败")[:2000]
             payload["message"] = error

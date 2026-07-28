@@ -190,6 +190,14 @@ def test_project_knowledge_upload_search_citations_and_delete(client):
     semantic = client.get(f"/knowledge/{session_id}/search", params={"q": "检索来源"}).json()
     assert semantic[0]["attachment_id"] == text_attachment["id"]
     assert "哈希相似" in semantic[0]["match_types"]
+    automatic_context = knowledge_service.context_for_query(
+        session_id,
+        "路线图如何实现离线全文检索？",
+    )
+    assert "本地知识库自动检索" in automatic_context
+    assert "[来源: requirements.md · 全文]" in automatic_context
+    assert "离线全文检索与来源引用" in automatic_context
+    assert knowledge_service.context_for_query(str(uuid4()), "离线全文检索") == ""
 
     pdf_bytes = io.BytesIO()
     pdf = canvas.Canvas(pdf_bytes)
@@ -295,6 +303,60 @@ def test_session_memory_extracts_user_intent_and_survives_restart(tmp_path):
     assert reopened.database.get_memory(str(uuid4()))["preferences"] == []
 
 
+def test_session_memory_shares_structured_entities_across_agents(tmp_path):
+    path = tmp_path / "shared-entities.sqlite3"
+    service = MemoryService(ChatDatabase(path))
+    session_id = str(uuid4())
+
+    service.upsert_entity(
+        session_id,
+        key="character:lin-xia",
+        value="林夏，小说主角",
+        kind="character",
+        source="model:qwen",
+        metadata={"chapter": 3},
+    )
+    service.upsert_entity(
+        session_id,
+        key="asset:cover",
+        value="generated/cover.png",
+        kind="generated_asset",
+        source="plugin:comfyui",
+        metadata={"artifact_path": "generated/comfyui/cover.metadata.json"},
+    )
+
+    reopened = MemoryService(ChatDatabase(path))
+    entities = reopened.database.get_memory(session_id)["entities"]
+    assert [item["key"] for item in entities] == ["character:lin-xia", "asset:cover"]
+    context = reopened.context(session_id)
+    assert "Agent 共享实体" in context
+    assert "林夏，小说主角" in context
+    assert "generated/cover.png" in context
+    assert "metadata_artifact=generated/comfyui/cover.metadata.json" in context
+
+
+def test_agent_tool_can_upsert_a_shared_memory_entity():
+    from app.services.tool_executor import execute_tool
+
+    session_id = str(uuid4())
+    run = asyncio.run(execute_tool(
+        "upsert_memory_entity",
+        {
+            "key": "character:林夏",
+            "value": "林夏，小说主角",
+            "kind": "character",
+            "metadata": {"chapter": 3},
+        },
+        "model:qwen",
+        session_id,
+    ))
+    assert run["status"] == "success"
+    assert run["result"]["entity"]["source"] == "model:qwen"
+    stored = chat_database.get_memory(session_id)["entities"]
+    assert stored[0]["key"] == "character:林夏"
+    assert stored[0]["metadata"]["chapter"] == 3
+
+
 def test_agent_run_state_events_retry_and_restart_recovery(tmp_path):
     path = tmp_path / "agent-runs.sqlite3"
     database = ChatDatabase(path)
@@ -307,8 +369,18 @@ def test_agent_run_state_events_retry_and_restart_recovery(tmp_path):
     service.observe(run["id"], {"type": "delta", "model": "architect", "delta": "分析"})
     service.observe(run["id"], {
         "type": "message_complete",
-        "message": {"id": str(uuid4()), "author_model": "architect", "role": "assistant"},
+        "message": {
+            "id": str(uuid4()),
+            "author_model": "architect",
+            "role": "assistant",
+            "content": "架构结论与证据摘要",
+        },
     })
+    message_event = next(
+        event for event in database.get_agent_run(run["id"])["events"]
+        if event["event_type"] == "message_complete"
+    )
+    assert message_event["payload"]["content_preview"] == "架构结论与证据摘要"
     service.observe(run["id"], {
         "type": "error", "code": "provider_error", "model": "coder", "message": "provider offline",
     })
@@ -1349,6 +1421,153 @@ def test_tasks_are_uuid_validated_session_scoped_and_persisted(client, tmp_path,
         assert restored[0]["id"] == task_id
         assert restored[0]["claimed_by"] == "user:test"
     finally:
+        task_router.fake_tasks.clear()
+        task_router.fake_tasks.extend(original_tasks)
+
+
+def test_task_dependencies_block_execution_and_tool_success_enters_review(client, tmp_path, monkeypatch):
+    from app.services.tool_executor import execute_tool
+
+    original_tasks = list(task_router.fake_tasks)
+    monkeypatch.setattr(task_router, "TASKS_PATH", tmp_path / "dependent-tasks.json")
+    task_router.fake_tasks.clear()
+    session_id = str(uuid4())
+    try:
+        parent = client.post("/tasks/", json={
+            "session_id": session_id,
+            "title": "先生成图片",
+        }).json()
+        child_response = client.post("/tasks/", json={
+            "session_id": session_id,
+            "title": "再撰写图片描述",
+            "depends_on": [parent["id"]],
+        })
+        assert child_response.status_code == 200
+        child = child_response.json()
+        assert child["ready"] is False
+        assert child["blocked_by"] == [parent["id"]]
+        assert client.post(f"/tasks/{child['id']}/claim").status_code == 409
+        listed = asyncio.run(execute_tool(
+            "list_tasks",
+            {},
+            "model:qwen",
+            session_id,
+        ))
+        listed_child = next(
+            item for item in listed["result"]["tasks"]
+            if item["id"] == child["id"]
+        )
+        assert listed_child["ready"] is False
+        blocked_claim = asyncio.run(execute_tool(
+            "claim_task",
+            {"task_id": child["id"]},
+            "model:qwen",
+            session_id,
+        ))
+        assert blocked_claim["status"] == "error"
+        assert "blocked by" in blocked_claim["error"]
+
+        assert client.patch(
+            f"/tasks/{parent['id']}",
+            json={"status": "done"},
+        ).status_code == 200
+        refreshed = client.get("/tasks/", params={"session_id": session_id}).json()
+        child = next(item for item in refreshed if item["id"] == child["id"])
+        assert child["ready"] is True
+        assert child["blocked_by"] == []
+
+        run = asyncio.run(execute_tool(
+            "write_artifact",
+            {
+                "path": "descriptions/image.md",
+                "content": "图片描述",
+                "task_id": child["id"],
+            },
+            "model:qwen",
+            session_id,
+        ))
+        assert run["status"] == "success"
+        assert run["result"]["task_sync"]["status"] == "review"
+        task_after_tool = client.get("/tasks/", params={"session_id": session_id}).json()
+        child_after_tool = next(item for item in task_after_tool if item["id"] == child["id"])
+        assert child_after_tool["status"] == "review"
+        assert child_after_tool["claimed_by"] == "model:qwen"
+
+        circular = client.patch(
+            f"/tasks/{parent['id']}",
+            json={"depends_on": [child["id"]]},
+        )
+        assert circular.status_code == 422
+        assert "循环" in circular.json()["detail"]
+    finally:
+        task_router.fake_tasks.clear()
+        task_router.fake_tasks.extend(original_tasks)
+
+
+def test_tool_registry_upgrades_builtin_schemas_without_reenabling_tools(tmp_path):
+    from app.services.tool_registry import ToolRegistry
+
+    registry = ToolRegistry(tmp_path)
+    document = json.loads(registry.registry_path.read_text(encoding="utf-8"))
+    write_tool = next(
+        item for item in document["tools"]
+        if item["name"] == "write_artifact"
+    )
+    write_tool["input_schema"]["properties"].pop("task_id")
+    write_tool["enabled"] = False
+    registry.registry_path.write_text(
+        json.dumps(document, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    upgraded = ToolRegistry(tmp_path)
+    upgraded_write = upgraded.find_by_name("write_artifact")
+    upgraded_create = upgraded.find_by_name("create_task")
+    assert upgraded_write is not None
+    assert upgraded_write["enabled"] is False
+    assert "task_id" in upgraded_write["input_schema"]["properties"]
+    assert upgraded_create is not None
+    assert "depends_on" in upgraded_create["input_schema"]["properties"]
+
+
+def test_linked_plugin_success_advances_task_to_review(client, tmp_path, monkeypatch):
+    from app.services.plugin_registry import PluginInvoke, PluginUpdate
+
+    original_tasks = list(task_router.fake_tasks)
+    previous_enabled = plugin_registry.get("comfyui")["enabled"]
+    monkeypatch.setattr(task_router, "TASKS_PATH", tmp_path / "plugin-task.json")
+    task_router.fake_tasks.clear()
+    session_id = str(uuid4())
+
+    async def fake_dispatch(_action, _session_id, arguments):
+        return {"prompt_id": "test-prompt", "received_task_id": arguments["task_id"]}
+
+    try:
+        plugin_registry.update("comfyui", PluginUpdate(enabled=True))
+        monkeypatch.setattr(plugin_registry, "_dispatch", fake_dispatch)
+        task = client.post("/tasks/", json={
+            "session_id": session_id,
+            "title": "生成封面",
+        }).json()
+        result = asyncio.run(plugin_registry.invoke(
+            "comfyui",
+            PluginInvoke(
+                action="generate_image",
+                session_id=session_id,
+                arguments={
+                    "prompt": "雨夜中的重庆",
+                    "model": "qwen-image.safetensors",
+                    "task_id": task["id"],
+                },
+            ),
+            caller="model:qwen",
+        ))
+        assert result["result"]["task_sync"]["status"] == "review"
+        refreshed = client.get("/tasks/", params={"session_id": session_id}).json()
+        assert refreshed[0]["status"] == "review"
+        assert refreshed[0]["claimed_by"] == "model:qwen"
+    finally:
+        plugin_registry.update("comfyui", PluginUpdate(enabled=previous_enabled))
         task_router.fake_tasks.clear()
         task_router.fake_tasks.extend(original_tasks)
 
@@ -4145,6 +4364,147 @@ def test_comfyui_graphs_cover_local_image_and_video_pipelines():
     assert rewired["nodes"][1]["inputs"][0]["link"] == 10
 
 
+def test_comfyui_workflow_descriptor_exposes_nodes_edges_and_typed_overrides():
+    from app.services.comfyui_service import ComfyUIError, ComfyUIService
+
+    graph = {
+        "1": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {"ckpt_name": "model.safetensors"},
+        },
+        "6": {
+            "class_type": "KSampler",
+            "inputs": {
+                "model": ["1", 0],
+                "seed": 123,
+                "steps": 8,
+                "cfg": 2.5,
+            },
+            "_meta": {"title": "Primary sampler"},
+        },
+    }
+    info = {
+        "CheckpointLoaderSimple": {
+            "display_name": "Load checkpoint",
+            "input": {"required": {"ckpt_name": [["model.safetensors", "other.safetensors"]]}},
+        },
+        "KSampler": {
+            "display_name": "Sampler",
+            "input": {
+                "required": {
+                    "model": ["MODEL"],
+                    "seed": ["INT", {"min": 0, "max": 999}],
+                    "steps": ["INT", {"min": 1, "max": 100}],
+                    "cfg": ["FLOAT", {"min": 0.1, "max": 30.0}],
+                },
+                "optional": {
+                    "denoise": ["FLOAT", {"min": 0.0, "max": 1.0}],
+                    "mask": ["MASK"],
+                },
+            },
+        },
+    }
+    descriptor = ComfyUIService._describe_graph(graph, info)
+    assert descriptor["node_map"] == {
+        "1": "Load checkpoint",
+        "6": "Primary sampler",
+    }
+    assert descriptor["dependencies"] == [{"from": "1", "to": "6", "input": "model"}]
+    assert "1 (Load checkpoint) -> 6 (Primary sampler) via model" in descriptor["dependency_text"]
+    inputs = {
+        (item["node_id"], item["input"]): item
+        for item in descriptor["overridable_inputs"]
+    }
+    assert inputs[("6", "seed")]["type"] == "INT"
+    assert inputs[("6", "steps")]["options"]["max"] == 100
+    assert inputs[("6", "denoise")]["present"] is False
+    assert ("6", "mask") not in inputs
+    ComfyUIService._validate_override_value(inputs[("6", "steps")], 24)
+    with pytest.raises(ComfyUIError, match="expects INT"):
+        ComfyUIService._validate_override_value(inputs[("6", "steps")], "24")
+    with pytest.raises(ComfyUIError, match="must be <="):
+        ComfyUIService._validate_override_value(inputs[("6", "steps")], 101)
+    formatted = ComfyUIService._format_node_error(
+        {"node_id": "6", "exception_message": "bad input"},
+        graph,
+    )
+    assert '"node_label": "Primary sampler"' in formatted
+    assert "6=Primary sampler" in formatted
+    prompt_graph = {
+        **graph,
+        "3": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {"text": "雨夜中的重庆"},
+            "_meta": {"title": "Positive prompt"},
+        },
+    }
+    metadata = ComfyUIService._generation_metadata(
+        prompt_id="prompt-1",
+        graph=prompt_graph,
+        metadata={"operation": "run_workflow"},
+        files=[],
+        submitted_at="2026-07-28T00:00:00+00:00",
+    )
+    assert metadata["provenance"]["prompts"] == [{
+        "node_id": "3",
+        "node_name": "Positive prompt",
+        "input": "text",
+        "value": "雨夜中的重庆",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_comfyui_metadata_is_written_as_agent_artifact_and_shared_entity():
+    prompt_id = str(uuid4())
+    session_id = str(uuid4())
+    result = await plugin_registry._persist_comfyui_metadata(
+        session_id,
+        "generate_image",
+        "model:qwen",
+        {
+            "prompt_id": prompt_id,
+            "files": [{"filename": "cover.png", "url": "http://127.0.0.1:8188/view?cover"}],
+            "generation_metadata": {
+                "schema": "aetherchat.agent-artifact/v1",
+                "schema_version": "1.0",
+                "artifact_type": "comfyui_generation",
+                "engine": "ComfyUI",
+                "operation": "generate_image",
+                "prompt_id": prompt_id,
+                "submitted_at": "2026-07-28T00:00:00+00:00",
+                "completed_at": "2026-07-28T00:00:01+00:00",
+                "parameters": {
+                    "prompt": "雨夜中的重庆",
+                    "model": "qwen-image.safetensors",
+                    "seed": 42,
+                    "width": 1024,
+                    "height": 768,
+                },
+                "workflow": {"node_map": {"1": "Sampler"}, "dependencies": []},
+                "provenance": {
+                    "models": ["qwen-image.safetensors"],
+                    "seeds": [42],
+                    "dimensions": [{"width": 1024, "height": 768}],
+                },
+                "outputs": [{"filename": "cover.png", "url": "http://127.0.0.1:8188/view?cover"}],
+            },
+        },
+    )
+    metadata_path = result["metadata_artifact"]["path"]
+    assert metadata_path == f"generated/comfyui/{prompt_id}.metadata.json"
+    stored = json.loads(await plugin_registry.artifacts.read(session_id, metadata_path))
+    assert stored["parameters"]["prompt"] == "雨夜中的重庆"
+    assert stored["producer"] == {
+        "agent": "model:qwen",
+        "plugin": "comfyui",
+        "action": "generate_image",
+    }
+    shared = chat_database.get_memory(session_id)["entities"]
+    entity = next(item for item in shared if item["key"] == f"asset:comfyui:{prompt_id}")
+    assert entity["metadata"]["seed"] == 42
+    assert entity["metadata"]["artifact_path"] == metadata_path
+
+
 @pytest.mark.asyncio
 async def test_comfyui_result_does_not_embed_video_as_an_image(monkeypatch):
     from app.services.comfyui_service import ComfyUIService
@@ -4384,3 +4744,67 @@ async def test_computer_use_can_observe_windows_without_performing_actions():
         )
         assert state["window"]["window_id"] == window["window_id"]
         assert isinstance(state["elements"], list)
+
+
+@pytest.mark.asyncio
+async def test_computer_use_stable_and_fuzzy_selectors_can_refresh_stale_snapshot(monkeypatch):
+    from app.services.computer_use_service import (
+        ComputerUseError,
+        ComputerUseService,
+        _Snapshot,
+    )
+
+    service = ComputerUseService()
+    element_id = service._stable_element_id("Button", "save-button", "保存", "0/2")
+    assert element_id == service._stable_element_id("Button", "save-button", "Save", "9/8")
+    service._snapshots["snapshot"] = _Snapshot(
+        window_id=42,
+        created_at=time.monotonic(),
+        elements=[
+            {
+                "index": 0,
+                "element_id": element_id,
+                "name": "保存更改",
+                "control_type": "Button",
+                "enabled": True,
+                "bounds": {"left": 10, "top": 20, "width": 80, "height": 24},
+            },
+        ],
+    )
+    assert service._snapshot_element("snapshot", 42, None, element_id)["name"] == "保存更改"
+    assert service._snapshot_element(
+        "snapshot",
+        42,
+        None,
+        element_text="保存",
+        control_type="Button",
+    )["element_id"] == element_id
+
+    def fake_resolve(
+        _hwnd, snapshot_id, _index, _x, _y, _space,
+        _element_id, _element_text, _control_type,
+    ):
+        if snapshot_id == "expired":
+            raise ComputerUseError("snapshot expired")
+        return (50, 32)
+
+    async def fake_get_state(*_args, **_kwargs):
+        return {"snapshot_id": "refreshed"}
+
+    monkeypatch.setattr(service, "_resolve_point_sync", fake_resolve)
+    monkeypatch.setattr(service, "get_state", fake_get_state)
+    point, snapshot_id, retried = await service._resolve_point_with_retry(
+        42,
+        "expired",
+        None,
+        None,
+        None,
+        "window",
+        element_id=element_id,
+        element_text=None,
+        control_type="Button",
+        auto_retry=True,
+    )
+    assert point == (50, 32)
+    assert snapshot_id == "refreshed"
+    assert retried is True

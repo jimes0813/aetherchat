@@ -78,6 +78,11 @@ class ToolRegistry:
                         "title": {"type": "string"},
                         "description": {"type": "string"},
                         "priority": {"type": "integer"},
+                        "depends_on": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "当前会话内的前置任务 ID；完成前本任务不可认领或执行",
+                        },
                     },
                 },
             ),
@@ -117,6 +122,32 @@ class ToolRegistry:
                 input_schema={"type": "object", "properties": {}},
             ),
             ToolCreate(
+                name="upsert_memory_entity",
+                description="把需要跨 Agent 复用的稳定实体写入当前会话共享记忆；同一 key 会更新",
+                category="memory",
+                owner="system",
+                kind="internal",
+                input_schema={
+                    "type": "object",
+                    "required": ["key", "value"],
+                    "properties": {
+                        "key": {
+                            "type": "string",
+                            "description": "稳定键，例如 character:lin-xia 或 url:project-home",
+                        },
+                        "value": {"type": "string"},
+                        "kind": {
+                            "type": "string",
+                            "description": "例如 character、url、fact、generated_asset",
+                        },
+                        "metadata": {
+                            "type": "object",
+                            "description": "可选的简单标量元数据",
+                        },
+                    },
+                },
+            ),
+            ToolCreate(
                 name="read_artifact",
                 description="读取当前会话工件内容",
                 category="artifact",
@@ -141,6 +172,10 @@ class ToolRegistry:
                         "path": {"type": "string"},
                         "content": {"type": "string"},
                         "commit_message": {"type": "string"},
+                        "task_id": {
+                            "type": "string",
+                            "description": "可选：关联任务；成功后自动推进到 review",
+                        },
                     },
                 },
             ),
@@ -157,6 +192,10 @@ class ToolRegistry:
                         "cmd": {"type": "string"},
                         "cwd": {"type": "string"},
                         "timeout": {"type": "integer"},
+                        "task_id": {
+                            "type": "string",
+                            "description": "可选：关联任务；成功后自动推进到 review",
+                        },
                     },
                 },
             ),
@@ -192,6 +231,10 @@ class ToolRegistry:
                     "properties": {
                         "path": {"type": "string"},
                         "content": {"type": "string"},
+                        "task_id": {
+                            "type": "string",
+                            "description": "可选：关联任务；成功后自动推进到 review",
+                        },
                     },
                 },
             ),
@@ -204,7 +247,13 @@ class ToolRegistry:
                 input_schema={
                     "type": "object",
                     "required": ["path"],
-                    "properties": {"path": {"type": "string"}},
+                    "properties": {
+                        "path": {"type": "string"},
+                        "task_id": {
+                            "type": "string",
+                            "description": "可选：关联任务；成功后自动推进到 review",
+                        },
+                    },
                 },
             ),
             ToolCreate(
@@ -220,6 +269,10 @@ class ToolRegistry:
                         "cmd": {"type": "string"},
                         "cwd": {"type": "string"},
                         "timeout": {"type": "integer"},
+                        "task_id": {
+                            "type": "string",
+                            "description": "可选：关联任务；成功后自动推进到 review",
+                        },
                     },
                 },
             ),
@@ -299,6 +352,23 @@ class ToolRegistry:
         existing_names = {tool.get("name") for tool in self.tools.values()}
         changed = False
         for payload in seeds:
+            existing = next(
+                (
+                    tool
+                    for tool in self.tools.values()
+                    if tool.get("name") == payload.name
+                    and tool.get("owner") == "system"
+                    and tool.get("session_id") is None
+                ),
+                None,
+            )
+            if existing is not None:
+                managed = payload.model_dump(exclude={"enabled", "session_id"})
+                if any(existing.get(key) != value for key, value in managed.items()):
+                    existing.update(managed)
+                    existing["updated_at"] = _utc_now()
+                    changed = True
+                continue
             if payload.name in existing_names:
                 continue
             tool = payload.model_dump()

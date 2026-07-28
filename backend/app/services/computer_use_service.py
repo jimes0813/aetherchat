@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import ctypes
+import hashlib
 import io
 import os
 import time
 from collections import OrderedDict
 from contextlib import suppress
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -56,6 +58,20 @@ class ComputerUseService:
 
     def __init__(self) -> None:
         self._snapshots: OrderedDict[str, _Snapshot] = OrderedDict()
+
+    @staticmethod
+    def _stable_element_id(
+        control_type: str,
+        automation_id: str,
+        name: str,
+        path: str,
+    ) -> str:
+        if automation_id:
+            identity = f"automation:{control_type.casefold()}:{automation_id.casefold()}"
+        else:
+            identity = f"path:{control_type.casefold()}:{name.casefold()}:{path}"
+        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
+        return f"uia:{digest}"
 
     async def list_apps(self) -> dict[str, Any]:
         windows = await asyncio.to_thread(self._list_windows_sync)
@@ -108,23 +124,60 @@ class ComputerUseService:
         *,
         snapshot_id: str | None = None,
         element_index: int | None = None,
+        element_id: str | None = None,
+        element_text: str | None = None,
+        control_type: str | None = None,
         x: int | None = None,
         y: int | None = None,
         coordinate_space: Literal["window", "screen"] = "window",
         button: Literal["left", "right", "middle"] = "left",
         click_count: int = 1,
+        auto_retry: bool = True,
     ) -> dict[str, Any]:
         hwnd = self._coerce_window_id(window_id)
-        point = await asyncio.to_thread(
-            self._resolve_point_sync,
+        point, resolved_snapshot_id, retried = await self._resolve_point_with_retry(
             hwnd,
             snapshot_id,
             element_index,
             x,
             y,
             coordinate_space,
+            element_id=element_id,
+            element_text=element_text,
+            control_type=control_type,
+            auto_retry=auto_retry,
         )
-        return await asyncio.to_thread(self._click_sync, hwnd, point, button, click_count)
+        try:
+            result = await asyncio.to_thread(self._click_sync, hwnd, point, button, click_count)
+        except ComputerUseError:
+            if retried or not auto_retry or not (element_id or element_text):
+                raise
+            refreshed = await self.get_state(
+                hwnd,
+                include_screenshot=False,
+                include_accessibility=True,
+            )
+            resolved_snapshot_id = refreshed["snapshot_id"]
+            point = await asyncio.to_thread(
+                self._resolve_point_sync,
+                hwnd,
+                resolved_snapshot_id,
+                None,
+                None,
+                None,
+                "window",
+                element_id,
+                element_text,
+                control_type,
+            )
+            result = await asyncio.to_thread(self._click_sync, hwnd, point, button, click_count)
+            retried = True
+        return {
+            **result,
+            "resolved_snapshot_id": resolved_snapshot_id,
+            "matched_element_id": element_id,
+            "retried": retried,
+        }
 
     async def type_text(
         self,
@@ -133,22 +186,37 @@ class ComputerUseService:
         *,
         snapshot_id: str | None = None,
         element_index: int | None = None,
+        element_id: str | None = None,
+        element_text: str | None = None,
+        control_type: str | None = None,
+        auto_retry: bool = True,
     ) -> dict[str, Any]:
         if not isinstance(text, str) or len(text) > MAX_TEXT_INPUT:
             raise ComputerUseError(f"Text input must be at most {MAX_TEXT_INPUT} characters")
         hwnd = self._coerce_window_id(window_id)
         point = None
-        if element_index is not None:
-            point = await asyncio.to_thread(
-                self._resolve_point_sync,
+        resolved_snapshot_id = snapshot_id
+        retried = False
+        if element_index is not None or element_id or element_text:
+            point, resolved_snapshot_id, retried = await self._resolve_point_with_retry(
                 hwnd,
                 snapshot_id,
                 element_index,
                 None,
                 None,
                 "window",
+                element_id=element_id,
+                element_text=element_text,
+                control_type=control_type,
+                auto_retry=auto_retry,
             )
-        return await asyncio.to_thread(self._type_text_sync, hwnd, text, point)
+        result = await asyncio.to_thread(self._type_text_sync, hwnd, text, point)
+        return {
+            **result,
+            "resolved_snapshot_id": resolved_snapshot_id,
+            "matched_element_id": element_id,
+            "retried": retried,
+        }
 
     async def press_key(self, window_id: int, key: str) -> dict[str, Any]:
         if not isinstance(key, str) or not key.strip() or len(key) > 100:
@@ -158,23 +226,37 @@ class ComputerUseService:
     async def set_value(
         self,
         window_id: int,
-        snapshot_id: str,
-        element_index: int,
+        snapshot_id: str | None,
+        element_index: int | None,
         value: str,
+        *,
+        element_id: str | None = None,
+        element_text: str | None = None,
+        control_type: str | None = None,
+        auto_retry: bool = True,
     ) -> dict[str, Any]:
         if not isinstance(value, str) or len(value) > MAX_TEXT_INPUT:
             raise ComputerUseError(f"Value must be at most {MAX_TEXT_INPUT} characters")
         hwnd = self._coerce_window_id(window_id)
-        point = await asyncio.to_thread(
-            self._resolve_point_sync,
+        point, resolved_snapshot_id, retried = await self._resolve_point_with_retry(
             hwnd,
             snapshot_id,
             element_index,
             None,
             None,
             "window",
+            element_id=element_id,
+            element_text=element_text,
+            control_type=control_type,
+            auto_retry=auto_retry,
         )
-        return await asyncio.to_thread(self._set_value_sync, hwnd, point, value)
+        result = await asyncio.to_thread(self._set_value_sync, hwnd, point, value)
+        return {
+            **result,
+            "resolved_snapshot_id": resolved_snapshot_id,
+            "matched_element_id": element_id,
+            "retried": retried,
+        }
 
     async def scroll(
         self,
@@ -300,6 +382,7 @@ class ComputerUseService:
             elements = [
                 {
                     "index": index,
+                    "element_id": f"window:{item['window_id']}",
                     "name": item["title"],
                     "control_type": "Window",
                     "automation_id": "",
@@ -310,7 +393,10 @@ class ComputerUseService:
                 for index, item in enumerate(windows)
             ]
             tree = "\n".join(
-                f'{item["index"]} Window: {item["name"]!r} (window_id={item["window_id"]})'
+                (
+                    f'{item["index"]} [{item["element_id"]}] Window: '
+                    f'{item["name"]!r} (window_id={item["window_id"]})'
+                )
                 for item in elements
             )
         else:
@@ -354,7 +440,7 @@ class ComputerUseService:
         try:
             root = Desktop(backend="uia").window(handle=hwnd).wrapper_object()
 
-            def walk(control: Any, depth: int) -> None:
+            def walk(control: Any, depth: int, path: str) -> None:
                 if len(elements) >= MAX_ACCESSIBILITY_ELEMENTS or depth > 14:
                     return
                 try:
@@ -369,11 +455,25 @@ class ComputerUseService:
                         "height": max(0, int(rectangle.bottom - rectangle.top)),
                     }
                     index = len(elements)
+                    automation_id = str(info.automation_id or "")[:200]
+                    element_id = ComputerUseService._stable_element_id(
+                        str(control_type),
+                        automation_id,
+                        name,
+                        path,
+                    )
                     element = {
                         "index": index,
+                        "element_id": element_id,
                         "name": name,
                         "control_type": control_type,
-                        "automation_id": str(info.automation_id or "")[:200],
+                        "automation_id": automation_id,
+                        "selector": {
+                            "element_id": element_id,
+                            "automation_id": automation_id,
+                            "control_type": str(control_type),
+                            "text": name,
+                        },
                         "enabled": bool(info.enabled),
                         "bounds": bounds,
                     }
@@ -391,7 +491,7 @@ class ComputerUseService:
                     if value and value != name:
                         element["value"] = value
                     elements.append(element)
-                    label = f"{index} {control_type}"
+                    label = f"{index} [{element_id}] {control_type}"
                     if name:
                         label += f" {name}"
                     if not element["enabled"]:
@@ -399,14 +499,14 @@ class ComputerUseService:
                     if value and value != name:
                         label += f" Value: {value}"
                     lines.append("\t" * depth + label)
-                    for child in control.children():
+                    for child_index, child in enumerate(control.children()):
                         if len(elements) >= MAX_ACCESSIBILITY_ELEMENTS:
                             break
-                        walk(child, depth + 1)
+                        walk(child, depth + 1, f"{path}/{child_index}")
                 except Exception:
                     return
 
-            walk(root, 0)
+            walk(root, 0, "0")
         except Exception as exc:
             lines.append(f"Accessibility tree unavailable: {exc}")
         finally:
@@ -474,24 +574,131 @@ class ComputerUseService:
             "origin_y": top,
         }
 
-    def _snapshot_element(self, snapshot_id: str | None, window_id: int, element_index: int) -> dict[str, Any]:
+    def _snapshot_element(
+        self,
+        snapshot_id: str | None,
+        window_id: int,
+        element_index: int | None,
+        element_id: str | None = None,
+        element_text: str | None = None,
+        control_type: str | None = None,
+    ) -> dict[str, Any]:
         self._prune_snapshots()
         if not snapshot_id or snapshot_id not in self._snapshots:
             raise ComputerUseError("snapshot_id is missing or expired; observe the window again")
         snapshot = self._snapshots[snapshot_id]
         if snapshot.window_id != window_id:
             raise ComputerUseError("The snapshot belongs to a different window")
-        if not isinstance(element_index, int) or isinstance(element_index, bool):
-            raise ComputerUseError("element_index must be an integer")
-        if element_index < 0 or element_index >= len(snapshot.elements):
-            raise ComputerUseError("element_index is outside the snapshot")
-        return snapshot.elements[element_index]
+        if element_id:
+            matched = next(
+                (
+                    element for element in snapshot.elements
+                    if element.get("element_id") == element_id
+                ),
+                None,
+            )
+            if matched is None:
+                raise ComputerUseError(
+                    f"element_id {element_id!r} is not present in this snapshot"
+                )
+            return matched
+        if element_index is not None:
+            if not isinstance(element_index, int) or isinstance(element_index, bool):
+                raise ComputerUseError("element_index must be an integer")
+            if element_index < 0 or element_index >= len(snapshot.elements):
+                raise ComputerUseError("element_index is outside the snapshot")
+            return snapshot.elements[element_index]
+        needle = " ".join(str(element_text or "").casefold().split())
+        expected_type = str(control_type or "").casefold().strip()
+        if not needle and not expected_type:
+            raise ComputerUseError(
+                "Select an element with element_id, element_index, element_text, or control_type"
+            )
+        ranked: list[tuple[float, dict[str, Any]]] = []
+        for element in snapshot.elements:
+            actual_type = str(element.get("control_type") or "").casefold()
+            if expected_type and actual_type != expected_type:
+                continue
+            haystack = " ".join(str(element.get("name") or "").casefold().split())
+            if not needle:
+                score = 1.0
+            elif haystack == needle:
+                score = 3.0
+            elif needle in haystack:
+                score = 2.0 + len(needle) / max(1, len(haystack))
+            else:
+                score = SequenceMatcher(None, needle, haystack).ratio()
+            if score >= 0.55:
+                ranked.append((score, element))
+        if not ranked:
+            description = element_text or control_type or "selector"
+            raise ComputerUseError(f"No element fuzzily matched {description!r}")
+        ranked.sort(
+            key=lambda item: (
+                item[0],
+                bool(item[1].get("enabled")),
+                -int(item[1].get("index", 0)),
+            ),
+            reverse=True,
+        )
+        return ranked[0][1]
 
     def _prune_snapshots(self) -> None:
         cutoff = time.monotonic() - SNAPSHOT_TTL_SECONDS
         stale = [key for key, value in self._snapshots.items() if value.created_at < cutoff]
         for key in stale:
             self._snapshots.pop(key, None)
+
+    async def _resolve_point_with_retry(
+        self,
+        hwnd: int,
+        snapshot_id: str | None,
+        element_index: int | None,
+        x: int | None,
+        y: int | None,
+        coordinate_space: str,
+        *,
+        element_id: str | None,
+        element_text: str | None,
+        control_type: str | None,
+        auto_retry: bool,
+    ) -> tuple[tuple[int, int], str | None, bool]:
+        try:
+            point = await asyncio.to_thread(
+                self._resolve_point_sync,
+                hwnd,
+                snapshot_id,
+                element_index,
+                x,
+                y,
+                coordinate_space,
+                element_id,
+                element_text,
+                control_type,
+            )
+            return point, snapshot_id, False
+        except ComputerUseError:
+            if not auto_retry or not (element_id or element_text or control_type):
+                raise
+        refreshed = await self.get_state(
+            hwnd,
+            include_screenshot=False,
+            include_accessibility=True,
+        )
+        refreshed_snapshot_id = str(refreshed["snapshot_id"])
+        point = await asyncio.to_thread(
+            self._resolve_point_sync,
+            hwnd,
+            refreshed_snapshot_id,
+            None,
+            x,
+            y,
+            coordinate_space,
+            element_id,
+            element_text,
+            control_type,
+        )
+        return point, refreshed_snapshot_id, True
 
     def _resolve_point_sync(
         self,
@@ -501,13 +708,23 @@ class ComputerUseService:
         x: int | None,
         y: int | None,
         coordinate_space: str,
+        element_id: str | None = None,
+        element_text: str | None = None,
+        control_type: str | None = None,
     ) -> tuple[int, int]:
         import win32api
         import win32con
         import win32gui
 
-        if element_index is not None:
-            element = self._snapshot_element(snapshot_id, hwnd, element_index)
+        if element_index is not None or element_id or element_text or control_type:
+            element = self._snapshot_element(
+                snapshot_id,
+                hwnd,
+                element_index,
+                element_id,
+                element_text,
+                control_type,
+            )
             bounds = element["bounds"]
             if bounds["width"] < 1 or bounds["height"] < 1:
                 raise ComputerUseError("The selected element has no clickable bounds")

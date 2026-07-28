@@ -12,6 +12,8 @@ Linux 桌面版的构建与安装说明见 [`frontend/LINUX_PACKAGING.md`](front
 
 每个会话还拥有独立的本地持久记忆：滚动摘要、用户明确表达的偏好和决定、未完成事项，以及可手动维护的项目固定说明。模型调用前会使用这些内容和当前任务板补全上下文；用户可以在“记忆”面板审阅、修改或清空，助手自己的说法不会自动变成用户偏好。
 
+Agent 之间还可通过结构化共享实体和标准生成物元数据交换上下文。ComfyUI 成功生成后会自动记录 prompt、模型、seed、尺寸、工作流节点/依赖和真实输出，并写入 `generated/comfyui/*.metadata.json`；任务支持依赖、阻塞检测及关联工具的自动状态同步。协议与调试行为见 [`docs/AGENT_COLLABORATION_PROTOCOL.md`](docs/AGENT_COLLABORATION_PROTOCOL.md)。
+
 每次多模型执行会持久记录为 Agent Run。项目协作模式进一步建立 Goal Spec 和 Planner → 并行 Worker → Verifier → Synthesizer 的持久 Plan DAG：Planner 先给出可编辑草稿，用户确认前不会调用 Worker；每次人工修改和 Verifier 返工都有版本快照。中间候选与核验结论留在运行记录，主聊天只接收一份最终交付；核验失败会进行有限次数返工，持续失败则阻止未经验证的综合。应用异常退出后，等待确认的草稿会保留，执行中的 Run 可从未完成 Plan Step 继续。
 
 桌面版还可为会话选择一个干净的 Git 仓库。代码 Worker 从计划确认时冻结的提交创建独立 detached worktree，只能通过限定工具访问该 worktree；结束后由断网 Docker 沙箱运行最多四条已确认命令，并持久化真实 diff、退出码和输出哈希。候选只有经过 Electron 原生确认，且再次通过仓库 HEAD、干净状态和补丁哈希校验后，才会以 `git apply` 写回主工作树；不会自动 commit、push、fetch 或访问网络。浏览器模式和未绑定仓库的 Worker 仍保持只读。安全边界、状态语义和已知限制见 [`docs/GIT_AGENT_WORKSPACES.md`](docs/GIT_AGENT_WORKSPACES.md)。

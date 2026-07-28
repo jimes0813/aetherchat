@@ -121,7 +121,7 @@ BUILTIN_PLUGINS = [
             _action(
                 "get_state",
                 "观察窗口",
-                "获取窗口或整个桌面的截图与 UI Automation 无障碍树；后续元素操作必须引用 snapshot_id。",
+                "获取窗口或整个桌面的截图与 UI Automation 树；元素同时返回稳定 element_id、选择器和临时 index。",
                 "computer_get_state",
                 properties={
                     "window_id": {"type": "integer", "description": "省略时观察整个虚拟桌面"},
@@ -140,17 +140,21 @@ BUILTIN_PLUGINS = [
             _action(
                 "click",
                 "点击",
-                "按 snapshot_id+element_index 或窗口相对坐标点击。",
+                "优先按稳定 element_id 或元素文本模糊定位；快照失效/聚焦失败时可自动刷新并重试一次，也兼容 index/坐标。",
                 "computer_click",
                 properties={
                     "window_id": {"type": "integer"},
                     "snapshot_id": {"type": "string"},
                     "element_index": {"type": "integer"},
+                    "element_id": {"type": "string", "description": "get_state 返回的稳定 UIA 标识"},
+                    "element_text": {"type": "string", "description": "要模糊匹配的可见文本"},
+                    "control_type": {"type": "string", "description": "可选 UIA 控件类型，例如 Button"},
                     "x": {"type": "integer"},
                     "y": {"type": "integer"},
                     "coordinate_space": {"type": "string", "enum": ["window", "screen"]},
                     "button": {"type": "string", "enum": ["left", "right", "middle"]},
                     "click_count": {"type": "integer", "minimum": 1, "maximum": 3},
+                    "auto_retry": {"type": "boolean", "description": "默认 true"},
                 },
                 required=["window_id"],
             ),
@@ -164,6 +168,10 @@ BUILTIN_PLUGINS = [
                     "text": {"type": "string"},
                     "snapshot_id": {"type": "string"},
                     "element_index": {"type": "integer"},
+                    "element_id": {"type": "string"},
+                    "element_text": {"type": "string"},
+                    "control_type": {"type": "string"},
+                    "auto_retry": {"type": "boolean", "description": "默认 true"},
                 },
                 required=["window_id", "text"],
             ),
@@ -178,15 +186,19 @@ BUILTIN_PLUGINS = [
             _action(
                 "set_value",
                 "设置输入值",
-                "点击快照中的可编辑元素，执行全选并输入新值。",
+                "按稳定 ID、文本或快照 index 定位可编辑元素，执行全选并输入新值。",
                 "computer_set_value",
                 properties={
                     "window_id": {"type": "integer"},
                     "snapshot_id": {"type": "string"},
                     "element_index": {"type": "integer"},
+                    "element_id": {"type": "string"},
+                    "element_text": {"type": "string"},
+                    "control_type": {"type": "string"},
                     "value": {"type": "string"},
+                    "auto_retry": {"type": "boolean", "description": "默认 true"},
                 },
-                required=["window_id", "snapshot_id", "element_index", "value"],
+                required=["window_id", "value"],
             ),
             _action(
                 "scroll",
@@ -276,7 +288,7 @@ BUILTIN_PLUGINS = [
     PluginManifest(
         id="comfyui",
         name="本地 ComfyUI 生成",
-        version="1.0.0",
+        version="1.1.0",
         description="调用本机 ComfyUI 的全部图像和视频模型；动态盘点模型，生成图像或视频，并执行已保存工作流。",
         category="Creative",
         icon="Images",
@@ -285,8 +297,18 @@ BUILTIN_PLUGINS = [
             _action(
                 "status",
                 "检查 ComfyUI",
-                "检查本机 ComfyUI、GPU、全部 checkpoint/diffusion model/LoRA 和已保存工作流。",
+                "检查本机 ComfyUI、GPU、模型和工作流；工作流包含节点映射、依赖图及可覆盖输入。",
                 "comfyui_status",
+            ),
+            _action(
+                "workflow_schema",
+                "检查工作流输入",
+                "返回一个已保存工作流的节点 ID/名称、依赖关系和全部可覆盖输入类型。",
+                "comfyui_workflow_schema",
+                properties={
+                    "name": {"type": "string", "description": "status 返回的工作流 name"},
+                },
+                required=["name"],
             ),
             _action(
                 "generate_image",
@@ -304,6 +326,7 @@ BUILTIN_PLUGINS = [
                     "seed": {"type": "integer"},
                     "lora": {"type": "string"},
                     "lora_strength": {"type": "number", "minimum": -4, "maximum": 4},
+                    "task_id": {"type": "string", "description": "可选关联任务 ID"},
                 },
                 required=["prompt", "model"],
             ),
@@ -323,6 +346,7 @@ BUILTIN_PLUGINS = [
                     "steps": {"type": "integer", "minimum": 1, "maximum": 100},
                     "cfg": {"type": "number", "minimum": 0.1, "maximum": 30},
                     "seed": {"type": "integer"},
+                    "task_id": {"type": "string", "description": "可选关联任务 ID"},
                 },
                 required=["prompt", "pipeline"],
             ),
@@ -337,6 +361,7 @@ BUILTIN_PLUGINS = [
                         "type": "object",
                         "description": "可选映射：节点 ID -> 要覆盖的 inputs 字段",
                     },
+                    "task_id": {"type": "string", "description": "可选关联任务 ID"},
                 },
                 required=["name"],
             ),
@@ -508,7 +533,13 @@ class PluginRegistry:
             self._write_json(self.state_path, {"version": 1, "plugins": states})
         return self.get(plugin_id)
 
-    async def invoke(self, plugin_id: str, payload: PluginInvoke) -> dict[str, Any]:
+    async def invoke(
+        self,
+        plugin_id: str,
+        payload: PluginInvoke,
+        *,
+        caller: str = "user",
+    ) -> dict[str, Any]:
         plugin = self.get(plugin_id)
         if plugin is None:
             raise KeyError(plugin_id)
@@ -519,7 +550,45 @@ class PluginRegistry:
             raise KeyError(payload.action)
         self.artifacts.normalize_session_id(payload.session_id)
         self._validate_arguments(action.get("input_schema") or {}, payload.arguments)
-        result = await self._dispatch(action, payload.session_id, payload.arguments)
+        supports_task_link = "task_id" in (
+            (action.get("input_schema") or {}).get("properties") or {}
+        )
+        linked_task_id = (
+            str(payload.arguments.get("task_id") or "").strip()
+            if supports_task_link
+            else ""
+        )
+        task_started = False
+        if linked_task_id:
+            from ..routers.tasks import begin_task_tool
+
+            begin_task_tool(linked_task_id, payload.session_id, caller)
+            task_started = True
+        try:
+            result = await self._dispatch(action, payload.session_id, payload.arguments)
+            if plugin_id == "comfyui" and isinstance(result, dict):
+                result = await self._persist_comfyui_metadata(
+                    payload.session_id,
+                    payload.action,
+                    caller,
+                    result,
+                )
+        except Exception:
+            if task_started:
+                from ..routers.tasks import finish_task_tool
+
+                finish_task_tool(linked_task_id, payload.session_id, success=False)
+            raise
+        if task_started:
+            from ..routers.tasks import finish_task_tool
+
+            synchronized = finish_task_tool(
+                linked_task_id,
+                payload.session_id,
+                success=True,
+            )
+            if isinstance(result, dict):
+                result["task_sync"] = synchronized
         return {
             "plugin_id": plugin_id,
             "plugin_name": plugin["name"],
@@ -549,11 +618,15 @@ class PluginRegistry:
         if match is None:
             raise KeyError(tool_name)
         plugin_id, action_id = match
-        return await self.invoke(plugin_id, PluginInvoke(
-            action=action_id,
-            session_id=session_id,
-            arguments=arguments,
-        ))
+        return await self.invoke(
+            plugin_id,
+            PluginInvoke(
+                action=action_id,
+                session_id=session_id,
+                arguments=arguments,
+            ),
+            caller=caller,
+        )
 
     def resolve_tool_name(self, tool_name: str) -> tuple[str, str] | None:
         for plugin in self.list():
@@ -574,6 +647,82 @@ class PluginRegistry:
             "enabled": bool(state.get("enabled", True)),
             "config": deepcopy(state.get("config", {})),
             "status": "ready",
+        }
+
+    async def _persist_comfyui_metadata(
+        self,
+        session_id: str,
+        action_id: str,
+        caller: str,
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        raw_metadata = result.get("generation_metadata")
+        if not isinstance(raw_metadata, dict):
+            return result
+        prompt_id = str(
+            raw_metadata.get("prompt_id")
+            or result.get("prompt_id")
+            or "unknown"
+        )
+        safe_prompt_id = "".join(
+            character
+            for character in prompt_id[:160]
+            if character.isalnum() or character in {"-", "_"}
+        ) or "unknown"
+        envelope = {
+            **deepcopy(raw_metadata),
+            "session_id": session_id,
+            "producer": {
+                "agent": caller,
+                "plugin": "comfyui",
+                "action": action_id,
+            },
+        }
+        artifact_path = f"generated/comfyui/{safe_prompt_id}.metadata.json"
+        written = await self.artifacts.write(
+            session_id,
+            artifact_path,
+            json.dumps(envelope, ensure_ascii=False, indent=2, default=str),
+            f"Record ComfyUI generation metadata for {safe_prompt_id}",
+            caller,
+            source_model=caller,
+            status="ready",
+        )
+        files = raw_metadata.get("outputs") or []
+        first_output = files[0] if files and isinstance(files[0], dict) else {}
+        entity_value = str(
+            first_output.get("url")
+            or first_output.get("filename")
+            or artifact_path
+        )
+        from .memory_service import memory_service
+
+        memory_service.upsert_entity(
+            session_id,
+            key=f"asset:comfyui:{safe_prompt_id}",
+            value=entity_value,
+            kind="generated_asset",
+            source=f"{caller}:{action_id}",
+            metadata={
+                "artifact_path": artifact_path,
+                "operation": raw_metadata.get("operation"),
+                "model": (
+                    (raw_metadata.get("parameters") or {}).get("model")
+                    or ",".join((raw_metadata.get("provenance") or {}).get("models") or [])
+                ),
+                "seed": (
+                    (raw_metadata.get("parameters") or {}).get("seed")
+                    or next(iter((raw_metadata.get("provenance") or {}).get("seeds") or []), None)
+                ),
+            },
+        )
+        return {
+            **result,
+            "metadata_artifact": {
+                **written,
+                "schema": envelope.get("schema"),
+                "artifact_type": envelope.get("artifact_type"),
+            },
         }
 
     async def _dispatch(self, action: dict[str, Any], session_id: str, arguments: dict[str, Any]) -> Any:
@@ -607,6 +756,8 @@ class PluginRegistry:
 
             if handler == "comfyui_status":
                 return await comfyui_service.status()
+            if handler == "comfyui_workflow_schema":
+                return await comfyui_service.workflow_schema(arguments["name"])
             if handler == "comfyui_generate_image":
                 return await comfyui_service.generate_image(
                     arguments["prompt"],
@@ -802,11 +953,15 @@ class PluginRegistry:
                 arguments["window_id"],
                 snapshot_id=arguments.get("snapshot_id"),
                 element_index=arguments.get("element_index"),
+                element_id=arguments.get("element_id"),
+                element_text=arguments.get("element_text"),
+                control_type=arguments.get("control_type"),
                 x=arguments.get("x"),
                 y=arguments.get("y"),
                 coordinate_space=arguments.get("coordinate_space", "window"),
                 button=arguments.get("button", "left"),
                 click_count=arguments.get("click_count", 1),
+                auto_retry=arguments.get("auto_retry", True),
             )
         if handler == "computer_type_text":
             return await computer_use_service.type_text(
@@ -814,15 +969,23 @@ class PluginRegistry:
                 arguments["text"],
                 snapshot_id=arguments.get("snapshot_id"),
                 element_index=arguments.get("element_index"),
+                element_id=arguments.get("element_id"),
+                element_text=arguments.get("element_text"),
+                control_type=arguments.get("control_type"),
+                auto_retry=arguments.get("auto_retry", True),
             )
         if handler == "computer_press_key":
             return await computer_use_service.press_key(arguments["window_id"], arguments["key"])
         if handler == "computer_set_value":
             return await computer_use_service.set_value(
                 arguments["window_id"],
-                arguments["snapshot_id"],
-                arguments["element_index"],
+                arguments.get("snapshot_id"),
+                arguments.get("element_index"),
                 arguments["value"],
+                element_id=arguments.get("element_id"),
+                element_text=arguments.get("element_text"),
+                control_type=arguments.get("control_type"),
+                auto_retry=arguments.get("auto_retry", True),
             )
         if handler == "computer_scroll":
             return await computer_use_service.scroll(
