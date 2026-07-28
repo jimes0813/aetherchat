@@ -1,16 +1,31 @@
 import { useEffect, useMemo, useRef } from 'react';
-import { Bot, Check, Clock3, FileText, ShieldAlert, User, X } from 'lucide-react';
+import { Bot, Check, Clock3, ExternalLink, FileText, FolderOpen, ShieldAlert, User, X } from 'lucide-react';
 import { useSessionStore } from '../stores/sessionStore';
-import type { ApprovalRequest } from '../types';
+import type { ApprovalRequest, GeneratedFile } from '../types';
 import { SafeMarkdown } from './SafeMarkdown';
 import { useI18n } from '../i18n';
 
 interface UnifiedFeedProps {
   approvals?: ApprovalRequest[];
   onApprovalDecision?: (approval: ApprovalRequest, decision: 'allow_once' | 'allow_session' | 'deny') => void;
+  onInspectGeneratedFile?: (file: GeneratedFile) => void;
+  onOpenGeneratedFile?: (file: GeneratedFile, action: 'open' | 'reveal') => void;
 }
 
-export const UnifiedFeed = ({ approvals = [], onApprovalDecision }: UnifiedFeedProps) => {
+const fileSize = (value?: number) => {
+  const bytes = Math.max(0, Number(value || 0));
+  if (!bytes) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+export const UnifiedFeed = ({
+  approvals = [],
+  onApprovalDecision,
+  onInspectGeneratedFile,
+  onOpenGeneratedFile,
+}: UnifiedFeedProps) => {
   const { messages, streams } = useSessionStore();
   const streamEntries = useMemo(() => Object.entries(streams), [streams]);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -69,6 +84,60 @@ export const UnifiedFeed = ({ approvals = [], onApprovalDecision }: UnifiedFeedP
                 ))}
               </div>
             )}
+            {msg.generated_files && msg.generated_files.length > 0 && (
+              <div className="mt-4 space-y-2" aria-label="本次生成的文件">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-[#796b5e]">
+                  本次生成的文件
+                </div>
+                {msg.generated_files.map((file, index) => (
+                  <div
+                    key={`${file.path || file.url || file.name}-${index}`}
+                    className="flex items-center gap-3 rounded-lg border border-[#d8c8b7] bg-[#f7efe5] p-3"
+                  >
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white text-[#75502f] shadow-sm">
+                      <FileText size={17} />
+                    </div>
+                    <button
+                      type="button"
+                      disabled={!file.path}
+                      onClick={() => onInspectGeneratedFile?.(file)}
+                      className="min-w-0 flex-1 text-left disabled:cursor-default"
+                    >
+                      <div className="truncate text-sm font-semibold text-[#4b3c30]">{file.name}</div>
+                      <div className="mt-0.5 truncate text-[11px] text-[#776a5f]">
+                        {file.mime_type || file.kind || '文件'}
+                        {fileSize(file.size_bytes) ? ` · ${fileSize(file.size_bytes)}` : ''}
+                        {file.path ? ` · ${file.path}` : ''}
+                      </div>
+                    </button>
+                    <div className="flex shrink-0 gap-1">
+                      <button
+                        type="button"
+                        title="用默认应用打开"
+                        aria-label={`打开文件 ${file.name}`}
+                        onClick={() => onOpenGeneratedFile?.(file, 'open')}
+                        className="flex h-8 items-center gap-1 rounded-md border border-[#cdbca9] bg-white px-2 text-xs text-[#62462e] hover:bg-[#fffaf4]"
+                      >
+                        <ExternalLink size={13} />
+                        打开
+                      </button>
+                      {file.path && (
+                        <button
+                          type="button"
+                          title="在文件管理器中显示"
+                          aria-label={`打开文件所在目录 ${file.name}`}
+                          onClick={() => onOpenGeneratedFile?.(file, 'reveal')}
+                          className="flex h-8 items-center gap-1 rounded-md border border-[#cdbca9] bg-white px-2 text-xs text-[#62462e] hover:bg-[#fffaf4]"
+                        >
+                          <FolderOpen size={13} />
+                          目录
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </article>
         ))}
 
@@ -112,7 +181,7 @@ export const UnifiedFeed = ({ approvals = [], onApprovalDecision }: UnifiedFeedP
         })}
 
         {streamEntries.map(([model, content]) => (
-          <article key={model} className="rounded-lg border border-[#d7c8b8] bg-[#f5ede2] p-4">
+          <article key={model} className="aether-agent-stream rounded-lg border border-[#d7c8b8] bg-[#f5ede2] p-4">
             <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-[#5b4532]">
               <Bot size={16} />
               {t('streaming', { model })}

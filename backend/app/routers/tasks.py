@@ -100,6 +100,18 @@ def _save_tasks():
     chat_database.sync_tasks(fake_tasks)
 
 
+def delete_session_tasks(session_id: str) -> int:
+    retained = [
+        task for task in fake_tasks
+        if str(task.session_id) != str(session_id)
+    ]
+    removed = len(fake_tasks) - len(retained)
+    if removed:
+        fake_tasks[:] = retained
+        _save_tasks()
+    return removed
+
+
 COMPLETED_TASK_STATUSES = {"merged", "done"}
 
 

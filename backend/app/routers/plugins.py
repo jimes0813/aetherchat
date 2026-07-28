@@ -1,5 +1,7 @@
 from fastapi import APIRouter, HTTPException
 
+from ..services.comfyui_runtime import comfyui_runtime
+from ..services.comfyui_service import ComfyUIError, ComfyUIService
 from ..services.plugin_registry import (
     PluginInvoke,
     PluginManifest,
@@ -45,6 +47,17 @@ async def uninstall_plugin(plugin_id: str):
     return {"deleted": True, "plugin": removed}
 
 
+@router.get("/comfyui/runtime/status")
+async def comfyui_runtime_status():
+    service = ComfyUIService()
+    return await comfyui_runtime.status(service.base_url)
+
+
+@router.post("/comfyui/runtime/stop")
+async def stop_comfyui_runtime():
+    return await comfyui_runtime.shutdown()
+
+
 @router.post("/{plugin_id}/invoke")
 async def invoke_plugin(plugin_id: str, payload: PluginInvoke):
     try:
@@ -53,5 +66,7 @@ async def invoke_plugin(plugin_id: str, payload: PluginInvoke):
         raise HTTPException(status_code=404, detail="Plugin or action not found") from exc
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ComfyUIError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

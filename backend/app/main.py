@@ -27,6 +27,7 @@ from .routers import (
 )
 from .services import tool_executor
 from .services.agent_run_service import agent_run_service
+from .services.comfyui_runtime import comfyui_runtime
 from .services.local_auth import demo_token_response, require_api_access
 from .services.local_model_runtime import local_model_runtime
 
@@ -47,6 +48,7 @@ async def lifespan(app: FastAPI):
     yield
     if redis_client is not None:
         await redis_client.aclose()
+    await comfyui_runtime.shutdown()
     await local_model_runtime.shutdown()
     tasks.redis_client = None
     tool_executor.redis_client = None

@@ -9,6 +9,7 @@ import json
 import mimetypes
 import os
 import re
+import shutil
 import zipfile
 from copy import deepcopy
 from datetime import UTC, datetime
@@ -21,6 +22,8 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 HISTORY_FILENAME = ".aether_history.jsonl"
 MERGE_RULES = {"two_votes", "facilitator", "manual_confirmation"}
 MAX_ARTIFACT_BYTES = 5 * 1024 * 1024
+MAX_GENERATED_FILE_BYTES = 512 * 1024 * 1024
+MAX_HISTORY_SNAPSHOT_BYTES = 5 * 1024 * 1024
 MAX_PREVIEW_CHARS = 300_000
 EDITABLE_SUFFIXES = {
     ".md", ".markdown", ".txt", ".html", ".htm", ".svg", ".json", ".csv",
@@ -199,7 +202,79 @@ class ArtifactService:
             "status": entry["status"],
             "source_model": entry["source_model"],
             "parent_version": entry["parent_version"],
+            "size_bytes": entry["size_bytes"],
         }
+
+    async def import_file(
+        self,
+        session_id: str,
+        path: str,
+        source_path: str | os.PathLike[str],
+        commit_message: str,
+        author: str,
+        *,
+        source_model: str | None = None,
+        status: str = "ready",
+    ) -> dict[str, Any]:
+        source = Path(source_path).expanduser().resolve(strict=True)
+        if not source.is_file() or source.is_symlink():
+            raise ArtifactPathError("Generated file source must be a regular file")
+        size_bytes = source.stat().st_size
+        if size_bytes > MAX_GENERATED_FILE_BYTES:
+            raise ArtifactPathError("Generated file exceeds the 512 MB import limit")
+        if status not in {"draft", "ready", "archived"}:
+            raise ArtifactPathError("Invalid artifact status")
+        await self.prepare_checkout(session_id)
+        full_path, normalized, repo_path = self._artifact_path(session_id, path)
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = full_path.with_name(f".{full_path.name}.{uuid4().hex}.tmp")
+        try:
+            shutil.copyfile(source, temporary)
+            os.replace(temporary, full_path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        entry = self._append_history(
+            repo_path,
+            normalized,
+            commit_message,
+            author,
+            source_model=source_model,
+            status=status,
+        )
+        return {
+            "hash": entry["hash"],
+            "short_hash": entry["short_hash"],
+            "path": normalized,
+            "version": entry["version"],
+            "updated_at": entry["created_at"],
+            "mime_type": entry["mime_type"],
+            "status": entry["status"],
+            "source_model": entry["source_model"],
+            "parent_version": entry["parent_version"],
+            "size_bytes": entry["size_bytes"],
+        }
+
+    async def native_location(self, session_id: str, path: str) -> dict[str, Any]:
+        await self.prepare_checkout(session_id)
+        full_path, normalized, _ = self._artifact_path(session_id, path)
+        if not full_path.is_file() or full_path.is_symlink():
+            raise FileNotFoundError(path)
+        return {
+            "path": str(full_path),
+            "artifact_path": normalized,
+            "display_name": full_path.name,
+            "mime_type": self._mime_for(normalized),
+            "size_bytes": full_path.stat().st_size,
+        }
+
+    def delete_session(self, session_id: str) -> bool:
+        root = self._session_root(session_id)
+        if not root.exists():
+            return False
+        if not root.is_dir() or root.is_symlink():
+            raise ArtifactPathError("Session artifact root is not a safe directory")
+        shutil.rmtree(root)
+        return True
 
     async def read(self, session_id: str, path: str) -> str:
         await self.prepare_checkout(session_id)
@@ -610,12 +685,16 @@ class ArtifactService:
         full_path = repo_path / Path(*path.split("/"))
         file_hash = self._hash_file(full_path)
         raw = full_path.read_bytes() if full_path.exists() else b""
-        try:
-            snapshot = raw.decode("utf-8")
-            content_encoding = "utf-8"
-        except UnicodeDecodeError:
-            snapshot = base64.b64encode(raw).decode("ascii")
-            content_encoding = "base64"
+        if len(raw) > MAX_HISTORY_SNAPSHOT_BYTES:
+            snapshot = ""
+            content_encoding = "external"
+        else:
+            try:
+                snapshot = raw.decode("utf-8")
+                content_encoding = "utf-8"
+            except UnicodeDecodeError:
+                snapshot = base64.b64encode(raw).decode("ascii")
+                content_encoding = "base64"
 
         history_file = repo_path / HISTORY_FILENAME
         with _lock_for(history_file):
@@ -739,6 +818,19 @@ class MergeProposalStore:
             proposals.append(proposal)
             self._save_unlocked(proposals)
         return deepcopy(proposal)
+
+    def delete_session(self, session_id: str) -> int:
+        session = str(session_id)
+        with _lock_for(self.storage_path):
+            proposals = self._load_unlocked()
+            retained = [
+                item for item in proposals
+                if str(item.get("session_id")) != session
+            ]
+            removed = len(proposals) - len(retained)
+            if removed:
+                self._save_unlocked(retained)
+        return removed
 
     def vote(
         self,

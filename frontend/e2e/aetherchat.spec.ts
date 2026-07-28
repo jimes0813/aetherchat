@@ -72,7 +72,22 @@ const sessionFixtures = [
 
 const messageFixtures = [
   { id: 'message-user', session_id: sessionId, author_model: 'user', role: 'user', content: '继续数据库任务', created_at: '2026-07-13T08:29:00.000Z' },
-  { id: 'message-qwen', session_id: sessionId, author_model: 'qwen', role: 'assistant', content: '已恢复上次上下文。', created_at: '2026-07-13T08:30:00.000Z' },
+  {
+    id: 'message-qwen',
+    session_id: sessionId,
+    author_model: 'qwen',
+    role: 'assistant',
+    content: '已恢复上次上下文。',
+    generated_files: [{
+      path: 'generated/comfyui/cover.png',
+      name: 'cover.png',
+      mime_type: 'image/png',
+      size_bytes: 2048,
+      kind: 'generated_media',
+      source: 'comfyui',
+    }],
+    created_at: '2026-07-13T08:30:00.000Z',
+  },
 ];
 
 const taskEventFixtures = [
@@ -291,6 +306,22 @@ async function installMockDesktopBridge(page: Page) {
   await page.addInitScript(() => {
     const actions: Array<{ type: string; payload?: unknown }> = [];
     (window as typeof window & { __aetherDesktopActions?: typeof actions }).__aetherDesktopActions = actions;
+    Object.defineProperty(window, 'aetherRuntime', {
+      configurable: true,
+      value: {
+        openArtifact: async (
+          selectedSessionId: string,
+          path: string,
+          action: 'open' | 'reveal',
+        ) => {
+          actions.push({
+            type: `artifact-${action}`,
+            payload: { selectedSessionId, path },
+          });
+          return { opened: true, action, displayName: 'cover.png' };
+        },
+      },
+    });
     Object.defineProperty(window, 'aetherDesktop', {
       configurable: true,
       value: {
@@ -672,6 +703,25 @@ async function installMockApi(page: Page) {
       if (!sessions.some((item) => item.id === session.id)) sessions.unshift(session);
       return json(route, session);
     }
+    if (pathname === '/sessions/search' && request.method() === 'GET') {
+      return json(route, url.searchParams.get('q')?.includes('ComfyUI') ? [{
+        message_id: 'search-message',
+        session_id: '22222222-2222-4222-8222-222222222222',
+        author_model: 'qwen',
+        role: 'assistant',
+        content: 'Qwen 与 ComfyUI 调用记录',
+        snippet: 'Qwen 与 ComfyUI 调用记录',
+        created_at: '2026-07-11T09:00:00.000Z',
+        title: '本地模型协作排查',
+        updated_at: '2026-07-11T09:00:00.000Z',
+      }] : []);
+    }
+    if (/^\/sessions\/[^/]+$/.test(pathname) && request.method() === 'DELETE') {
+      const deletedId = pathname.split('/').pop();
+      const index = sessions.findIndex((item) => item.id === deletedId);
+      if (index >= 0) sessions.splice(index, 1);
+      return json(route, { deleted: index >= 0, session_id: deletedId, cleanup: {} });
+    }
     if (pathname === `/sessions/${sessionId}/messages`) return json(route, messageFixtures);
     if (pathname === `/sessions/${sessionId}/task-events`) return json(route, taskEventFixtures);
     if (/^\/sessions\/[^/]+\/messages$/.test(pathname)) return json(route, []);
@@ -883,11 +933,35 @@ test.describe('AetherChat Frontend E2E', () => {
     await page.evaluate(() => (
       window as typeof window & { __emitAetherWs?: (payload: unknown) => void }
     ).__emitAetherWs?.({
-      type: 'delta',
+      type: 'provider_status',
       model: 'deepseek',
-      delta: '正在分析',
+      phase: 'requesting',
+      detail: '上下文已整理，正在等待模型返回首个 token',
+      context_messages: 12,
+      context_tokens: 4096,
+      tool_count: 5,
+      tool_schema_tokens: 768,
     }));
-    await expect(page.getByText('deepseek · 正在生成', { exact: true })).toBeVisible();
+    await expect(page.getByText('deepseek · 等待模型首个 token', { exact: true })).toBeVisible();
+    await expect(page.getByText('上下文 12 条 · 约 4,096 tokens · 工具 5 个', { exact: true })).toBeVisible();
+    const status = page.getByLabel('deepseek · 等待模型首个 token');
+    await expect(status).toHaveClass(/aether-agent-status/);
+
+    await page.evaluate(() => (
+      window as typeof window & { __emitAetherWs?: (payload: unknown) => void }
+    ).__emitAetherWs?.({
+      type: 'provider_status',
+      model: 'deepseek',
+      phase: 'streaming',
+      detail: '已收到首个 token，正在生成回复',
+      context_messages: 12,
+      context_tokens: 4096,
+      tool_count: 5,
+      first_token_ms: 1234,
+    }));
+    await expect(page.getByText('deepseek · 正在流式生成', { exact: true })).toBeVisible();
+    await expect(page.getByText(/首 token 1\.2 秒/)).toBeVisible();
+
     await page.evaluate(() => (
       window as typeof window & { __emitAetherWs?: (payload: unknown) => void }
     ).__emitAetherWs?.({
@@ -925,6 +999,56 @@ test.describe('AetherChat Frontend E2E', () => {
 
     await page.getByRole('tab', { name: '当前对话' }).click();
     await expect(page.getByText('已恢复上次上下文。')).toBeVisible();
+  });
+
+  test('opens generated files and reveals their containing directory', async ({ page }) => {
+    await expect(page.getByText('本次生成的文件')).toBeVisible();
+    await expect(page.getByText('cover.png', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: '打开文件 cover.png' }).click();
+    await expect(page.getByText('已打开 cover.png')).toBeVisible();
+    await page.getByRole('button', { name: '打开文件所在目录 cover.png' }).click();
+    await expect(page.getByText('已在文件夹中显示 cover.png')).toBeVisible();
+
+    const actions = await page.evaluate(() => (
+      window as typeof window & {
+        __aetherDesktopActions?: Array<{ type: string; payload?: unknown }>;
+      }
+    ).__aetherDesktopActions);
+    expect(actions).toContainEqual({
+      type: 'artifact-open',
+      payload: {
+        selectedSessionId: sessionId,
+        path: 'generated/comfyui/cover.png',
+      },
+    });
+    expect(actions).toContainEqual({
+      type: 'artifact-reveal',
+      payload: {
+        selectedSessionId: sessionId,
+        path: 'generated/comfyui/cover.png',
+      },
+    });
+  });
+
+  test('searches all cached chats and deletes a recent session', async ({ page }) => {
+    await page.getByRole('tab', { name: '历史聊天' }).click();
+    await page.getByPlaceholder('搜索全部聊天内容、会话标题或 Agent').fill('ComfyUI');
+    await expect(page.getByTestId('chat-search-results')).toContainText('本地模型协作排查');
+    await expect(page.getByTestId('chat-search-results')).toContainText('Qwen 与 ComfyUI 调用记录');
+
+    await page.getByPlaceholder('搜索全部聊天内容、会话标题或 Agent').fill('');
+    page.once('dialog', (dialog) => dialog.accept());
+    const deleteRequest = page.waitForRequest((request) => (
+      new URL(request.url()).pathname === '/sessions/22222222-2222-4222-8222-222222222222'
+      && request.method() === 'DELETE'
+    ));
+    await page
+      .locator('#aether-main-content > section')
+      .getByRole('button', { name: '删除会话 本地模型协作排查' })
+      .click();
+    await deleteRequest;
+    await expect(page.getByText('会话“本地模型协作排查”已删除')).toBeVisible();
+    await expect(page.getByText('本地模型协作排查', { exact: true })).toHaveCount(0);
   });
 
   test('sends a message through WebSocket and renders it in the feed', async ({ page }) => {

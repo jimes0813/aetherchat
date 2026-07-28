@@ -44,16 +44,23 @@ import { useDialogFocus } from './components/useDialogFocus';
 import { useI18n } from './i18n';
 import { useSessionStore } from './stores/sessionStore';
 import { connectWS } from './ws/client';
-import type { AgentRun, AgentWorkspaceCandidate, ApprovalRequest, Conversation, GitRepository, KnowledgeAttachment, MCPConnection, MergeProposal, Message, ModelConfig, PluginInvokeResult, PluginItem, SessionMemory, Task, TaskEvent, ToolItem, ToolRun, WorkspaceSettings, WSMessage } from './types';
+import type { AgentRun, AgentWorkspaceCandidate, ApprovalRequest, Conversation, GeneratedFile, GitRepository, KnowledgeAttachment, MCPConnection, MergeProposal, Message, ModelConfig, PluginInvokeResult, PluginItem, SessionMemory, Task, TaskEvent, ToolItem, ToolRun, WorkspaceSettings, WSMessage } from './types';
 
 const API_BASE = window.aetherRuntime?.apiBase ?? import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
 let apiAuthToken = '';
 
 type AgentActivityItem = {
   model: string;
-  phase: 'thinking' | 'tool' | 'waiting' | 'running';
+  phase: 'preparing' | 'requesting' | 'streaming' | 'thinking' | 'tool' | 'waiting' | 'running' | 'finalizing';
   toolName?: string;
   startedAt: number;
+  detail?: string;
+  contextMessages?: number;
+  contextTokens?: number;
+  toolCount?: number;
+  toolSchemaTokens?: number;
+  roundIndex?: number;
+  firstTokenMs?: number;
 };
 
 function withApiAuth(init: RequestInit = {}): RequestInit {
@@ -111,6 +118,18 @@ type StoredSession = {
   open_task_count: number;
 };
 
+type SessionSearchHit = {
+  message_id: string;
+  session_id: string;
+  author_model: string;
+  role: string;
+  content: string;
+  snippet: string;
+  created_at: string;
+  title: string;
+  updated_at: string;
+};
+
 type KnowledgeSearchHit = {
   attachment_id: string;
   source_name: string;
@@ -149,7 +168,7 @@ type ArtifactVersion = {
   parent_version?: number | null;
   created_at: string;
   content?: string;
-  content_encoding: 'utf-8' | 'base64';
+  content_encoding: 'utf-8' | 'base64' | 'external';
 };
 
 const formatDateTime = (value?: string | null) => {
@@ -226,6 +245,11 @@ declare global {
       platform?: string;
       getApiToken?: () => Promise<string>;
       openExternal?: (url: string) => Promise<boolean>;
+      openArtifact?: (
+        sessionId: string,
+        path: string,
+        action?: 'open' | 'reveal',
+      ) => Promise<{ opened: boolean; action: 'open' | 'reveal'; displayName: string }>;
     };
     aetherDesktop?: {
       status: () => Promise<Record<string, unknown>>;
@@ -362,12 +386,13 @@ function App() {
 
   const loadConversations = async () => {
     try {
+      const activeSessionId = useSessionStore.getState().sessionId;
       let rows = await fetchJson<StoredSession[]>(`${API_BASE}/sessions/`);
-      if (!rows.some((session) => session.id === sessionId)) {
+      if (!rows.some((session) => session.id === activeSessionId)) {
         await fetchJson<StoredSession>(`${API_BASE}/sessions/`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: sessionId, title: '新会话', mode: currentMode }),
+          body: JSON.stringify({ id: activeSessionId, title: '新会话', mode: currentMode }),
         });
         rows = await fetchJson<StoredSession[]>(`${API_BASE}/sessions/`);
       }
@@ -378,7 +403,7 @@ function App() {
   };
 
   const loadMessages = () => {
-    fetchJson<Message[]>(`${API_BASE}/sessions/${sessionId}/messages`).then(setMessages).catch(() => setMessages([]));
+    fetchJson<Message[]>(`${API_BASE}/sessions/${sessionId}/messages?limit=5000`).then(setMessages).catch(() => setMessages([]));
   };
 
   const loadTaskEvents = () => {
@@ -493,13 +518,32 @@ function App() {
     if (!authReady || !authToken) return;
     setConnection('connecting');
     wsClient.current = connectWS(sessionId, (event: WSMessage) => {
+      if (event.type === 'provider_status' && event.model && event.phase) {
+        setAgentActivity((items) => ({
+          ...items,
+          [event.model!]: {
+            model: event.model!,
+            phase: event.phase!,
+            startedAt: items[event.model!]?.startedAt ?? Date.now(),
+            toolName: items[event.model!]?.toolName,
+            detail: event.detail,
+            contextMessages: event.context_messages,
+            contextTokens: event.context_tokens,
+            toolCount: event.tool_count,
+            toolSchemaTokens: event.tool_schema_tokens,
+            roundIndex: event.round_index,
+            firstTokenMs: event.first_token_ms,
+          },
+        }));
+      }
       if (event.type === 'delta' && event.model && event.delta) {
         addDelta(event.model, event.delta);
         setAgentActivity((items) => ({
           ...items,
           [event.model!]: {
+            ...items[event.model!],
             model: event.model!,
-            phase: 'thinking',
+            phase: 'streaming',
             startedAt: items[event.model!]?.startedAt ?? Date.now(),
           },
         }));
@@ -518,6 +562,9 @@ function App() {
         void loadConversations();
       }
       if (event.type === 'task_update' && event.task) updateTask(event.task);
+      if (event.type === 'artifact_update') {
+        void loadArtifacts();
+      }
       if (event.type === 'tool_update' && event.tool) upsertTool(event.tool);
       if (event.type === 'tool_run' && event.run) {
         addToolRun(event.run);
@@ -569,6 +616,7 @@ function App() {
         setAgentActivity((items) => ({
           ...items,
           [event.model!]: {
+            ...items[event.model!],
             model: event.model!,
             phase: 'tool',
             toolName: event.tool_name,
@@ -583,8 +631,10 @@ function App() {
         setAgentActivity((items) => ({
           ...items,
           [event.model!]: {
+            ...items[event.model!],
             model: event.model!,
-            phase: 'thinking',
+            phase: 'requesting',
+            detail: '工具执行完成，正在等待模型继续',
             startedAt: items[event.model!]?.startedAt ?? Date.now(),
           },
         }));
@@ -1109,6 +1159,69 @@ function App() {
     setNotice('模型配置已删除');
   };
 
+  const deleteConversation = async (conversationId: string) => {
+    const conversation = conversations.find((item) => item.id === conversationId);
+    if (!conversation) return;
+    if (!window.confirm(`确定删除会话“${conversation.title}”吗？该会话的消息、任务、资料和生成文件将一并删除。`)) return;
+    try {
+      await fetchJson(`${API_BASE}/sessions/${conversationId}`, {
+        method: 'DELETE',
+      });
+      const remaining = conversations.filter((item) => item.id !== conversationId);
+      setConversations(remaining);
+      if (conversationId === sessionId) {
+        if (remaining.length) {
+          selectConversation(remaining[0].id);
+          setMainView('chat');
+        } else {
+          await createPersistentConversation();
+        }
+      }
+      await loadConversations();
+      setNotice(`会话“${conversation.title}”已删除`);
+    } catch (error) {
+      setNotice(`删除会话失败：${String(error)}`);
+    }
+  };
+
+  const inspectGeneratedFile = (file: GeneratedFile) => {
+    if (!file.path) return;
+    setSelectedArtifactPath(file.path);
+    setActivePanel('工件');
+  };
+
+  const openGeneratedFile = async (
+    file: GeneratedFile,
+    action: 'open' | 'reveal',
+  ) => {
+    try {
+      if (file.path && window.aetherRuntime?.openArtifact) {
+        const opened = await window.aetherRuntime.openArtifact(
+          sessionId,
+          file.path,
+          action,
+        );
+        setNotice(action === 'reveal'
+          ? `已在文件夹中显示 ${opened.displayName}`
+          : `已打开 ${opened.displayName}`);
+        return;
+      }
+      if (action === 'open' && file.url && window.aetherRuntime?.openExternal) {
+        await window.aetherRuntime.openExternal(file.url);
+        setNotice(`已打开 ${file.name}`);
+        return;
+      }
+      if (file.path) {
+        inspectGeneratedFile(file);
+        setNotice('浏览器模式无法调用系统文件管理器，已在工件面板中打开');
+        return;
+      }
+      throw new Error('该文件没有可打开的本机路径');
+    } catch (error) {
+      setNotice(`打开文件失败：${String(error)}`);
+    }
+  };
+
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-[#e9e1d6] text-[#2f2a24]">
       <a href="#aether-main-content" className="aether-skip-link">Skip to main content / 跳到主要内容</a>
@@ -1123,6 +1236,7 @@ function App() {
           onNewConversation={() => void createPersistentConversation()}
           onOpenSearch={() => setCommandOpen(true)}
           onSelectConversation={selectConversation}
+          onDeleteConversation={(id) => void deleteConversation(id)}
         />
 
         <section className="flex min-h-0 min-w-0 flex-col border-x border-[#d8cfc3] bg-[#fbfaf7]">
@@ -1159,7 +1273,14 @@ function App() {
             <span className="ml-auto text-[#8b8176]">当前: {currentMode}</span>
           </div>
           <MainViewTabs value={mainView} onChange={setMainView} />
-          {mainView === 'chat' && <UnifiedFeed approvals={approvals.filter((item) => item.session_id === sessionId)} onApprovalDecision={(approval, decision) => void decideApproval(approval, decision)} />}
+          {mainView === 'chat' && (
+            <UnifiedFeed
+              approvals={approvals.filter((item) => item.session_id === sessionId)}
+              onApprovalDecision={(approval, decision) => void decideApproval(approval, decision)}
+              onInspectGeneratedFile={inspectGeneratedFile}
+              onOpenGeneratedFile={(file, action) => void openGeneratedFile(file, action)}
+            />
+          )}
           {mainView === 'history' && (
             <ConversationHistory
               conversations={conversations}
@@ -1168,6 +1289,7 @@ function App() {
                 selectConversation(id);
                 setMainView('chat');
               }}
+              onDelete={(id) => void deleteConversation(id)}
             />
           )}
           {mainView === 'tasks' && <TaskHistory tasks={tasks} events={taskEvents} />}
@@ -1359,6 +1481,7 @@ interface WorkspaceSidebarProps {
   onNewConversation: () => void;
   onOpenSearch: () => void;
   onSelectConversation: (id: string) => void;
+  onDeleteConversation: (id: string) => void;
 }
 
 interface MainViewTabsProps {
@@ -1400,10 +1523,42 @@ interface ConversationHistoryProps {
   conversations: Conversation[];
   currentSessionId: string;
   onContinue: (id: string) => void;
+  onDelete: (id: string) => void;
 }
 
-function ConversationHistory({ conversations, currentSessionId, onContinue }: ConversationHistoryProps) {
+function ConversationHistory({ conversations, currentSessionId, onContinue, onDelete }: ConversationHistoryProps) {
   const { ui } = useI18n();
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<SessionSearchHit[]>([]);
+  const [searching, setSearching] = useState(false);
+  useEffect(() => {
+    const normalized = query.trim();
+    if (!normalized) {
+      setResults([]);
+      setSearching(false);
+      return undefined;
+    }
+    let cancelled = false;
+    setSearching(true);
+    const timer = window.setTimeout(() => {
+      fetchJson<SessionSearchHit[]>(
+        `${API_BASE}/sessions/search?q=${encodeURIComponent(normalized)}&limit=100`,
+      )
+        .then((items) => {
+          if (!cancelled) setResults(items);
+        })
+        .catch(() => {
+          if (!cancelled) setResults([]);
+        })
+        .finally(() => {
+          if (!cancelled) setSearching(false);
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [query]);
   return (
     <div className="min-h-0 flex-1 overflow-auto bg-[#fbfaf7] px-5 py-4">
       <div className="mx-auto max-w-4xl">
@@ -1414,34 +1569,79 @@ function ConversationHistory({ conversations, currentSessionId, onContinue }: Co
           </div>
           <span className="text-xs text-[#8b8176]">{ui('{count} 个会话', { count: conversations.length })}</span>
         </div>
+        <label className="mb-4 flex h-10 items-center gap-2 rounded-lg border border-[#d8cfc3] bg-white px-3">
+          <Search size={15} className="text-[#776b60]" />
+          <span className="sr-only">{ui('搜索全部聊天记录')}</span>
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder={ui('搜索全部聊天内容、会话标题或 Agent')}
+            className="min-w-0 flex-1 bg-transparent text-sm outline-none"
+          />
+          {searching && <span className="text-[11px] text-[#776b60]">{ui('搜索中')}</span>}
+        </label>
+        {query.trim() && (
+          <div className="mb-5 divide-y divide-[#e3dbd0] border-y border-[#e3dbd0]" data-testid="chat-search-results">
+            {results.map((result) => (
+              <button
+                key={result.message_id}
+                type="button"
+                onClick={() => onContinue(result.session_id)}
+                className="block w-full px-2 py-3 text-left hover:bg-[#f5efe7]"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="truncate text-sm font-medium">{result.title}</span>
+                  <time className="shrink-0 text-[11px] text-[#81756a]">{formatDateTime(result.created_at)}</time>
+                </div>
+                <div className="mt-1 text-[11px] font-medium text-[#755333]">{result.author_model}</div>
+                <p className="mt-1 line-clamp-3 text-xs leading-5 text-[#62584f]">{result.snippet}</p>
+              </button>
+            ))}
+            {!searching && !results.length && (
+              <div className="py-10 text-center text-sm text-[#8b8176]">{ui('没有匹配的聊天记录')}</div>
+            )}
+          </div>
+        )}
+        {!query.trim() && (
         <div className="divide-y divide-[#e3dbd0] border-y border-[#e3dbd0]">
           {conversations.map((conversation) => (
-            <button
-              key={conversation.id}
-              type="button"
-              onClick={() => onContinue(conversation.id)}
-              className="grid w-full grid-cols-[minmax(0,1fr)_auto] gap-4 px-2 py-4 text-left hover:bg-[#f5efe7]"
-            >
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="truncate text-sm font-medium">{conversation.title}</span>
-                  {conversation.id === currentSessionId && <span className="shrink-0 rounded bg-[#e7d8c8] px-1.5 py-0.5 text-[10px] text-[#6d4828]">{ui('当前')}</span>}
+            <div key={conversation.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-stretch">
+              <button
+                type="button"
+                onClick={() => onContinue(conversation.id)}
+                className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-4 px-2 py-4 text-left hover:bg-[#f5efe7]"
+              >
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate text-sm font-medium">{conversation.title}</span>
+                    {conversation.id === currentSessionId && <span className="shrink-0 rounded bg-[#e7d8c8] px-1.5 py-0.5 text-[10px] text-[#6d4828]">{ui('当前')}</span>}
+                  </div>
+                  <p className="mt-1 line-clamp-2 text-xs leading-5 text-[#6f655b]">{conversation.summary}</p>
+                  <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-[#93887d]">
+                    <span>{ui('{count} 条消息', { count: conversation.messageCount ?? 0 })}</span>
+                    <span>{ui('{count} 个任务', { count: conversation.taskCount ?? 0 })}</span>
+                    <span>{ui('{count} 个进行中', { count: conversation.openTaskCount ?? 0 })}</span>
+                  </div>
                 </div>
-                <p className="mt-1 line-clamp-2 text-xs leading-5 text-[#6f655b]">{conversation.summary}</p>
-                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-[#93887d]">
-                  <span>{ui('{count} 条消息', { count: conversation.messageCount ?? 0 })}</span>
-                  <span>{ui('{count} 个任务', { count: conversation.taskCount ?? 0 })}</span>
-                  <span>{ui('{count} 个进行中', { count: conversation.openTaskCount ?? 0 })}</span>
+                <div className="flex items-center gap-2 self-center text-xs text-[#8b8176]">
+                  <span>{conversation.updatedAt}</span>
+                  <ChevronRight size={15} />
                 </div>
-              </div>
-              <div className="flex items-center gap-2 self-center text-xs text-[#8b8176]">
-                <span>{conversation.updatedAt}</span>
-                <ChevronRight size={15} />
-              </div>
-            </button>
+              </button>
+              <button
+                type="button"
+                aria-label={ui('删除会话 {title}', { title: conversation.title })}
+                title={ui('删除会话')}
+                onClick={() => onDelete(conversation.id)}
+                className="my-3 mr-2 flex w-9 items-center justify-center rounded-md text-[#815b43] hover:bg-[#f0dfd5] hover:text-[#8f2f25]"
+              >
+                <Trash2 size={15} />
+              </button>
+            </div>
           ))}
           {!conversations.length && <div className="py-12 text-center text-sm text-[#8b8176]">{ui('暂无历史会话')}</div>}
         </div>
+        )}
       </div>
     </div>
   );
@@ -1508,7 +1708,7 @@ function TaskHistory({ tasks, events }: { tasks: Task[]; events: TaskEvent[] }) 
   );
 }
 
-function WorkspaceSidebar({ conversations, currentSessionId, onNewConversation, onOpenSearch, onSelectConversation }: WorkspaceSidebarProps) {
+function WorkspaceSidebar({ conversations, currentSessionId, onNewConversation, onOpenSearch, onSelectConversation, onDeleteConversation }: WorkspaceSidebarProps) {
   const { ui } = useI18n();
   return (
     <aside className="flex min-h-0 flex-col bg-[#eee7de]">
@@ -1541,19 +1741,32 @@ function WorkspaceSidebar({ conversations, currentSessionId, onNewConversation, 
       <div className="px-3 pt-3 text-xs font-semibold text-[#8b8176]">{ui('最近会话')}</div>
       <div className="min-h-0 flex-1 overflow-auto p-3">
         {conversations.map((conversation) => (
-          <button
+          <div
             key={conversation.id}
-            onClick={() => onSelectConversation(conversation.id)}
-            aria-current={conversation.id === currentSessionId ? 'page' : undefined}
-            className={`mb-2 w-full rounded-lg border p-3 text-left shadow-sm ${conversation.id === currentSessionId ? 'border-[#8d5f35] bg-white' : 'border-[#ddd3c7] bg-[#fbfaf7]'}`}
+            className={`group relative mb-2 rounded-lg border shadow-sm ${conversation.id === currentSessionId ? 'border-[#8d5f35] bg-white' : 'border-[#ddd3c7] bg-[#fbfaf7]'}`}
           >
-            <div className="flex items-center justify-between gap-2">
-              <span className="truncate text-sm font-medium">{conversation.title}</span>
-              <ChevronRight size={14} className="text-[#9a9084]" />
-            </div>
-            <div className="mt-1 line-clamp-2 text-xs leading-5 text-[#7a7065]">{conversation.summary}</div>
-            <div className="mt-2 text-[11px] text-[#9a9084]">{conversation.updatedAt}</div>
-          </button>
+            <button
+              onClick={() => onSelectConversation(conversation.id)}
+              aria-current={conversation.id === currentSessionId ? 'page' : undefined}
+              className="w-full p-3 pr-10 text-left"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate text-sm font-medium">{conversation.title}</span>
+                <ChevronRight size={14} className="text-[#9a9084]" />
+              </div>
+              <div className="mt-1 line-clamp-2 text-xs leading-5 text-[#7a7065]">{conversation.summary}</div>
+              <div className="mt-2 text-[11px] text-[#9a9084]">{conversation.updatedAt}</div>
+            </button>
+            <button
+              type="button"
+              aria-label={ui('删除会话 {title}', { title: conversation.title })}
+              title={ui('删除会话')}
+              onClick={() => onDeleteConversation(conversation.id)}
+              className="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-md bg-white/90 text-[#7b5a42] opacity-0 shadow-sm transition hover:text-[#962f25] focus:opacity-100 group-hover:opacity-100"
+            >
+              <Trash2 size={14} />
+            </button>
+          </div>
         ))}
       </div>
     </aside>
@@ -1624,7 +1837,31 @@ function CommandHeader({
       ? `等待授权${primaryActivity.toolName ? ` · ${primaryActivity.toolName}` : ''}`
       : primaryActivity?.phase === 'running'
         ? '执行计划步骤'
-        : '正在生成';
+        : primaryActivity?.phase === 'requesting'
+          ? '等待模型首个 token'
+          : primaryActivity?.phase === 'streaming'
+            ? '正在流式生成'
+            : primaryActivity?.phase === 'finalizing'
+              ? '正在保存结果'
+              : primaryActivity?.phase === 'preparing'
+                ? '正在整理上下文'
+                : '正在生成';
+  const factualStatus = primaryActivity
+    ? [
+        primaryActivity.contextMessages !== undefined
+          ? `上下文 ${primaryActivity.contextMessages} 条`
+          : '',
+        primaryActivity.contextTokens !== undefined
+          ? `约 ${primaryActivity.contextTokens.toLocaleString()} tokens`
+          : '',
+        primaryActivity.toolCount !== undefined
+          ? `工具 ${primaryActivity.toolCount} 个`
+          : '',
+        primaryActivity.firstTokenMs !== undefined
+          ? `首 token ${(primaryActivity.firstTokenMs / 1000).toFixed(1)} 秒`
+          : '',
+      ].filter(Boolean).join(' · ')
+    : '';
   return (
     <header className="flex h-14 items-center gap-3 border-b border-[#e7dfd3] bg-[#fbfaf7] px-4">
       <div className="min-w-0">
@@ -1638,11 +1875,12 @@ function CommandHeader({
       <div className="ml-auto flex items-center gap-2">
         {primaryActivity && (
           <div
-            className="flex max-w-64 items-center gap-2 rounded-lg border border-[#b8cbd6] bg-[#edf5f8] px-2 py-2 text-xs text-[#315f78] xl:px-3"
+            className="aether-agent-status relative flex max-w-80 items-center gap-2 overflow-hidden rounded-lg border border-[#91b8ca] bg-[#eaf5f9] px-2 py-2 text-xs text-[#285a72] xl:px-3"
             aria-live="polite"
             aria-label={`${primaryActivity.model} · ${phaseLabel}`}
+            title={`${primaryActivity.detail || phaseLabel}${factualStatus ? `\n${factualStatus}` : ''}`}
           >
-            <span className="h-2 w-2 shrink-0 rounded-full bg-[#397c9d] motion-safe:animate-pulse" />
+            <span className="aether-agent-orbit relative h-3 w-3 shrink-0 rounded-full bg-[#397c9d]" />
             <div className="min-w-0 xl:hidden">
               <div className="max-w-36 truncate font-semibold">{primaryActivity.model} / {phaseLabel}</div>
             </div>
@@ -1654,6 +1892,9 @@ function CommandHeader({
                 已运行 {durationLabel(now - primaryActivity.startedAt)}
                 {' · '}
                 {estimatedRemaining === null ? '预计剩余：估算中' : `预计剩余约 ${durationLabel(estimatedRemaining)}`}
+              </div>
+              <div className="max-w-72 truncate text-[10px] text-[#416d80]">
+                {factualStatus || primaryActivity.detail || '等待运行数据'}
               </div>
             </div>
           </div>

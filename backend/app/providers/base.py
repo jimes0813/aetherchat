@@ -298,6 +298,18 @@ class OpenAICompatProvider(LLMProvider):
             return {"chat_template_kwargs": {"enable_thinking": False}}
         return None
 
+    def _max_output_tokens(self) -> int:
+        configured = max(256, int(self.config.max_tokens or 4096))
+        if self.config.type != "local":
+            return configured
+        try:
+            local_cap = int(
+                os.getenv("AETHERCHAT_LOCAL_MAX_OUTPUT_TOKENS", "2048")
+            )
+        except ValueError:
+            local_cap = 2048
+        return min(configured, max(256, local_cap))
+
     def _client(self, timeout: float):
         kwargs: dict[str, Any] = {
             "api_key": self.api_key or "local-model",
@@ -364,7 +376,7 @@ class OpenAICompatProvider(LLMProvider):
                 "model": self.config.model,
                 "messages": openai_messages,
                 "temperature": temperature,
-                "max_tokens": self.config.max_tokens or 4096,
+                "max_tokens": self._max_output_tokens(),
                 "stream": True,
                 "stream_options": {"include_usage": True},
             }

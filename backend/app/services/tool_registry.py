@@ -573,6 +573,30 @@ class ToolRegistry:
         selected = runs if limit is None else runs[: max(0, limit)]
         return deepcopy(selected)
 
+    def delete_session_data(self, session_id: str) -> dict[str, int]:
+        session = str(session_id)
+        with _lock_for(self.registry_path):
+            self.tools = self._load_tools_unlocked()
+            removable = [
+                tool_id for tool_id, tool in self.tools.items()
+                if str(tool.get("session_id") or "") == session
+            ]
+            for tool_id in removable:
+                self.tools.pop(tool_id, None)
+            if removable:
+                self._save_tools_unlocked()
+        with _lock_for(self.runs_path):
+            self.runs = self._load_runs_unlocked()
+            retained = [
+                run for run in self.runs
+                if str(run.get("session_id") or "") != session
+            ]
+            removed_runs = len(self.runs) - len(retained)
+            if removed_runs:
+                self.runs = retained
+                self._save_runs_unlocked()
+        return {"tools": len(removable), "runs": removed_runs}
+
     def _render_output(self, tool: dict[str, Any], arguments: dict[str, Any]) -> str:
         data = {"name": tool["name"], "input": json.dumps(arguments, ensure_ascii=False), **arguments}
         try:

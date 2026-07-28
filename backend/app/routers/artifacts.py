@@ -149,6 +149,16 @@ async def preview_artifact(session_id: str, path: str):
         raise _bad_path(exc) from exc
 
 
+@router.get("/{path:path}/native-location")
+async def native_artifact_location(session_id: str, path: str):
+    try:
+        return await artifact_svc.native_location(session_id, path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Artifact not found") from exc
+    except ArtifactPathError as exc:
+        raise _bad_path(exc) from exc
+
+
 @router.get("/{path:path}/diff")
 async def diff_artifact(
     session_id: str,

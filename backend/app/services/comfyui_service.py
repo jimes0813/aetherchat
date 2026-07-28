@@ -14,6 +14,8 @@ from uuid import uuid4
 
 import httpx
 
+from .comfyui_runtime import ComfyUIRuntimeError, comfyui_runtime
+
 
 class ComfyUIError(RuntimeError):
     pass
@@ -27,6 +29,40 @@ class ComfyUIService:
             "/home/jimes0813/comfy-spark/ComfyUI/user/default/workflows",
         )
         self.workflow_roots = [Path(item).expanduser().resolve() for item in roots.split(":") if item]
+        output_roots = os.getenv("AETHERCHAT_COMFYUI_OUTPUT_ROOTS", "")
+        self.output_roots = [
+            Path(item).expanduser().resolve()
+            for item in output_roots.split(os.pathsep)
+            if item
+        ]
+        if not self.output_roots:
+            configured_root = os.getenv("AETHERCHAT_COMFYUI_ROOT")
+            candidates = [
+                Path(configured_root).expanduser().resolve()
+                if configured_root
+                else None,
+                *(candidate for root in self.workflow_roots for candidate in root.parents
+                  if candidate.name.lower() == "comfyui"),
+                (Path.home() / "comfy-spark" / "ComfyUI").resolve(),
+            ]
+            root = next(
+                (
+                    candidate for candidate in candidates
+                    if candidate is not None and (candidate / "main.py").is_file()
+                ),
+                None,
+            )
+            if root is not None:
+                self.output_roots = [(root / "output").resolve()]
+
+    async def ensure_ready(self) -> dict[str, Any]:
+        try:
+            return await comfyui_runtime.ensure_ready(
+                self.base_url,
+                self.workflow_roots,
+            )
+        except ComfyUIRuntimeError as exc:
+            raise ComfyUIError(str(exc)) from exc
 
     def _client(self, timeout: float = 30.0) -> httpx.AsyncClient:
         return httpx.AsyncClient(timeout=timeout, trust_env=False)
@@ -44,17 +80,26 @@ class ComfyUIService:
             raise ComfyUIError(f"ComfyUI request failed: {exc}") from exc
 
     async def status(self) -> dict[str, Any]:
+        runtime = await self.ensure_ready()
         stats = await self._get_json("/system_stats", 5)
-        inventory = await self.inventory()
+        inventory = await self.inventory(_ensure_runtime=False)
         return {
             "ready": True,
             "url": self.base_url,
+            "runtime": runtime,
             "system": stats.get("system", {}),
             "devices": stats.get("devices", []),
             "inventory": inventory,
         }
 
-    async def inventory(self, *, include_workflow_details: bool = True) -> dict[str, Any]:
+    async def inventory(
+        self,
+        *,
+        include_workflow_details: bool = True,
+        _ensure_runtime: bool = True,
+    ) -> dict[str, Any]:
+        if _ensure_runtime:
+            await self.ensure_ready()
         info = await self._get_json("/object_info", 20)
 
         def choices(node: str, field: str) -> list[str]:
@@ -278,6 +323,7 @@ class ComfyUIService:
         cfg: float = 4.0,
         seed: int | None = None,
     ) -> dict[str, Any]:
+        await self.ensure_ready()
         width, height = self._dimensions(width, height)
         frames = max(1, min(161, frames))
         if pipeline == "wan-i2v":
@@ -418,6 +464,7 @@ class ComfyUIService:
         }
 
     async def run_workflow(self, name: str, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+        await self.ensure_ready()
         path = self._workflow_path(name)
         info = await self._get_json("/object_info", 20)
         graph = await self._read_workflow_graph(path, info)
@@ -464,6 +511,7 @@ class ComfyUIService:
         )
 
     async def workflow_schema(self, name: str) -> dict[str, Any]:
+        await self.ensure_ready()
         path = self._workflow_path(name)
         info = await self._get_json("/object_info", 20)
         graph = await self._read_workflow_graph(path, info)
@@ -966,7 +1014,7 @@ class ComfyUIService:
             {
                 key: value
                 for key, value in file.items()
-                if key != "image_data_url"
+                if key != "image_data_url" and not str(key).startswith("_")
             }
             for file in files
         ]
@@ -998,6 +1046,7 @@ class ComfyUIService:
         timeout: int,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        await self.ensure_ready()
         submitted_at = datetime.now(UTC).isoformat()
         payload = {"prompt": graph, "client_id": str(uuid4())}
         try:
@@ -1082,6 +1131,9 @@ class ComfyUIService:
                 )
                 url = f"{self.base_url}/view?{query}"
                 record = {"filename": item["filename"], "kind": item["kind"], "url": url}
+                local_path = self._local_output_path(item)
+                if local_path is not None:
+                    record["_local_path"] = str(local_path)
                 suffix = Path(str(item["filename"])).suffix.lower()
                 if item["kind"] == "images" and suffix in {".png", ".jpg", ".jpeg", ".webp"} and len(image_data_urls) < 4:
                     response = await client.get(url)
@@ -1092,6 +1144,32 @@ class ComfyUIService:
                     record["image_data_url"] = data_url
                 result_files.append(record)
         return {"prompt_id": prompt_id, "completed": True, "files": result_files, "images": image_data_urls}
+
+    def _local_output_path(self, item: dict[str, Any]) -> Path | None:
+        if str(item.get("type") or "output") != "output":
+            return None
+        filename = str(item.get("filename") or "").replace("\\", "/")
+        subfolder = str(item.get("subfolder") or "").replace("\\", "/")
+        raw_parts = [
+            part
+            for value in (subfolder, filename)
+            for part in value.split("/")
+            if part not in {"", "."}
+        ]
+        if (
+            not raw_parts
+            or any(part == ".." or ":" in part or "\x00" in part for part in raw_parts)
+        ):
+            return None
+        for root in self.output_roots:
+            candidate = (root / Path(*raw_parts)).resolve()
+            try:
+                candidate.relative_to(root.resolve())
+            except ValueError:
+                continue
+            if candidate.is_file() and not candidate.is_symlink():
+                return candidate
+        return None
 
 
 comfyui_service = ComfyUIService()

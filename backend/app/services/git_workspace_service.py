@@ -783,6 +783,29 @@ class GitWorkspaceService:
             for item in self.database.list_agent_workspaces(run_id)
         ]
 
+    def delete_session_worktrees(self, session_id: str) -> int:
+        repositories = {
+            item["id"]: item
+            for item in self.database.list_workspace_repositories(session_id)
+        }
+        removed = 0
+        with self._lock:
+            for workspace in self.database.list_session_agent_workspaces(session_id):
+                worktree_path = Path(str(workspace.get("root_path") or ""))
+                if not worktree_path.exists():
+                    continue
+                repository = repositories.get(workspace.get("repository_id"))
+                if repository is None:
+                    raise GitWorkspaceError(
+                        "无法安全定位待删除 worktree 的主仓库"
+                    )
+                self._remove_worktree(
+                    Path(repository["root_path"]).resolve(),
+                    worktree_path,
+                )
+                removed += 1
+        return removed
+
     def deterministic_evidence(self, run_id: str) -> list[dict[str, Any]]:
         latest_by_step: dict[str, dict[str, Any]] = {}
         for item in self.database.list_agent_workspaces(run_id):

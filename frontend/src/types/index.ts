@@ -10,6 +10,17 @@ export interface Message {
   tokens_out?: number;
   cost_usd?: number;
   attachments?: KnowledgeAttachment[];
+  generated_files?: GeneratedFile[];
+}
+
+export interface GeneratedFile {
+  path?: string | null;
+  url?: string | null;
+  name: string;
+  mime_type?: string;
+  size_bytes?: number;
+  kind?: string;
+  source?: string;
 }
 
 export interface KnowledgeAttachment {
@@ -377,7 +388,7 @@ export interface ToolRun {
 }
 
 export interface WSMessage {
-  type: 'ack' | 'system' | 'delta' | 'stream_reset' | 'message_complete' | 'task_update' | 'artifact_update' | 'cost_update' | 'user_message' | 'tool_update' | 'tool_run' | 'tool_call' | 'tool_result' | 'tool_result_replayed' | 'approval_required' | 'approval_resolved' | 'agent_run_update' | 'plan_created' | 'plan_confirmation_required' | 'plan_updated' | 'plan_replanned' | 'plan_rejected' | 'plan_step_update' | 'plan_step_output' | 'review_recorded' | 'workspace_verified' | 'steer_ack' | 'steer_applied' | 'interrupted' | 'error';
+  type: 'ack' | 'system' | 'delta' | 'provider_status' | 'stream_reset' | 'message_complete' | 'task_update' | 'artifact_update' | 'cost_update' | 'user_message' | 'tool_update' | 'tool_run' | 'tool_call' | 'tool_result' | 'tool_result_replayed' | 'approval_required' | 'approval_resolved' | 'agent_run_update' | 'plan_created' | 'plan_confirmation_required' | 'plan_updated' | 'plan_replanned' | 'plan_rejected' | 'plan_step_update' | 'plan_step_output' | 'review_recorded' | 'workspace_verified' | 'steer_ack' | 'steer_applied' | 'interrupted' | 'error';
   model?: string;
   delta?: string;
   seq?: number;
@@ -408,6 +419,16 @@ export interface WSMessage {
   targets?: string[];
   tool_call_id?: string;
   tool_name?: string;
+  generated_files?: GeneratedFile[];
+  phase?: 'preparing' | 'requesting' | 'streaming' | 'tool' | 'finalizing';
+  detail?: string;
+  context_messages?: number;
+  context_tokens?: number;
+  tool_count?: number;
+  tool_schema_tokens?: number;
+  round_index?: number;
+  first_token_ms?: number;
+  elapsed_ms?: number;
 }
 
 export interface Provider {

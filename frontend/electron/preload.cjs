@@ -19,6 +19,10 @@ contextBridge.exposeInMainWorld('aetherRuntime', {
   platform: argumentValue('aether-platform', process.platform),
   getApiToken: () => ipcRenderer.invoke('aether-runtime:api-token'),
   openExternal: (url) => ipcRenderer.invoke('aether-external:open', url),
+  openArtifact: (sessionId, path, action = 'open') => ipcRenderer.invoke(
+    'aether-artifact:open',
+    { sessionId, path, action },
+  ),
 });
 
 contextBridge.exposeInMainWorld('aetherDesktop', {

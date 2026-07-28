@@ -669,6 +669,58 @@ class PluginRegistry:
             for character in prompt_id[:160]
             if character.isalnum() or character in {"-", "_"}
         ) or "unknown"
+        staged_outputs: list[dict[str, Any]] = []
+        generated_files: list[dict[str, Any]] = []
+        for index, raw_file in enumerate(result.get("files") or []):
+            if not isinstance(raw_file, dict):
+                continue
+            public_file = {
+                str(key): value
+                for key, value in raw_file.items()
+                if key != "image_data_url" and not str(key).startswith("_")
+            }
+            source_path = raw_file.get("_local_path")
+            filename = Path(str(raw_file.get("filename") or f"output-{index + 1}")).name
+            safe_filename = "".join(
+                character
+                for character in filename[:220]
+                if character.isalnum() or character in {"-", "_", "."}
+            ) or f"output-{index + 1}"
+            if isinstance(source_path, str) and source_path:
+                output_artifact_path = (
+                    f"generated/comfyui/{safe_prompt_id}/{safe_filename}"
+                )
+                try:
+                    imported = await self.artifacts.import_file(
+                        session_id,
+                        output_artifact_path,
+                        source_path,
+                        f"Import ComfyUI output {filename}",
+                        caller,
+                        source_model=caller,
+                        status="ready",
+                    )
+                except (OSError, ValueError):
+                    imported = None
+                if imported is not None:
+                    public_file["artifact_path"] = output_artifact_path
+                    generated_files.append({
+                        "path": output_artifact_path,
+                        "name": filename,
+                        "mime_type": imported.get("mime_type"),
+                        "size_bytes": imported.get("size_bytes", 0),
+                        "kind": "generated_media",
+                        "source": "comfyui",
+                    })
+            staged_outputs.append(public_file)
+        result = {
+            **result,
+            "files": staged_outputs,
+        }
+        raw_metadata = {
+            **raw_metadata,
+            "outputs": staged_outputs,
+        }
         envelope = {
             **deepcopy(raw_metadata),
             "session_id": session_id,
@@ -688,6 +740,14 @@ class PluginRegistry:
             source_model=caller,
             status="ready",
         )
+        generated_files.append({
+            "path": artifact_path,
+            "name": Path(artifact_path).name,
+            "mime_type": written.get("mime_type"),
+            "size_bytes": written.get("size_bytes", 0),
+            "kind": "metadata",
+            "source": "comfyui",
+        })
         files = raw_metadata.get("outputs") or []
         first_output = files[0] if files and isinstance(files[0], dict) else {}
         entity_value = str(
@@ -718,11 +778,13 @@ class PluginRegistry:
         )
         return {
             **result,
+            "generation_metadata": raw_metadata,
             "metadata_artifact": {
                 **written,
                 "schema": envelope.get("schema"),
                 "artifact_type": envelope.get("artifact_type"),
             },
+            "generated_files": generated_files,
         }
 
     async def _dispatch(self, action: dict[str, Any], session_id: str, arguments: dict[str, Any]) -> Any:

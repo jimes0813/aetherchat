@@ -70,6 +70,7 @@ class Message(BaseModel):
     tokens_out: int = 0
     cost_usd: float = 0.0
     attachments: list[dict[str, Any]] = Field(default_factory=list)
+    generated_files: list[dict[str, Any]] = Field(default_factory=list)
     created_at: datetime
 
 class Task(BaseModel):

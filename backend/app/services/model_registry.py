@@ -111,7 +111,7 @@ class ModelRegistry:
             self._save()
         return item
 
-    def configs(self) -> builtins.list[ProviderConfig]:
+    def configs(self, *, available_only: bool = False) -> builtins.list[ProviderConfig]:
         return [
             ProviderConfig(
                 name=item["name"],
@@ -132,6 +132,12 @@ class ModelRegistry:
                 startup_timeout=item.get("startup_timeout", 300),
             )
             for item in self.models.values()
+            if (
+                not available_only
+                or item.get("type") == "local"
+                or bool(vault.get_key(item.get("api_key_ref", "")))
+                or bool(os.getenv(item.get("api_key_ref", "")))
+            )
         ]
 
 

@@ -14,6 +14,10 @@ Linux 桌面版的构建与安装说明见 [`frontend/LINUX_PACKAGING.md`](front
 
 Agent 之间还可通过结构化共享实体和标准生成物元数据交换上下文。ComfyUI 成功生成后会自动记录 prompt、模型、seed、尺寸、工作流节点/依赖和真实输出，并写入 `generated/comfyui/*.metadata.json`；任务支持依赖、阻塞检测及关联工具的自动状态同步。协议与调试行为见 [`docs/AGENT_COLLABORATION_PROTOCOL.md`](docs/AGENT_COLLABORATION_PROTOCOL.md)。
 
+模型生成或写入的文件会和对应回复一起持久化，在聊天卡片中可直接打开，或在系统文件管理器中显示所在目录。全部消息仍保存在本机 SQLite 中，“历史聊天”支持跨会话全文检索，最近会话可连同其任务、资料与生成物一起删除。桌面输入区和聊天内容提供原生右键复制、剪切、粘贴与全选菜单。
+
+模型运行时，顶部状态条会显示真实阶段、上下文消息数、估算 token 数、已暴露工具数和首 token 延迟，并配有遵守“减少动态效果”设置的流式动画。本地模型默认只装载当前请求需要的工具，并把有效上下文和单次输出限制在可配置的较小窗口，避免 CPU 推理被无关工具 schema 与过长历史拖慢。ComfyUI 工具在本机服务未运行时可受控自动启动；AetherChat 只跟踪并在退出时终止由自己启动的 ComfyUI 进程，不会关闭用户预先运行的实例。
+
 每次多模型执行会持久记录为 Agent Run。项目协作模式进一步建立 Goal Spec 和 Planner → 并行 Worker → Verifier → Synthesizer 的持久 Plan DAG：Planner 先给出可编辑草稿，用户确认前不会调用 Worker；每次人工修改和 Verifier 返工都有版本快照。中间候选与核验结论留在运行记录，主聊天只接收一份最终交付；核验失败会进行有限次数返工，持续失败则阻止未经验证的综合。应用异常退出后，等待确认的草稿会保留，执行中的 Run 可从未完成 Plan Step 继续。
 
 桌面版还可为会话选择一个干净的 Git 仓库。代码 Worker 从计划确认时冻结的提交创建独立 detached worktree，只能通过限定工具访问该 worktree；结束后由断网 Docker 沙箱运行最多四条已确认命令，并持久化真实 diff、退出码和输出哈希。候选只有经过 Electron 原生确认，且再次通过仓库 HEAD、干净状态和补丁哈希校验后，才会以 `git apply` 写回主工作树；不会自动 commit、push、fetch 或访问网络。浏览器模式和未绑定仓库的 Worker 仍保持只读。安全边界、状态语义和已知限制见 [`docs/GIT_AGENT_WORKSPACES.md`](docs/GIT_AGENT_WORKSPACES.md)。

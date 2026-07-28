@@ -842,6 +842,14 @@ class AgentRunService:
                 "status": tool_run.get("status"),
                 "tool_run_id": tool_run.get("id"),
             })
+        elif event_type == "provider_status":
+            for key in (
+                "phase", "detail", "context_messages", "context_tokens",
+                "tool_count", "tool_schema_tokens", "round_index",
+                "first_token_ms", "elapsed_ms",
+            ):
+                if key in event:
+                    payload[key] = event[key]
         elif event_type in {"tool_call", "tool_result", "tool_result_replayed"}:
             for key in (
                 "tool_call_id", "tool_name", "round_index", "call_index",

@@ -68,6 +68,8 @@ class ChatDatabase:
                     tokens_in INTEGER NOT NULL DEFAULT 0,
                     tokens_out INTEGER NOT NULL DEFAULT 0,
                     cost_usd REAL NOT NULL DEFAULT 0,
+                    attachments_json TEXT NOT NULL DEFAULT '[]',
+                    generated_files_json TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_messages_session_created
@@ -347,6 +349,60 @@ class ChatDatabase:
                 connection.execute(
                     "ALTER TABLE messages ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]'"
                 )
+            if "generated_files_json" not in message_columns:
+                connection.execute(
+                    "ALTER TABLE messages ADD COLUMN generated_files_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            try:
+                connection.executescript(
+                    """
+                    CREATE VIRTUAL TABLE IF NOT EXISTS message_search USING fts5(
+                        message_id UNINDEXED,
+                        session_id UNINDEXED,
+                        author_model,
+                        content,
+                        tokenize='trigram'
+                    );
+                    CREATE TRIGGER IF NOT EXISTS messages_search_insert
+                    AFTER INSERT ON messages BEGIN
+                        INSERT INTO message_search(message_id, session_id, author_model, content)
+                        VALUES (new.id, new.session_id, new.author_model, new.content);
+                    END;
+                    CREATE TRIGGER IF NOT EXISTS messages_search_delete
+                    AFTER DELETE ON messages BEGIN
+                        DELETE FROM message_search WHERE message_id = old.id;
+                    END;
+                    CREATE TRIGGER IF NOT EXISTS messages_search_update
+                    AFTER UPDATE OF author_model, content ON messages BEGIN
+                        DELETE FROM message_search WHERE message_id = old.id;
+                        INSERT INTO message_search(message_id, session_id, author_model, content)
+                        VALUES (new.id, new.session_id, new.author_model, new.content);
+                    END;
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO message_search(message_id, session_id, author_model, content)
+                    SELECT m.id, m.session_id, m.author_model, m.content
+                    FROM messages m
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM message_search f WHERE f.message_id = m.id
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    DELETE FROM message_search
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM messages m WHERE m.id = message_search.message_id
+                    )
+                    """
+                )
+            except sqlite3.OperationalError:
+                # Older system SQLite builds may omit FTS5 or its trigram
+                # tokenizer. Chat persistence must still start; search falls
+                # back to an indexed-session/LIKE query below.
+                pass
             memory_columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(session_memory)").fetchall()
             }
@@ -432,13 +488,16 @@ class ChatDatabase:
             inserted = connection.execute(
                 """
                 INSERT OR IGNORE INTO messages
-                    (id, session_id, author_model, role, content, tokens_in, tokens_out, cost_usd, attachments_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, session_id, author_model, role, content, tokens_in, tokens_out,
+                     cost_usd, attachments_json, generated_files_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(message.id), session_id, message.author_model, message.role, message.content,
                     message.tokens_in, message.tokens_out, message.cost_usd,
-                    json.dumps(message.attachments, ensure_ascii=False), created_at,
+                    json.dumps(message.attachments, ensure_ascii=False),
+                    json.dumps(message.generated_files, ensure_ascii=False, default=str),
+                    created_at,
                 ),
             ).rowcount
             if not inserted:
@@ -477,6 +536,12 @@ class ChatDatabase:
                 item["attachments"] = json.loads(item.pop("attachments_json", "[]"))
             except (json.JSONDecodeError, TypeError):
                 item["attachments"] = []
+            try:
+                item["generated_files"] = json.loads(
+                    item.pop("generated_files_json", "[]")
+                )
+            except (json.JSONDecodeError, TypeError):
+                item["generated_files"] = []
             result.append(item)
         return result
 
@@ -579,6 +644,123 @@ class ChatDatabase:
                 (bounded,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def get_session(self, session_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM sessions WHERE id = ?",
+                (str(session_id),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    @staticmethod
+    def _message_search_snippet(content: str, query: str, limit: int = 220) -> str:
+        compact = " ".join(str(content or "").split())
+        if len(compact) <= limit:
+            return compact
+        index = compact.casefold().find(query.casefold())
+        if index < 0:
+            return compact[:limit] + "…"
+        radius = max(40, limit // 2)
+        start = max(0, index - radius)
+        end = min(len(compact), start + limit)
+        return ("…" if start else "") + compact[start:end] + ("…" if end < len(compact) else "")
+
+    def search_messages(self, query: str, limit: int = 50) -> list[dict[str, Any]]:
+        needle = " ".join(str(query or "").split())[:300]
+        if not needle:
+            return []
+        bounded = max(1, min(200, int(limit)))
+        with self._lock, self._connect() as connection:
+            rows: list[sqlite3.Row] = []
+            fts_succeeded = False
+            if len(needle) >= 3:
+                try:
+                    rows = connection.execute(
+                        """
+                        SELECT m.id AS message_id, m.session_id, m.author_model, m.role,
+                               m.content, m.created_at, s.title, s.updated_at
+                        FROM message_search f
+                        JOIN messages m ON m.id = f.message_id
+                        JOIN sessions s ON s.id = m.session_id
+                        WHERE message_search MATCH ?
+                        ORDER BY m.created_at DESC
+                        LIMIT ?
+                        """,
+                        ('"' + needle.replace('"', '""') + '"', bounded),
+                    ).fetchall()
+                    fts_succeeded = True
+                except sqlite3.OperationalError:
+                    rows = []
+            pattern = f"%{needle}%"
+            if fts_succeeded and rows:
+                title_rows = connection.execute(
+                    """
+                    SELECT m.id AS message_id, m.session_id, m.author_model, m.role,
+                           m.content, m.created_at, s.title, s.updated_at
+                    FROM messages m
+                    JOIN sessions s ON s.id = m.session_id
+                    WHERE s.title LIKE ? COLLATE NOCASE
+                    ORDER BY m.created_at DESC
+                    LIMIT ?
+                    """,
+                    (pattern, bounded),
+                ).fetchall()
+                by_id = {
+                    str(row["message_id"]): row
+                    for row in [*rows, *title_rows]
+                }
+                rows = sorted(
+                    by_id.values(),
+                    key=lambda row: str(row["created_at"]),
+                    reverse=True,
+                )[:bounded]
+            elif not rows:
+                rows = connection.execute(
+                    """
+                    SELECT m.id AS message_id, m.session_id, m.author_model, m.role,
+                           m.content, m.created_at, s.title, s.updated_at
+                    FROM messages m
+                    JOIN sessions s ON s.id = m.session_id
+                    WHERE m.content LIKE ? COLLATE NOCASE
+                       OR m.author_model LIKE ? COLLATE NOCASE
+                       OR s.title LIKE ? COLLATE NOCASE
+                    ORDER BY m.created_at DESC
+                    LIMIT ?
+                    """,
+                    (pattern, pattern, pattern, bounded),
+                ).fetchall()
+        return [
+            {
+                **dict(row),
+                "snippet": self._message_search_snippet(row["content"], needle),
+            }
+            for row in rows
+        ]
+
+    def delete_session(self, session_id: str) -> bool:
+        with self._lock, self._connect() as connection:
+            deleted = connection.execute(
+                "DELETE FROM sessions WHERE id = ?",
+                (str(session_id),),
+            ).rowcount
+        return bool(deleted)
+
+    def session_has_active_runs(self, session_id: str) -> bool:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT 1 FROM agent_runs
+                WHERE session_id = ?
+                  AND status IN (
+                    'queued', 'running', 'waiting_approval',
+                    'waiting_plan_confirmation', 'recoverable'
+                  )
+                LIMIT 1
+                """,
+                (str(session_id),),
+            ).fetchone()
+        return row is not None
 
     @staticmethod
     def _task_payload(task: Task) -> dict[str, Any]:
@@ -2112,6 +2294,18 @@ class ChatDatabase:
                 """SELECT * FROM agent_workspaces WHERE run_id = ?
                    ORDER BY created_at, rowid""",
                 (str(run_id),),
+            ).fetchall()
+        return [self._decode_agent_workspace(row) for row in rows]
+
+    def list_session_agent_workspaces(
+        self,
+        session_id: str,
+    ) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM agent_workspaces WHERE session_id = ?
+                   ORDER BY created_at, rowid""",
+                (str(session_id),),
             ).fetchall()
         return [self._decode_agent_workspace(row) for row in rows]
 

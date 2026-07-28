@@ -329,6 +329,34 @@ class KnowledgeService:
             )
         shutil.rmtree(self._attachment_root(safe_session, attachment_id), ignore_errors=True)
 
+    def delete_session(self, session_id: str) -> dict[str, int]:
+        safe_session = self._session_id(session_id)
+        with self._lock, self._connect() as connection:
+            attachment_count = int(connection.execute(
+                "SELECT COUNT(*) FROM knowledge_attachments WHERE session_id = ?",
+                (safe_session,),
+            ).fetchone()[0])
+            connection.execute(
+                "DELETE FROM knowledge_vectors WHERE session_id = ?",
+                (safe_session,),
+            )
+            connection.execute(
+                "DELETE FROM knowledge_chunks WHERE session_id = ?",
+                (safe_session,),
+            )
+            connection.execute(
+                "DELETE FROM knowledge_attachments WHERE session_id = ?",
+                (safe_session,),
+            )
+        session_root = (self.base_path.resolve() / safe_session).resolve()
+        try:
+            session_root.relative_to(self.base_path.resolve())
+        except ValueError as exc:
+            raise KnowledgeError("会话资料路径越界") from exc
+        if session_root.is_dir() and not session_root.is_symlink():
+            shutil.rmtree(session_root)
+        return {"attachments": attachment_count}
+
     def search(self, session_id: str, query: str, limit: int = 8) -> list[dict[str, Any]]:
         safe_session = self._session_id(session_id)
         clean_query = " ".join(str(query).strip().split())[:500]

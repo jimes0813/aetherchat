@@ -1,8 +1,10 @@
 import asyncio
 import json
+import os
 import re
 from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime
+from time import monotonic
 from uuid import UUID, uuid4
 
 from ..models.schemas import ChatMessage, Message, ProviderConfig, ToolCall, ToolDefinition
@@ -11,7 +13,7 @@ from .agent_run_service import agent_run_service
 from .approval_service import approval_policy, approval_service
 from .chat_database import chat_database
 from .computer_use_consent import conversation_computer_use_approval
-from .context_builder import build_messages_for_provider
+from .context_builder import build_messages_for_provider, estimate_tokens
 from .git_workspace_service import (
     WORKSPACE_TOOL_NAMES,
     GitWorkspaceError,
@@ -245,6 +247,13 @@ class SessionOrchestrator:
                 "message": "会话预算已用尽，请增加预算后再调用模型。",
             }
             return
+        available_tool_definitions = self._available_tools()
+        base_routed_tools = self._route_tools(
+            content,
+            available_tool_definitions,
+            action,
+        )
+        base_tool_names = {tool.name for tool in base_routed_tools}
         planned_execution = bool(
             agent_run_id
             and self.mode == "project"
@@ -301,13 +310,14 @@ class SessionOrchestrator:
         memory_context = memory_service.context(self.session_id)
         if memory_context:
             context_msgs.insert(0, ChatMessage(role="system", content=memory_context))
-        context_msgs.insert(0, ChatMessage(
-            role="system",
-            content=(
-                "当用户确认了后续 Agent 会复用的稳定实体（角色、项目 URL、资源标识或关键事实）时，"
-                "使用 upsert_memory_entity 写入会话共享记忆，避免重复确认；不要把密码、令牌或其他秘密写入共享记忆。"
-            ),
-        ))
+        if "upsert_memory_entity" in base_tool_names:
+            context_msgs.insert(0, ChatMessage(
+                role="system",
+                content=(
+                    "当用户确认了后续 Agent 会复用的稳定实体（角色、项目 URL、资源标识或关键事实）时，"
+                    "使用 upsert_memory_entity 写入会话共享记忆，避免重复确认；不要把密码、令牌或其他秘密写入共享记忆。"
+                ),
+            ))
         if attachment_context:
             context_msgs.insert(0, ChatMessage(role="system", content=attachment_context))
         if project_knowledge_context:
@@ -317,7 +327,7 @@ class SessionOrchestrator:
             context_msgs.insert(0, ChatMessage(role="system", content="请优先使用清晰、准确的中文回复。"))
         elif language == "中英双语":
             context_msgs.insert(0, ChatMessage(role="system", content="请使用中英双语回复，先中文后英文。"))
-        if any(tool.name.startswith("plugin__desktop_control__") for tool in self._available_tools()):
+        if any(name.startswith("plugin__desktop_control__") for name in base_tool_names):
             context_msgs.insert(0, ChatMessage(
                 role="system",
                 content=(
@@ -334,7 +344,7 @@ class SessionOrchestrator:
                     "不得猜测敏感数据，不得绕过本机授权对话框。"
                 ),
             ))
-        if any(tool.name.startswith("plugin__comfyui__") for tool in self._available_tools()):
+        if any(name.startswith("plugin__comfyui__") for name in base_tool_names):
             context_msgs.insert(0, ChatMessage(
                 role="system",
                 content=(
@@ -362,8 +372,13 @@ class SessionOrchestrator:
             workspace_id = str(execution.get("workspace_id") or "") or None
             publish_message = bool(execution.get("publish_message", True))
             allow_side_effects = bool(execution.get("allow_side_effects", True))
+            routed_tools = self._route_tools(
+                content,
+                available_tool_definitions,
+                {**action, **execution},
+            )
             provider_tools = [
-                tool for tool in self._available_tools()
+                tool for tool in routed_tools
                 if (
                     (
                         tool.name not in WORKSPACE_TOOL_NAMES
@@ -384,12 +399,18 @@ class SessionOrchestrator:
             completed = False
             message_emitted = False
             pseudo_tool_retries = 0
+            generated_files: list[dict] = []
+            request_started_at = monotonic()
+            first_token_reported = False
             try:
                 if self._is_interrupted(name):
                     return
                 checkpoint = execution.get("resume_checkpoint")
                 if checkpoint is None:
                     checkpoint = (action.get("_resume_checkpoints") or {}).get(name)
+                provider_limit, output_reserve, tool_schema_tokens = (
+                    self._context_limits(provider, provider_tools)
+                )
                 restored_context, tool_round = self._restore_checkpoint(checkpoint)
                 if restored_context:
                     local_context = restored_context
@@ -405,10 +426,27 @@ class SessionOrchestrator:
                         )
                     local_context = await build_messages_for_provider(
                         source_context,
-                        provider_limit=provider.config.token_limit,
-                        output_reserve=provider.config.max_tokens,
+                        provider_limit=provider_limit,
+                        output_reserve=output_reserve,
                         system_prompt=system_prompt,
                     )
+                estimated_context_tokens = sum(
+                    estimate_tokens(message.content) + 8
+                    for message in local_context
+                )
+                await queue.put({
+                    "type": "provider_status",
+                    "model": name,
+                    "phase": "requesting",
+                    "detail": "上下文已整理，正在等待模型返回首个 token",
+                    "context_messages": len(local_context),
+                    "context_tokens": estimated_context_tokens,
+                    "tool_count": len(provider_tools),
+                    "tool_schema_tokens": tool_schema_tokens,
+                    "round_index": tool_round,
+                    "elapsed_ms": 0,
+                    "ts": datetime.now(UTC).isoformat(),
+                })
 
                 async def apply_queued_steers(kind: str = "steer") -> bool:
                     steers = self._consume_steers(name)
@@ -447,6 +485,26 @@ class SessionOrchestrator:
                 for _provider_turn in range(MAX_MODEL_TURNS):
                     if self._is_interrupted(name):
                         break
+                    if _provider_turn > 0:
+                        request_started_at = monotonic()
+                        first_token_reported = False
+                        estimated_context_tokens = sum(
+                            estimate_tokens(message.content) + 8
+                            for message in local_context
+                        )
+                        await queue.put({
+                            "type": "provider_status",
+                            "model": name,
+                            "phase": "requesting",
+                            "detail": "工具结果已加入上下文，正在等待模型继续",
+                            "context_messages": len(local_context),
+                            "context_tokens": estimated_context_tokens,
+                            "tool_count": len(provider_tools),
+                            "tool_schema_tokens": tool_schema_tokens,
+                            "round_index": tool_round,
+                            "elapsed_ms": 0,
+                            "ts": datetime.now(UTC).isoformat(),
+                        })
                     round_text = ""
                     round_tool_calls: list[dict] = []
                     round_usage: dict | None = None
@@ -459,6 +517,26 @@ class SessionOrchestrator:
                             break
                         delta = chunk.get("delta") or ""
                         if delta:
+                            if not first_token_reported:
+                                first_token_reported = True
+                                await queue.put({
+                                    "type": "provider_status",
+                                    "model": name,
+                                    "phase": "streaming",
+                                    "detail": "已收到首个 token，正在生成回复",
+                                    "context_messages": len(local_context),
+                                    "context_tokens": estimated_context_tokens,
+                                    "tool_count": len(provider_tools),
+                                    "tool_schema_tokens": tool_schema_tokens,
+                                    "round_index": tool_round,
+                                    "first_token_ms": round(
+                                        (monotonic() - request_started_at) * 1000
+                                    ),
+                                    "elapsed_ms": round(
+                                        (monotonic() - request_started_at) * 1000
+                                    ),
+                                    "ts": datetime.now(UTC).isoformat(),
+                                })
                             round_text += delta
                             await queue.put({
                                 "type": "delta",
@@ -467,6 +545,26 @@ class SessionOrchestrator:
                                 "ts": datetime.now(UTC).isoformat(),
                             })
                         round_tool_calls.extend(chunk.get("tool_calls") or [])
+                        if round_tool_calls and not first_token_reported:
+                            first_token_reported = True
+                            await queue.put({
+                                "type": "provider_status",
+                                "model": name,
+                                "phase": "tool",
+                                "detail": "模型已返回结构化工具调用",
+                                "context_messages": len(local_context),
+                                "context_tokens": estimated_context_tokens,
+                                "tool_count": len(provider_tools),
+                                "tool_schema_tokens": tool_schema_tokens,
+                                "round_index": tool_round,
+                                "first_token_ms": round(
+                                    (monotonic() - request_started_at) * 1000
+                                ),
+                                "elapsed_ms": round(
+                                    (monotonic() - request_started_at) * 1000
+                                ),
+                                "ts": datetime.now(UTC).isoformat(),
+                            })
                         if chunk.get("usage"):
                             round_usage = chunk["usage"]
 
@@ -507,6 +605,33 @@ class SessionOrchestrator:
                             (tool for tool in provider_tools if tool.name == requested_name),
                             None,
                         )
+                        if definition is None:
+                            candidate = next(
+                                (
+                                    tool
+                                    for tool in available_tool_definitions
+                                    if tool.name == requested_name
+                                ),
+                                None,
+                            )
+                            if (
+                                candidate is not None
+                                and (
+                                    candidate.name not in WORKSPACE_TOOL_NAMES
+                                    or workspace_id is not None
+                                )
+                                and (
+                                    allow_side_effects
+                                    or not self.run_service.is_side_effecting_tool(
+                                        candidate.name
+                                    )
+                                )
+                            ):
+                                # Recover the one registered tool named by the
+                                # model without putting every schema back into
+                                # ordinary prompts.
+                                provider_tools.append(candidate)
+                                definition = candidate
                         if full_parts and full_parts[-1] == round_text.strip():
                             full_parts.pop()
                         await queue.put({"type": "stream_reset", "model": name})
@@ -581,6 +706,25 @@ class SessionOrchestrator:
                         replayed: bool = False,
                     ) -> None:
                         tool_results.append((tool_call, payload, images))  # noqa: B023
+                        discovered = self._generated_files_from_tool_result(
+                            tool_call.name,
+                            payload,
+                        )
+                        known = {
+                            str(item.get("path") or item.get("url") or "")
+                            for item in generated_files
+                        }
+                        additions = [
+                            item for item in discovered
+                            if str(item.get("path") or item.get("url") or "") not in known
+                        ]
+                        if additions:
+                            generated_files.extend(additions)
+                            await queue.put({
+                                "type": "artifact_update",
+                                "model": name,
+                                "generated_files": additions,
+                            })
                         record = tool_call_records.get(tool_call.id)  # noqa: B023
                         if record is not None and not replayed:
                             updated = self.run_service.finish_tool_call(
@@ -834,7 +978,14 @@ class SessionOrchestrator:
                                 "workspace_id": workspace_id,
                             },
                         )
-                        safe_output, images = self._sanitize_tool_result(run.get("output"))
+                        structured_output = (
+                            run.get("result")
+                            if "result" in run
+                            else run.get("output")
+                        )
+                        safe_output, images = self._sanitize_tool_result(
+                            structured_output
+                        )
                         await remember_tool_result(
                             tool_call,
                             {
@@ -900,6 +1051,21 @@ class SessionOrchestrator:
                 if not final_content and completed:
                     final_content = "操作已完成。"
                 if final_content and completed:
+                    await queue.put({
+                        "type": "provider_status",
+                        "model": name,
+                        "phase": "finalizing",
+                        "detail": "模型生成结束，正在持久化消息与文件关联",
+                        "context_messages": len(local_context),
+                        "context_tokens": estimated_context_tokens,
+                        "tool_count": len(provider_tools),
+                        "tool_schema_tokens": tool_schema_tokens,
+                        "round_index": tool_round,
+                        "elapsed_ms": round(
+                            (monotonic() - request_started_at) * 1000
+                        ),
+                        "ts": datetime.now(UTC).isoformat(),
+                    })
                     if agent_run_id:
                         self._save_provider_checkpoint(
                             agent_run_id,
@@ -922,6 +1088,7 @@ class SessionOrchestrator:
                             tokens_in=total_prompt_tokens,
                             tokens_out=total_completion_tokens,
                             cost_usd=round(total_cost, 6),
+                            generated_files=generated_files,
                             created_at=datetime.now(UTC),
                         )
                         self.conversation_history.append(
@@ -964,6 +1131,7 @@ class SessionOrchestrator:
                             tokens_in=total_prompt_tokens,
                             tokens_out=total_completion_tokens,
                             cost_usd=round(total_cost, 6),
+                            generated_files=generated_files,
                             created_at=datetime.now(UTC),
                         )
                         self.conversation_history.append(
@@ -1745,6 +1913,181 @@ class SessionOrchestrator:
         })
         return decision in {"allow_once", "allow_session"}
 
+    @staticmethod
+    def _route_tools(
+        content: str,
+        definitions: list[ToolDefinition],
+        execution: dict | None = None,
+    ) -> list[ToolDefinition]:
+        """Keep model prompts small while preserving tools relevant to the request."""
+
+        execution = execution or {}
+        text = " ".join((
+            str(content or ""),
+            str(execution.get("instruction") or ""),
+        )).casefold()
+        selected: set[str] = set()
+
+        def contains(*terms: str) -> bool:
+            return any(term.casefold() in text for term in terms)
+
+        if execution.get("workspace_id"):
+            selected.update(WORKSPACE_TOOL_NAMES)
+        if execution.get("plan_step_id"):
+            # Planned workers and verifiers need a cheap, read-only view of the
+            # shared task board even when the user's wording does not literally
+            # contain “task”. Side-effecting tools are still filtered by policy.
+            selected.add("list_tasks")
+        if contains("任务", "task", "待办", "进度", "依赖", "认领", "拆分"):
+            selected.update({
+                "list_tasks", "create_task", "claim_task", "subdivide_task",
+                "get_progress_summary", "plugin__visualize__task_chart",
+            })
+        if contains(
+            "文件", "工件", "artifact", "文档", "代码", "报告", "表格",
+            "演示", "幻灯片", "pdf", "docx", "xlsx", "pptx", "csv",
+            "保存", "写入", "修改",
+        ):
+            selected.update({
+                "read_artifact", "write_artifact",
+                "plugin__pdf__inventory",
+                "plugin__documents__inventory",
+                "plugin__documents__export_to_local",
+                "plugin__presentations__inventory",
+                "plugin__spreadsheets__inventory",
+            })
+        if contains("命令", "终端", "shell", "运行测试", "执行测试", "run command"):
+            selected.add("run_command")
+        if contains("合并", "merge", "提案", "投票"):
+            selected.update({
+                "create_merge_proposal", "propose_merge", "vote_on_proposal",
+            })
+        if contains(
+            "comfyui", "comfy", "图片", "图像", "生成图", "画图",
+            "视频", "工作流", "seed", "提示词",
+        ):
+            selected.update(
+                definition.name
+                for definition in definitions
+                if definition.name.startswith("plugin__comfyui__")
+            )
+        if contains(
+            "电脑", "桌面", "窗口", "鼠标", "键盘", "点击", "粘贴",
+            "启动应用", "打开应用", "computer use", "截图",
+        ):
+            selected.update(
+                definition.name
+                for definition in definitions
+                if definition.name.startswith("plugin__desktop_control__")
+            )
+        if contains("网页", "浏览器", "链接", "url", "http://", "https://"):
+            selected.add("plugin__browser_links__open_url")
+        if contains("github", "仓库状态"):
+            selected.add("plugin__github_readonly__status")
+        if contains("诊断", "健康检查", "workspace health"):
+            selected.add("plugin__qa_diagnostics__workspace_health")
+        if contains("记住", "记忆", "角色名", "关键实体", "以后使用", "共享实体"):
+            selected.add("upsert_memory_entity")
+        if contains("摘要", "总结", "summarize"):
+            selected.add("summarize_cn")
+        if contains("所有工具", "全部工具", "工具清单", "插件清单"):
+            selected.update(definition.name for definition in definitions)
+
+        return [
+            definition for definition in definitions
+            if definition.name in selected
+        ]
+
+    @staticmethod
+    def _context_limits(
+        provider: LLMProvider,
+        tools: list[ToolDefinition],
+    ) -> tuple[int, int, int]:
+        output_reserve = max(256, int(provider.config.max_tokens or 2048))
+        provider_limit = max(2048, int(provider.config.token_limit or 8192))
+        if provider.config.type != "local":
+            return provider_limit, output_reserve, 0
+        try:
+            active_limit = int(
+                os.getenv("AETHERCHAT_LOCAL_ACTIVE_CONTEXT_TOKENS", "8192")
+            )
+        except ValueError:
+            active_limit = 8192
+        try:
+            local_output = int(
+                os.getenv("AETHERCHAT_LOCAL_MAX_OUTPUT_TOKENS", "2048")
+            )
+        except ValueError:
+            local_output = 2048
+        tool_tokens = estimate_tokens(json.dumps(
+            [tool.model_dump(mode="json") for tool in tools],
+            ensure_ascii=False,
+            default=str,
+        )) if tools else 0
+        output_reserve = min(output_reserve, max(256, local_output))
+        message_limit = max(
+            3072,
+            min(provider_limit, max(4096, active_limit)) - tool_tokens,
+        )
+        return message_limit, output_reserve, tool_tokens
+
+    @staticmethod
+    def _generated_files_from_tool_result(
+        tool_name: str,
+        value: object,
+    ) -> list[dict]:
+        results: list[dict] = []
+
+        def append(raw: object) -> None:
+            if not isinstance(raw, dict):
+                return
+            path = str(raw.get("path") or "").strip()
+            url = str(raw.get("url") or "").strip()
+            if not path and not url:
+                return
+            try:
+                size_bytes = max(0, int(raw.get("size_bytes") or 0))
+            except (TypeError, ValueError):
+                size_bytes = 0
+            results.append({
+                "path": path or None,
+                "url": url or None,
+                "name": str(
+                    raw.get("name")
+                    or (path.rsplit("/", 1)[-1] if path else url.rsplit("/", 1)[-1])
+                    or "generated-file"
+                )[:240],
+                "mime_type": str(raw.get("mime_type") or "application/octet-stream"),
+                "size_bytes": size_bytes,
+                "kind": str(raw.get("kind") or "artifact"),
+                "source": str(raw.get("source") or tool_name),
+            })
+
+        def visit(item: object) -> None:
+            if isinstance(item, list):
+                for child in item:
+                    visit(child)
+                return
+            if not isinstance(item, dict):
+                return
+            generated = item.get("generated_files")
+            if isinstance(generated, list):
+                for child in generated:
+                    append(child)
+            if tool_name == "write_artifact":
+                append(item.get("artifact"))
+            for child in item.values():
+                if isinstance(child, (dict, list)):
+                    visit(child)
+
+        visit(value)
+        unique: dict[str, dict] = {}
+        for item in results:
+            key = str(item.get("path") or item.get("url") or "")
+            if key:
+                unique[key] = item
+        return list(unique.values())
+
     def _available_tools(self) -> list[ToolDefinition]:
         definitions = [
             ToolDefinition(
@@ -1964,7 +2307,8 @@ class SessionOrchestrator:
 
     def refresh_providers(self):
         self.providers = {
-            config.name: get_provider(config) for config in model_registry.configs()
+            config.name: get_provider(config)
+            for config in model_registry.configs(available_only=True)
         }
 
     async def start_model_streams(self, prompt: str):

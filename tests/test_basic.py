@@ -1585,6 +1585,12 @@ def test_chat_history_and_task_events_survive_database_restart(client):
             author_model=author,
             role=role,
             content=content,
+            generated_files=[{
+                "path": "generated/report.md",
+                "name": "report.md",
+                "mime_type": "text/markdown",
+                "size_bytes": 128,
+            }] if role == "assistant" else [],
             created_at=datetime.now(timezone.utc),
         ))
 
@@ -1597,6 +1603,7 @@ def test_chat_history_and_task_events_survive_database_restart(client):
     history = client.get(f"/sessions/{session_id}/messages")
     assert history.status_code == 200
     assert history.json()[1]["author_model"] == "qwen"
+    assert history.json()[1]["generated_files"][0]["path"] == "generated/report.md"
     sessions = client.get("/sessions/").json()
     restored_session = next(item for item in sessions if item["id"] == str(session_id))
     assert restored_session["message_count"] == 2
@@ -1608,6 +1615,90 @@ def test_chat_history_and_task_events_survive_database_restart(client):
     assert patched.status_code == 200
     events = client.get(f"/sessions/{session_id}/task-events").json()
     assert [event["action"] for event in events[:2]] == ["updated", "created"]
+
+
+def test_cached_chat_search_native_file_location_and_session_delete(client):
+    session_id = str(uuid4())
+    created = client.post("/sessions/", json={
+        "id": session_id,
+        "title": "缓存检索测试",
+        "mode": "casual",
+    })
+    assert created.status_code == 200
+
+    written = client.post("/artifacts/write", json={
+        "session_id": session_id,
+        "path": "cache/result.txt",
+        "content": "persistent generated output",
+        "commit_message": "cache generated output",
+        "author": "test",
+    })
+    assert written.status_code == 200
+    native = client.get(
+        "/artifacts/cache/result.txt/native-location",
+        params={"session_id": session_id},
+    )
+    assert native.status_code == 200
+    native_path = Path(native.json()["path"])
+    assert native_path.is_file()
+
+    message = Message(
+        id=uuid4(),
+        session_id=session_id,
+        author_model="qwen",
+        role="assistant",
+        content="跨会话缓存检索唯一词：山城夜雨。",
+        generated_files=[{
+            "path": "cache/result.txt",
+            "name": "result.txt",
+            "mime_type": "text/plain",
+            "size_bytes": native_path.stat().st_size,
+            "kind": "generated_file",
+            "source": "qwen",
+        }],
+        created_at=datetime.now(timezone.utc),
+    )
+    chat_database.save_message(message, mode="casual")
+    uploaded = client.post(
+        f"/knowledge/{session_id}/attachments",
+        files={
+            "file": (
+                "cached-note.txt",
+                "用于验证删除会话时清理资料。".encode(),
+                "text/plain",
+            )
+        },
+    )
+    assert uploaded.status_code == 201
+    task = client.post("/tasks/", json={
+        "session_id": session_id,
+        "title": "删除时清理",
+    })
+    assert task.status_code == 200
+
+    search = client.get("/sessions/search", params={
+        "q": "缓存检索唯一词",
+        "limit": 10,
+    })
+    assert search.status_code == 200
+    assert search.json()[0]["session_id"] == session_id
+    assert "山城夜雨" in search.json()[0]["snippet"]
+
+    deleted = client.delete(f"/sessions/{session_id}")
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] is True
+    assert deleted.json()["cleanup"]["knowledge"]["attachments"] == 1
+    assert not native_path.exists()
+    assert chat_database.get_session(session_id) is None
+    assert all(
+        str(item.session_id) != session_id
+        for item in task_router.fake_tasks
+    )
+    assert client.get(
+        "/sessions/search",
+        params={"q": "缓存检索唯一词"},
+    ).json() == []
+    assert client.delete(f"/sessions/{session_id}").status_code == 404
 
 
 def test_deleted_seed_model_stays_deleted_after_restart(tmp_path, monkeypatch):
@@ -2139,6 +2230,63 @@ def _orchestrator_with(providers):
     orchestrator.providers = {provider.config.name: provider for provider in providers}
     orchestrator.refresh_providers = lambda: None
     return orchestrator
+
+
+def test_orchestrator_routes_tools_and_caps_local_active_context(monkeypatch):
+    orchestrator = SessionOrchestrator(str(uuid4()))
+    definitions = orchestrator._available_tools()
+    assert len(definitions) > 10
+
+    plain = orchestrator._route_tools("请解释这段概念", definitions)
+    comfy = orchestrator._route_tools("请用 ComfyUI 生成一张图片", definitions)
+    all_tools = orchestrator._route_tools("列出全部工具", definitions)
+    assert plain == []
+    assert comfy
+    assert all(
+        tool.name.startswith("plugin__comfyui__")
+        for tool in comfy
+    )
+    assert len(comfy) < len(all_tools) == len(definitions)
+
+    monkeypatch.setenv("AETHERCHAT_LOCAL_ACTIVE_CONTEXT_TOKENS", "8192")
+    monkeypatch.setenv("AETHERCHAT_LOCAL_MAX_OUTPUT_TOKENS", "2048")
+    local = SimpleNamespace(config=ProviderConfig(
+        name="local-performance",
+        type="local",
+        model="qwen-35b",
+        api_key_ref="LOCAL_PERFORMANCE_KEY",
+        max_tokens=8192,
+        token_limit=253952,
+    ))
+    provider_limit, output_reserve, tool_tokens = orchestrator._context_limits(
+        local,
+        [],
+    )
+    assert provider_limit == 8192
+    assert output_reserve == 2048
+    assert tool_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_emits_factual_provider_status_telemetry():
+    provider = _FakeProvider("telemetry")
+    events = await _collect_events(
+        _orchestrator_with([provider]),
+        ["telemetry"],
+    )
+    statuses = [
+        event for event in events
+        if event["type"] == "provider_status"
+    ]
+    assert [event["phase"] for event in statuses] == [
+        "requesting",
+        "streaming",
+        "finalizing",
+    ]
+    assert statuses[0]["context_messages"] >= 2
+    assert statuses[0]["context_tokens"] > 0
+    assert statuses[0]["tool_count"] == 0
+    assert statuses[1]["first_token_ms"] >= 0
 
 
 @pytest.mark.asyncio
@@ -3488,8 +3636,15 @@ async def test_orchestrator_pauses_for_structured_chat_approval():
 
     assert any(event["type"] == "approval_resolved" and event["decision"] == "allow_once" for event in events)
     assert any(event["type"] == "tool_run" and event["run"]["status"] == "success" for event in events)
+    artifact_update = next(
+        event for event in events
+        if event["type"] == "artifact_update"
+    )
+    assert artifact_update["generated_files"][0]["path"] == "approved.md"
     assert any(
-        event["type"] == "message_complete" and event["message"]["content"] == "授权后已完成"
+        event["type"] == "message_complete"
+        and event["message"]["content"] == "授权后已完成"
+        and event["message"]["generated_files"][0]["path"] == "approved.md"
         for event in events
     )
 
@@ -4364,6 +4519,152 @@ def test_comfyui_graphs_cover_local_image_and_video_pipelines():
     assert rewired["nodes"][1]["inputs"][0]["link"] == 10
 
 
+@pytest.mark.asyncio
+async def test_comfyui_runtime_starts_and_stops_only_its_managed_process(
+    tmp_path,
+    monkeypatch,
+):
+    from app.services import comfyui_runtime as runtime_module
+    from app.services.comfyui_runtime import ComfyUIRuntimeService
+
+    class FakeProcess:
+        pid = 43210
+
+        def __init__(self):
+            self.returncode = None
+            self.signals = []
+
+        async def wait(self):
+            return self.returncode
+
+    runtime = ComfyUIRuntimeService()
+    process = FakeProcess()
+    captured = {}
+
+    async def fake_create(*command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return process
+
+    async def fake_probe(_base_url):
+        return runtime._process is process and process.returncode is None
+
+    def fake_signal(target, force=False):
+        target.signals.append("kill" if force else "terminate")
+        target.returncode = -15 if not force else -9
+
+    monkeypatch.setenv("AETHERCHAT_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(runtime, "_systemd_unit", lambda: None)
+    monkeypatch.setattr(
+        runtime,
+        "_command",
+        lambda _url, _roots: (
+            ["/fake/python", "/fake/ComfyUI/main.py", "--port", "9199"],
+            tmp_path,
+        ),
+    )
+    monkeypatch.setattr(runtime, "_probe", fake_probe)
+    monkeypatch.setattr(runtime, "_signal_process", fake_signal)
+    monkeypatch.setattr(
+        runtime_module.asyncio,
+        "create_subprocess_exec",
+        fake_create,
+    )
+
+    ready = await runtime.ensure_ready(
+        "http://127.0.0.1:9199",
+        [tmp_path],
+    )
+    assert ready["ready"] is True
+    assert ready["managed"] is True
+    assert ready["started_by_aetherchat"] is True
+    assert ready["pid"] == process.pid
+    assert captured["kwargs"]["start_new_session"] is True
+
+    stopped = await runtime.shutdown()
+    assert stopped == {
+        "stopped": True,
+        "pid": process.pid,
+        "unit": None,
+    }
+    assert process.signals == ["terminate"]
+    assert await runtime.shutdown() == {
+        "stopped": False,
+        "reason": "not_managed",
+    }
+
+    external = ComfyUIRuntimeService()
+
+    async def external_probe(_base_url):
+        return True
+
+    monkeypatch.setattr(external, "_probe", external_probe)
+    status = await external.ensure_ready(
+        "http://127.0.0.1:9199",
+        [tmp_path],
+    )
+    assert status["ready"] is True
+    assert status["managed"] is False
+    assert await external.shutdown() == {
+        "stopped": False,
+        "reason": "not_managed",
+    }
+
+
+@pytest.mark.asyncio
+async def test_comfyui_runtime_owns_systemd_unit_only_when_it_starts_it(
+    monkeypatch,
+):
+    from app.services.comfyui_runtime import ComfyUIRuntimeService
+
+    runtime = ComfyUIRuntimeService()
+    state = {"active": False, "ready": False, "stops": 0}
+
+    async def probe(_base_url):
+        return state["ready"]
+
+    async def active(_unit):
+        return state["active"]
+
+    async def start(unit):
+        state["active"] = True
+        state["ready"] = True
+        runtime._managed_unit = unit
+        runtime._started_at = "2026-07-28T00:00:00+00:00"
+        runtime._command_label = f"systemctl --user start {unit}"
+        return True, False, ""
+
+    async def stop(_unit):
+        state["active"] = False
+        state["ready"] = False
+        state["stops"] += 1
+        return True, ""
+
+    monkeypatch.setattr(
+        runtime,
+        "_systemd_unit",
+        lambda: "aetherchat-comfyui.service",
+    )
+    monkeypatch.setattr(runtime, "_probe", probe)
+    monkeypatch.setattr(runtime, "_unit_active", active)
+    monkeypatch.setattr(runtime, "_start_unit", start)
+    monkeypatch.setattr(runtime, "_stop_unit", stop)
+
+    status = await runtime.ensure_ready(
+        "http://127.0.0.1:8188",
+        [],
+    )
+    assert status["managed"] is True
+    assert status["runtime"] == "systemd_user"
+    assert status["unit"] == "aetherchat-comfyui.service"
+    assert await runtime.shutdown() == {
+        "stopped": True,
+        "pid": None,
+        "unit": "aetherchat-comfyui.service",
+    }
+    assert state["stops"] == 1
+
+
 def test_comfyui_workflow_descriptor_exposes_nodes_edges_and_typed_overrides():
     from app.services.comfyui_service import ComfyUIError, ComfyUIService
 
@@ -4454,16 +4755,24 @@ def test_comfyui_workflow_descriptor_exposes_nodes_edges_and_typed_overrides():
 
 
 @pytest.mark.asyncio
-async def test_comfyui_metadata_is_written_as_agent_artifact_and_shared_entity():
+async def test_comfyui_metadata_is_written_as_agent_artifact_and_shared_entity(
+    tmp_path,
+):
     prompt_id = str(uuid4())
     session_id = str(uuid4())
+    generated_image = tmp_path / "cover.png"
+    generated_image.write_bytes(b"\x89PNG\r\n\x1a\nmock-image")
     result = await plugin_registry._persist_comfyui_metadata(
         session_id,
         "generate_image",
         "model:qwen",
         {
             "prompt_id": prompt_id,
-            "files": [{"filename": "cover.png", "url": "http://127.0.0.1:8188/view?cover"}],
+            "files": [{
+                "filename": "cover.png",
+                "url": "http://127.0.0.1:8188/view?cover",
+                "_local_path": str(generated_image),
+            }],
             "generation_metadata": {
                 "schema": "aetherchat.agent-artifact/v1",
                 "schema_version": "1.0",
@@ -4499,6 +4808,18 @@ async def test_comfyui_metadata_is_written_as_agent_artifact_and_shared_entity()
         "plugin": "comfyui",
         "action": "generate_image",
     }
+    media = next(
+        item for item in result["generated_files"]
+        if item["kind"] == "generated_media"
+    )
+    assert media["path"] == f"generated/comfyui/{prompt_id}/cover.png"
+    native = await plugin_registry.artifacts.native_location(
+        session_id,
+        media["path"],
+    )
+    assert Path(native["path"]).read_bytes() == generated_image.read_bytes()
+    assert "_local_path" not in result["files"][0]
+    assert result["files"][0]["artifact_path"] == media["path"]
     shared = chat_database.get_memory(session_id)["entities"]
     entity = next(item for item in shared if item["key"] == f"asset:comfyui:{prompt_id}")
     assert entity["metadata"]["seed"] == 42

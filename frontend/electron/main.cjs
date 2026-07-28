@@ -7,6 +7,7 @@ const http = require('http');
 const net = require('net');
 const { stageUpdate } = require('./update-verifier.cjs');
 const { launchWindowsInstaller } = require('./update-launcher.cjs');
+const { buildContextMenuTemplate } = require('./context-menu.cjs');
 
 const isDev = !app.isPackaged;
 let backendProcess = null;
@@ -22,6 +23,8 @@ let computerConsentServer = null;
 let computerConsentUrl = '';
 let computerUseSessionApproved = false;
 let computerConsentQueue = Promise.resolve();
+let gracefulShutdownPromise = null;
+let gracefulShutdownComplete = false;
 
 function updatePublicKey() {
   if (process.env.AETHERCHAT_UPDATE_PUBLIC_KEY_B64) {
@@ -341,7 +344,7 @@ function probeBackend(port, timeoutMs = 1000) {
   });
 }
 
-function backendRequest(endpoint, { method = 'GET', body } = {}) {
+function backendRequest(endpoint, { method = 'GET', body, timeoutMs = 15000 } = {}) {
   return new Promise((resolve, reject) => {
     const encoded = body === undefined ? null : Buffer.from(JSON.stringify(body), 'utf8');
     const request = http.request({
@@ -357,7 +360,7 @@ function backendRequest(endpoint, { method = 'GET', body } = {}) {
           'Content-Length': encoded.length,
         } : {}),
       },
-      timeout: 15000,
+      timeout: timeoutMs,
     }, (response) => {
       const chunks = [];
       response.on('data', (chunk) => chunks.push(chunk));
@@ -493,6 +496,9 @@ function createWindow() {
     }
   });
   win.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+  win.webContents.on('context-menu', (_event, params) => {
+    Menu.buildFromTemplate(buildContextMenuTemplate(params)).popup({ window: win });
+  });
   return win;
 }
 
@@ -540,6 +546,35 @@ ipcMain.handle('aether-external:open', async (_event, value) => {
   if (!/^https?:$/.test(url.protocol)) throw new Error('Only HTTP(S) links are allowed');
   await shell.openExternal(url.toString());
   return true;
+});
+
+ipcMain.handle('aether-artifact:open', async (event, value) => {
+  assertTrustedDesktopSender(event);
+  const sessionId = String(value?.sessionId || '');
+  const artifactPath = String(value?.path || '');
+  const action = String(value?.action || 'open');
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (!uuidPattern.test(sessionId)) throw new Error('A valid session ID is required');
+  if (!artifactPath || artifactPath.includes('\0')) throw new Error('A valid artifact path is required');
+  if (!['open', 'reveal'].includes(action)) throw new Error('Unsupported artifact action');
+  const encodedPath = artifactPath.split('/').map(encodeURIComponent).join('/');
+  const location = await backendRequest(
+    `/artifacts/${encodedPath}/native-location?session_id=${encodeURIComponent(sessionId)}`,
+  );
+  const nativePath = path.resolve(String(location?.path || ''));
+  const stat = fs.lstatSync(nativePath);
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Artifact is not a safe regular file');
+  if (action === 'reveal') {
+    shell.showItemInFolder(nativePath);
+  } else {
+    const error = await shell.openPath(nativePath);
+    if (error) throw new Error(error);
+  }
+  return {
+    opened: true,
+    action,
+    displayName: path.basename(nativePath),
+  };
 });
 
 ipcMain.handle('aether-runtime:api-token', async (event) => {
@@ -783,9 +818,25 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-app.on('before-quit', () => {
-  desktopFileHandles.clear();
-  desktopHandleOwners.clear();
-  stopComputerConsentServer();
-  stopBackend();
+app.on('before-quit', (event) => {
+  if (gracefulShutdownComplete) return;
+  event.preventDefault();
+  if (gracefulShutdownPromise) return;
+  gracefulShutdownPromise = (async () => {
+    try {
+      await backendRequest('/plugins/comfyui/runtime/stop', {
+        method: 'POST',
+        timeoutMs: 15000,
+      });
+    } catch {
+      // The backend may already be unavailable; its own lifespan also stops
+      // only ComfyUI processes that AetherChat started.
+    }
+    desktopFileHandles.clear();
+    desktopHandleOwners.clear();
+    stopComputerConsentServer();
+    stopBackend();
+    gracefulShutdownComplete = true;
+    app.quit();
+  })();
 });
