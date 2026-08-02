@@ -46,6 +46,14 @@
   "build": {
     "appId": "com.aetherchat.desktop",
     "productName": "AetherChat",
+    "protocols": [
+      {
+        "name": "AetherChat link",
+        "schemes": [
+          "aetherchat"
+        ]
+      }
+    ],
     "asar": true,
     "directories": {
       "output": "release"

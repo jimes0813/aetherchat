@@ -1,27 +1,56 @@
 import { useEffect, useRef, useState } from 'react';
 import { FileText, LoaderCircle, Paperclip, Send, UsersRound, X } from 'lucide-react';
-import type { KnowledgeAttachment } from '../types';
+import type { ApprovalRequest, KnowledgeAttachment } from '../types';
 import { useI18n } from '../i18n';
+import { ApprovalPrompt } from './ApprovalPrompt';
 
 interface ComposerProps {
   providers: string[];
   onSend: (content: string, targets: string[], attachmentIds: string[]) => boolean | void;
   onUpload: (files: File[]) => Promise<KnowledgeAttachment[]>;
   onInterrupt?: (scope: string) => void;
+  draft?: { id: string; text: string; clear?: boolean } | null;
+  approval?: ApprovalRequest;
+  queuedApprovalCount?: number;
+  onApprovalDecision?: (
+    approval: ApprovalRequest,
+    decision: NonNullable<ApprovalRequest['decision']>,
+    feedback?: string,
+  ) => void | Promise<void>;
 }
 
-export const Composer = ({ providers, onSend, onUpload, onInterrupt }: ComposerProps) => {
+export const Composer = ({
+  providers,
+  onSend,
+  onUpload,
+  onInterrupt,
+  draft,
+  approval,
+  queuedApprovalCount = 0,
+  onApprovalDecision,
+}: ComposerProps) => {
   const [input, setInput] = useState('');
   const [target, setTarget] = useState('all');
   const [attachments, setAttachments] = useState<KnowledgeAttachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState('');
   const fileInput = useRef<HTMLInputElement>(null);
+  const composerInput = useRef<HTMLTextAreaElement>(null);
   const { t } = useI18n();
 
   useEffect(() => {
     if (target !== 'all' && !providers.includes(target)) setTarget('all');
   }, [providers, target]);
+
+  useEffect(() => {
+    if (!draft) return;
+    if (draft.clear || draft.text) setInput(draft.text);
+    window.requestAnimationFrame(() => {
+      composerInput.current?.focus();
+      const length = composerInput.current?.value.length ?? 0;
+      composerInput.current?.setSelectionRange(length, length);
+    });
+  }, [draft?.id]);
 
   const send = () => {
     const content = input.trim();
@@ -56,6 +85,20 @@ export const Composer = ({ providers, onSend, onUpload, onInterrupt }: ComposerP
   const handleInterrupt = () => {
     if (onInterrupt) onInterrupt(target === 'all' ? 'all' : target);
   };
+
+  if (approval && onApprovalDecision) {
+    return (
+      <div className="border-t border-[#d8c4a8] bg-[#f8f0e5] p-4">
+        <div className="mx-auto max-w-3xl">
+          <ApprovalPrompt
+            approval={approval}
+            queuedCount={queuedApprovalCount}
+            onDecision={onApprovalDecision}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -115,6 +158,7 @@ export const Composer = ({ providers, onSend, onUpload, onInterrupt }: ComposerP
           <Paperclip size={17} />
         </button>
         <textarea
+          ref={composerInput}
           data-aether-composer
           value={input}
           onChange={(event) => setInput(event.target.value)}

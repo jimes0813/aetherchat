@@ -82,6 +82,7 @@ async def test_managed_runtime_starts_once_and_waits_until_ready(monkeypatch):
         return FakeProcess()
 
     monkeypatch.setattr(runtime, "_probe", probe)
+    monkeypatch.setattr(runtime, "_port_is_bound", lambda _config: False)
     monkeypatch.setattr(runtime, "_command", lambda _config: ["/usr/local/bin/llama-server"])
     monkeypatch.setattr("asyncio.create_subprocess_exec", launch)
     result = await runtime.ensure_ready(config())
@@ -90,6 +91,63 @@ async def test_managed_runtime_starts_once_and_waits_until_ready(monkeypatch):
     assert result["pid"] == 321
     assert len(launches) == 1
     assert launches[0][1]["start_new_session"] is True
+
+
+@pytest.mark.asyncio
+async def test_managed_runtime_adopts_an_existing_server_after_transient_probe_failure(monkeypatch):
+    runtime = LocalModelRuntimeService()
+    probes = iter([False, False])
+    launches = []
+
+    async def probe(_config):
+        return next(probes)
+
+    async def wait_for_endpoint(_config, timeout):
+        assert timeout == 5
+        return True
+
+    async def launch(*args, **kwargs):
+        launches.append((args, kwargs))
+
+    monkeypatch.setattr(runtime, "_probe", probe)
+    monkeypatch.setattr(runtime, "_port_is_bound", lambda _config: True)
+    monkeypatch.setattr(runtime, "_wait_for_endpoint", wait_for_endpoint)
+    monkeypatch.setattr("asyncio.create_subprocess_exec", launch)
+
+    result = await runtime.ensure_ready(config())
+
+    assert result == {
+        "ready": True,
+        "managed": False,
+        "started": False,
+        "adopted": True,
+    }
+    assert launches == []
+
+
+@pytest.mark.asyncio
+async def test_managed_runtime_does_not_launch_into_an_occupied_incompatible_port(monkeypatch):
+    runtime = LocalModelRuntimeService()
+    launches = []
+
+    async def unavailable(_config):
+        return False
+
+    async def still_unavailable(_config, _timeout):
+        return False
+
+    async def launch(*args, **kwargs):
+        launches.append((args, kwargs))
+
+    monkeypatch.setattr(runtime, "_probe", unavailable)
+    monkeypatch.setattr(runtime, "_port_is_bound", lambda _config: True)
+    monkeypatch.setattr(runtime, "_wait_for_endpoint", still_unavailable)
+    monkeypatch.setattr("asyncio.create_subprocess_exec", launch)
+
+    with pytest.raises(LocalModelRuntimeError, match="端口已被占用"):
+        await runtime.ensure_ready(config())
+
+    assert launches == []
 
 
 @pytest.mark.asyncio

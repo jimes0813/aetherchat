@@ -161,7 +161,11 @@ class ToolRegistry:
             ),
             ToolCreate(
                 name="write_artifact",
-                description="写入当前会话工件并保存完整版本",
+                description=(
+                    "写入当前会话工件。短内容用 overwrite；长文档必须把 content "
+                    "拆成不超过 1200 个汉字的块，首块 overwrite/sequence=0，"
+                    "后续用 append 且 sequence 递增。"
+                ),
                 category="artifact",
                 owner="system",
                 kind="internal",
@@ -171,6 +175,15 @@ class ToolRegistry:
                     "properties": {
                         "path": {"type": "string"},
                         "content": {"type": "string"},
+                        "mode": {
+                            "type": "string",
+                            "enum": ["overwrite", "append"],
+                            "description": "默认 overwrite；长文档后续分块使用 append",
+                        },
+                        "sequence": {
+                            "type": "integer",
+                            "description": "分块序号；overwrite 为 0，append 从 1 递增",
+                        },
                         "commit_message": {"type": "string"},
                         "task_id": {
                             "type": "string",
@@ -424,6 +437,58 @@ class ToolRegistry:
                 return session_specific[0]
         return candidates[0]
 
+    @staticmethod
+    def validate_arguments(
+        schema: dict[str, Any],
+        arguments: dict[str, Any],
+    ) -> None:
+        if not isinstance(arguments, dict):
+            raise ValueError("Tool arguments must be an object")
+        if "_raw" in arguments:
+            raise ValueError(
+                "工具参数 JSON 未完整生成，写入没有执行。不要重复发送同一份完整长文；"
+                "请把长文拆成不超过 1200 个汉字的 write_artifact 分块。"
+            )
+        for name in schema.get("required") or []:
+            if name not in arguments or arguments[name] is None or arguments[name] == "":
+                raise ValueError(f"Missing required argument: {name}")
+        expected_types: dict[str, type[Any] | tuple[type[Any], ...]] = {
+            "string": str,
+            "boolean": bool,
+            "object": dict,
+            "array": list,
+            "integer": int,
+            "number": (int, float),
+        }
+        for name, spec in (schema.get("properties") or {}).items():
+            if name not in arguments or not isinstance(spec, dict):
+                continue
+            expected = expected_types.get(str(spec.get("type") or ""))
+            value = arguments[name]
+            if expected and (
+                not isinstance(value, expected)
+                or spec.get("type") in {"integer", "number"}
+                and isinstance(value, bool)
+            ):
+                raise ValueError(
+                    f"Invalid argument type for {name}: expected {spec['type']}"
+                )
+            allowed = spec.get("enum")
+            if isinstance(allowed, list) and value not in allowed:
+                raise ValueError(
+                    f"Invalid argument value for {name}: expected one of {allowed}"
+                )
+
+    @staticmethod
+    def _persisted_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+        safe = deepcopy(arguments)
+        if "_raw" in safe:
+            safe["_raw"] = (
+                "[malformed tool arguments omitted "
+                f"chars={len(str(safe['_raw']))}]"
+            )
+        return safe
+
     async def invoke_async(
         self,
         tool_id: str,
@@ -544,7 +609,7 @@ class ToolRegistry:
             "tool_id": tool_id,
             "tool_name": tool_name,
             "caller": caller,
-            "arguments": deepcopy(arguments),
+            "arguments": self._persisted_arguments(arguments),
             "status": status,
             "output": display_output,
             "result": structured_result,

@@ -47,7 +47,15 @@ Icon=aetherchat
 Terminal=false
 Type=Application
 Categories=Utility;
+Keywords=AI;Agent;Chat;MCP;
+MimeType=x-scheme-handler/aetherchat;
+Actions=QuickEntry;
 StartupWMClass=AetherChat
+
+[Desktop Action QuickEntry]
+Name=Quick Entry
+Name[zh_CN]=快速输入
+Exec=/opt/AetherChat/aetherchat-frontend aetherchat://chat
 EOF
 chmod 0644 "$STAGING_DIR/usr/share/applications/aetherchat.desktop"
 

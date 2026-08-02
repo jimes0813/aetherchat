@@ -270,6 +270,7 @@ class LLMProvider(ABC):
         tools: list[ToolDefinition] | None = None,
         temperature: float = 0.7,
         session_id: str | None = None,
+        tool_choice: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         pass
 
@@ -355,7 +356,14 @@ class OpenAICompatProvider(LLMProvider):
             "runtime": runtime,
         }
 
-    async def stream_chat(self, messages, tools=None, temperature=0.7, session_id=None):
+    async def stream_chat(
+        self,
+        messages,
+        tools=None,
+        temperature=0.7,
+        session_id=None,
+        tool_choice=None,
+    ):
         if AsyncOpenAI is None or (self.config.type != "local" and not self.api_key):
             text = self.missing_key_message()
             yield {"delta": text, "usage": None}
@@ -382,6 +390,8 @@ class OpenAICompatProvider(LLMProvider):
             }
             if tools:
                 request["tools"] = [_as_openai_tool(tool) for tool in tools]
+                if tool_choice in {"auto", "required", "none"}:
+                    request["tool_choice"] = tool_choice
             extra_body = self._extra_body()
             if extra_body:
                 request["extra_body"] = extra_body
@@ -391,6 +401,7 @@ class OpenAICompatProvider(LLMProvider):
                 timeout=request_timeout,
             )
             saw_content = False
+            saw_tool_activity = False
             usage_result: dict[str, int] | None = None
             tool_call_parts: dict[int, dict[str, str]] = {}
             async with asyncio.timeout(request_timeout):
@@ -402,6 +413,13 @@ class OpenAICompatProvider(LLMProvider):
                             saw_content = True
                             yield {"delta": content, "usage": None}
                         for call in getattr(delta, "tool_calls", None) or []:
+                            if not saw_tool_activity:
+                                saw_tool_activity = True
+                                yield {
+                                    "delta": "",
+                                    "usage": None,
+                                    "tool_activity": True,
+                                }
                             index = int(getattr(call, "index", 0) or 0)
                             current = tool_call_parts.setdefault(index, {"id": "", "name": "", "arguments": ""})
                             current["id"] = getattr(call, "id", None) or current["id"]
@@ -499,7 +517,14 @@ class AnthropicProvider(LLMProvider):
             "model": self.config.model,
         }
 
-    async def stream_chat(self, messages, tools=None, temperature=0.7, session_id=None):
+    async def stream_chat(
+        self,
+        messages,
+        tools=None,
+        temperature=0.7,
+        session_id=None,
+        tool_choice=None,
+    ):
         if not self.api_key or AsyncAnthropic is None:
             text = self.missing_key_message()
             yield {"delta": text, "usage": None}
@@ -521,16 +546,30 @@ class AnthropicProvider(LLMProvider):
                 request["system"] = system
             if tools:
                 request["tools"] = [_as_anthropic_tool(tool) for tool in tools]
+                if tool_choice == "required":
+                    request["tool_choice"] = {"type": "any"}
+                elif tool_choice == "none":
+                    request["tool_choice"] = {"type": "none"}
+                elif tool_choice == "auto":
+                    request["tool_choice"] = {"type": "auto"}
 
             stream = await client.messages.create(**request)
             prompt_tokens = 0
             completion_tokens = 0
+            saw_tool_activity = False
             tool_call_parts: dict[int, dict[str, str]] = {}
             async with asyncio.timeout(50):
                 async for event in stream:
                     if event.type == "content_block_start":
                         block = getattr(event, "content_block", None)
                         if getattr(block, "type", None) == "tool_use":
+                            if not saw_tool_activity:
+                                saw_tool_activity = True
+                                yield {
+                                    "delta": "",
+                                    "usage": None,
+                                    "tool_activity": True,
+                                }
                             index = int(getattr(event, "index", 0) or 0)
                             initial = getattr(block, "input", None)
                             tool_call_parts[index] = {

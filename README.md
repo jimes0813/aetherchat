@@ -18,11 +18,19 @@ Agent 之间还可通过结构化共享实体和标准生成物元数据交换�
 
 模型运行时，顶部状态条会显示真实阶段、上下文消息数、估算 token 数、已暴露工具数和首 token 延迟，并配有遵守“减少动态效果”设置的流式动画。本地模型默认只装载当前请求需要的工具，并把有效上下文和单次输出限制在可配置的较小窗口，避免 CPU 推理被无关工具 schema 与过长历史拖慢。ComfyUI 工具在本机服务未运行时可受控自动启动；AetherChat 只跟踪并在退出时终止由自己启动的 ComfyUI 进程，不会关闭用户预先运行的实例。
 
+助手完成处理后，聊天中会显示“实际执行与交付”收据：只统计 AetherChat 实际观察到的处理摘要、工具请求、工具结果和已保存文件，不把模型文字本身当作执行凭证。生成文件会显示真实本机位置，支持安全预览、打开和定位目录，并可一键进入 Agent Run 审计。
+
+桌面版支持全局快速输入和安全深链。Linux/Windows 默认使用 `Ctrl+Alt+Space`，macOS 使用 `Cmd+Option+Space`；快捷键只唤起窗口并聚焦输入框。`aetherchat://chat?prompt=...&mode=project` 可填入当前会话，`aetherchat://new?prompt=...&mode=project` 可新建会话。两者都不会自动发送或绕过授权。
+
+“自动化”面板支持本机单次任务、循环任务和手动立即运行。每个后台 Job 都保存不可变执行参数、只读权限快照、单次预算、SQLite Worker 租约、尝试次数、Agent Run、结果摘要和复核状态；离线跨过多个周期时只补一个追赶任务。关闭工作台窗口后应用驻留系统托盘继续执行，完全退出时未完成 Job 会安全回队并在下次启动恢复。后台任务当前默认只读，不继承聊天中的临时会话授权；即使模型伪造写文件或命令工具调用，也会在真正执行前拒绝。架构、API、状态语义和边界见 [`docs/BACKGROUND_AUTOMATION_2026-08-01.md`](docs/BACKGROUND_AUTOMATION_2026-08-01.md)。
+
 每次多模型执行会持久记录为 Agent Run。项目协作模式进一步建立 Goal Spec 和 Planner → 并行 Worker → Verifier → Synthesizer 的持久 Plan DAG：Planner 先给出可编辑草稿，用户确认前不会调用 Worker；每次人工修改和 Verifier 返工都有版本快照。中间候选与核验结论留在运行记录，主聊天只接收一份最终交付；核验失败会进行有限次数返工，持续失败则阻止未经验证的综合。应用异常退出后，等待确认的草稿会保留，执行中的 Run 可从未完成 Plan Step 继续。
 
 桌面版还可为会话选择一个干净的 Git 仓库。代码 Worker 从计划确认时冻结的提交创建独立 detached worktree，只能通过限定工具访问该 worktree；结束后由断网 Docker 沙箱运行最多四条已确认命令，并持久化真实 diff、退出码和输出哈希。候选只有经过 Electron 原生确认，且再次通过仓库 HEAD、干净状态和补丁哈希校验后，才会以 `git apply` 写回主工作树；不会自动 commit、push、fetch 或访问网络。浏览器模式和未绑定仓库的 Worker 仍保持只读。安全边界、状态语义和已知限制见 [`docs/GIT_AGENT_WORKSPACES.md`](docs/GIT_AGENT_WORKSPACES.md)。
 
 “连接”面板支持标准 MCP stdio 和 Streamable HTTP 服务器。用户可以检查服务器公开的工具，并逐项决定哪些工具允许进入模型上下文；模型实际调用时仍会弹出独立授权卡片。Bearer/OAuth 凭据、刷新令牌和动态客户端 secret 只写入系统密钥环，OAuth 浏览器授权使用本机回调与 PKCE/state 校验。
+
+与 Claude Desktop 的逐项对标、已落实改进和后续优先级见 [`docs/CLAUDE_DESKTOP_PARITY_2026-08-01.md`](docs/CLAUDE_DESKTOP_PARITY_2026-08-01.md)。
 
 ## 项目结构
 

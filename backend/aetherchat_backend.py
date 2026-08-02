@@ -12,6 +12,12 @@ def _runtime_root() -> Path:
 
 
 def main() -> None:
+    if sys.argv[1:2] == ["local-audit-mcp"]:
+        from mcp_servers.aetherchat_local_audit import main as local_audit_main
+
+        local_audit_main(sys.argv[2:])
+        return
+
     if os.name == "nt":
         default_data_dir = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "AetherChat"
     else:

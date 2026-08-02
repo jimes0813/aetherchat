@@ -71,6 +71,8 @@ const sessionFixtures = [
 ];
 
 const messageFixtures = [
+  { id: 'message-internal-system', session_id: sessionId, author_model: 'system', role: 'system', content: 'INTERNAL_MODEL_HISTORY_REQUEST', created_at: '2026-07-13T08:28:58.000Z' },
+  { id: 'message-internal-tool', session_id: sessionId, author_model: 'tool', role: 'tool', content: 'INTERNAL_TOOL_RESULT_HISTORY', created_at: '2026-07-13T08:28:59.000Z' },
   { id: 'message-user', session_id: sessionId, author_model: 'user', role: 'user', content: '继续数据库任务', created_at: '2026-07-13T08:29:00.000Z' },
   {
     id: 'message-qwen',
@@ -86,6 +88,23 @@ const messageFixtures = [
       kind: 'generated_media',
       source: 'comfyui',
     }],
+    reasoning_summary: [
+      {
+        phase: 'analysis',
+        detail: '已整理 6 条上下文，并筛选 5 个与请求相关的可用工具。',
+        ts: '2026-07-13T08:29:58.000Z',
+      },
+      {
+        phase: 'result',
+        detail: '工具 plugin__comfyui__generate_image 执行成功，正在依据真实结果继续处理。',
+        ts: '2026-07-13T08:29:59.000Z',
+      },
+      {
+        phase: 'final',
+        detail: '已核对模型输出与工具结果，正在整理最终答复。',
+        ts: '2026-07-13T08:30:00.000Z',
+      },
+    ],
     created_at: '2026-07-13T08:30:00.000Z',
   },
 ];
@@ -305,10 +324,38 @@ async function installMockWebSocket(page: Page, autoOpen = true) {
 async function installMockDesktopBridge(page: Page) {
   await page.addInitScript(() => {
     const actions: Array<{ type: string; payload?: unknown }> = [];
-    (window as typeof window & { __aetherDesktopActions?: typeof actions }).__aetherDesktopActions = actions;
+    let launchIntentHandler: ((intent: unknown) => void) | null = null;
+    const testWindow = window as typeof window & {
+      __aetherDesktopActions?: typeof actions;
+      __emitAetherLaunchIntent?: (intent: unknown) => void;
+    };
+    testWindow.__aetherDesktopActions = actions;
+    testWindow.__emitAetherLaunchIntent = (intent) => launchIntentHandler?.(intent);
     Object.defineProperty(window, 'aetherRuntime', {
       configurable: true,
       value: {
+        platform: 'linux',
+        onLaunchIntent: (callback: (intent: unknown) => void) => {
+          launchIntentHandler = callback;
+          return () => { launchIntentHandler = null; };
+        },
+        openExternal: async (
+          url: string,
+          options: { browser?: 'default' | 'firefox' } = {},
+        ) => {
+          const browser = options.browser || 'default';
+          const receipt = {
+            success: true as const,
+            kind: 'external_navigation' as const,
+            url: new URL(url).toString(),
+            browser,
+            launcher: browser === 'firefox' ? 'firefox' as const : 'system_default' as const,
+            verification: 'launcher_accepted' as const,
+            accepted_at: '2026-08-01T10:05:52.000Z',
+          };
+          actions.push({ type: 'open-external', payload: receipt });
+          return receipt;
+        },
         openArtifact: async (
           selectedSessionId: string,
           path: string,
@@ -671,6 +718,53 @@ async function installMockApi(page: Page) {
     server_info: { name: 'filesystem' }, status: 'ready', error: null,
     created_at: '2026-07-15T00:00:00Z', updated_at: '2026-07-15T00:00:00Z',
   }];
+  const automationSchedules: Array<Record<string, any>> = [{
+    id: '99999999-9999-4999-8999-999999999999',
+    session_id: sessionId,
+    name: '每日项目摘要',
+    prompt: '只读检查当前项目并生成摘要。',
+    mode: 'project',
+    targets: ['all'],
+    trigger_type: 'interval',
+    interval_minutes: 1440,
+    timezone: 'Asia/Chongqing',
+    next_run_at: '2026-08-02T01:00:00Z',
+    enabled: true,
+    max_budget_usd: 1,
+    permission_snapshot: {
+      policy_version: 1,
+      mode: 'read_only',
+      allowed_tools: [],
+      captured_at: '2026-08-01T00:00:00Z',
+    },
+    last_run_at: '2026-08-01T01:00:00Z',
+    last_status: 'completed',
+    last_error: null,
+    created_at: '2026-08-01T00:00:00Z',
+    updated_at: '2026-08-01T01:00:00Z',
+  }];
+  const backgroundJobs: Array<Record<string, any>> = [{
+    id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    schedule_id: automationSchedules[0].id,
+    schedule_name: automationSchedules[0].name,
+    session_id: sessionId,
+    agent_run_id: agentRuns[0].id,
+    trigger_type: 'schedule',
+    status: 'completed',
+    action: { content: automationSchedules[0].prompt, targets: ['all'], mode: 'project' },
+    permission_snapshot: automationSchedules[0].permission_snapshot,
+    max_budget_usd: 1,
+    budget_spent_usd: 0.0312,
+    scheduled_for: '2026-08-01T01:00:00Z',
+    attempt: 1,
+    summary: '已完成只读项目检查，未执行任何副作用。',
+    error: null,
+    reviewed_at: null,
+    created_at: '2026-08-01T01:00:00Z',
+    updated_at: '2026-08-01T01:01:00Z',
+    started_at: '2026-08-01T01:00:00Z',
+    completed_at: '2026-08-01T01:01:00Z',
+  }];
 
   const json = (route: Route, body: unknown, status = 200) => route.fulfill({
     status,
@@ -777,6 +871,95 @@ async function installMockApi(page: Page) {
         }],
       });
     }
+    if (pathname === '/automations/status' && request.method() === 'GET') {
+      return json(route, {
+        scheduler_running: true,
+        active_workers: backgroundJobs.filter((item) => item.status === 'running').length,
+        concurrency: 1,
+        enabled_schedules: automationSchedules.filter((item) => item.enabled).length,
+        queued_jobs: backgroundJobs.filter((item) => item.status === 'queued').length,
+        running_jobs: backgroundJobs.filter((item) => item.status === 'running').length,
+        review_items: backgroundJobs.filter((item) => item.completed_at && !item.reviewed_at).length,
+      });
+    }
+    if (pathname === '/automations/schedules' && request.method() === 'GET') {
+      return json(route, automationSchedules);
+    }
+    if (pathname === '/automations/schedules' && request.method() === 'POST') {
+      const payload = request.postDataJSON();
+      const now = new Date().toISOString();
+      const created = {
+        id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        ...payload,
+        enabled: true,
+        permission_snapshot: {
+          policy_version: 1,
+          mode: 'read_only',
+          allowed_tools: [],
+          captured_at: now,
+        },
+        last_run_at: null,
+        last_status: null,
+        last_error: null,
+        created_at: now,
+        updated_at: now,
+      };
+      automationSchedules.unshift(created);
+      return json(route, created, 201);
+    }
+    if (/^\/automations\/schedules\/[^/]+$/.test(pathname) && request.method() === 'PATCH') {
+      const id = pathname.split('/')[3];
+      const index = automationSchedules.findIndex((item) => item.id === id);
+      automationSchedules[index] = { ...automationSchedules[index], ...request.postDataJSON(), updated_at: new Date().toISOString() };
+      return json(route, automationSchedules[index]);
+    }
+    if (/^\/automations\/schedules\/[^/]+$/.test(pathname) && request.method() === 'DELETE') {
+      const id = pathname.split('/')[3];
+      const index = automationSchedules.findIndex((item) => item.id === id);
+      if (index >= 0) automationSchedules.splice(index, 1);
+      return json(route, { deleted: index >= 0, id });
+    }
+    if (/^\/automations\/schedules\/[^/]+\/run$/.test(pathname) && request.method() === 'POST') {
+      const schedule = automationSchedules.find((item) => item.id === pathname.split('/')[3]);
+      const now = new Date().toISOString();
+      const job = {
+        id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+        schedule_id: schedule.id,
+        schedule_name: schedule.name,
+        session_id: sessionId,
+        agent_run_id: null,
+        trigger_type: 'manual',
+        status: 'queued',
+        action: { content: schedule.prompt, targets: schedule.targets, mode: schedule.mode },
+        permission_snapshot: schedule.permission_snapshot,
+        max_budget_usd: schedule.max_budget_usd,
+        budget_spent_usd: 0,
+        scheduled_for: now,
+        attempt: 0,
+        summary: '',
+        error: null,
+        reviewed_at: null,
+        created_at: now,
+        updated_at: now,
+        started_at: null,
+        completed_at: null,
+      };
+      backgroundJobs.unshift(job);
+      return json(route, job, 202);
+    }
+    if (pathname === '/automations/jobs' && request.method() === 'GET') return json(route, backgroundJobs);
+    if (/^\/automations\/jobs\/[^/]+\/cancel$/.test(pathname) && request.method() === 'POST') {
+      const id = pathname.split('/')[3];
+      const job = backgroundJobs.find((item) => item.id === id);
+      Object.assign(job, { status: 'cancelled', error: '用户取消', completed_at: new Date().toISOString() });
+      return json(route, job);
+    }
+    if (/^\/automations\/jobs\/[^/]+\/review$/.test(pathname) && request.method() === 'POST') {
+      const id = pathname.split('/')[3];
+      const job = backgroundJobs.find((item) => item.id === id);
+      Object.assign(job, { reviewed_at: new Date().toISOString() });
+      return json(route, job);
+    }
     if (pathname === '/mcp-connections' && request.method() === 'GET') return json(route, mcpConnections);
     if (pathname === '/mcp-connections' && request.method() === 'POST') {
       const payload = request.postDataJSON();
@@ -846,6 +1029,25 @@ async function installMockApi(page: Page) {
       return json(route, updated);
     }
     if (pathname === '/artifacts/' && request.method() === 'GET') return json(route, artifactFixtures);
+    if (pathname === '/artifacts/generated/comfyui/cover.png/native-location' && request.method() === 'GET') {
+      return json(route, {
+        path: '/home/test/.local/share/aetherchat/artifacts/11111111-1111-4111-8111-111111111111/generated/comfyui/cover.png',
+        artifact_path: 'generated/comfyui/cover.png',
+        display_name: 'cover.png',
+        mime_type: 'image/png',
+        size_bytes: 2048,
+      });
+    }
+    if (pathname === '/artifacts/generated/comfyui/cover.png/content' && request.method() === 'GET') {
+      return route.fulfill({
+        status: 200,
+        contentType: 'image/png',
+        body: Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII=',
+          'base64',
+        ),
+      });
+    }
     if (pathname === '/artifacts/README.md/preview' && request.method() === 'GET') {
       return json(route, {
         path: 'README.md', mime_type: 'text/markdown', mode: 'markdown',
@@ -929,7 +1131,7 @@ test.describe('AetherChat Frontend E2E', () => {
     await expect(page.getByText('已连接', { exact: true })).toBeVisible();
   });
 
-  test('shows the active Agent and current tool in the live header', async ({ page }) => {
+  test('shows one compact Claude/Codex-style working strip that updates in place', async ({ page }) => {
     await page.evaluate(() => (
       window as typeof window & { __emitAetherWs?: (payload: unknown) => void }
     ).__emitAetherWs?.({
@@ -942,10 +1144,12 @@ test.describe('AetherChat Frontend E2E', () => {
       tool_count: 5,
       tool_schema_tokens: 768,
     }));
-    await expect(page.getByText('deepseek · 等待模型首个 token', { exact: true })).toBeVisible();
-    await expect(page.getByText('上下文 12 条 · 约 4,096 tokens · 工具 5 个', { exact: true })).toBeVisible();
-    const status = page.getByLabel('deepseek · 等待模型首个 token');
-    await expect(status).toHaveClass(/aether-agent-status/);
+    const status = page.locator('[data-model-working="true"]');
+    await expect(status).toHaveCount(1);
+    await expect(status).toHaveAttribute('role', 'status');
+    await expect(status).toHaveAttribute('data-phase', 'requesting');
+    await expect(status).toContainText('deepseek · 正在思考');
+    await expect(page.getByText(/上下文 12 条/)).toHaveCount(0);
 
     await page.evaluate(() => (
       window as typeof window & { __emitAetherWs?: (payload: unknown) => void }
@@ -959,8 +1163,9 @@ test.describe('AetherChat Frontend E2E', () => {
       tool_count: 5,
       first_token_ms: 1234,
     }));
-    await expect(page.getByText('deepseek · 正在流式生成', { exact: true })).toBeVisible();
-    await expect(page.getByText(/首 token 1\.2 秒/)).toBeVisible();
+    await expect(status).toHaveCount(1);
+    await expect(status).toHaveAttribute('data-phase', 'streaming');
+    await expect(status).toContainText('deepseek · 正在组织答复');
 
     await page.evaluate(() => (
       window as typeof window & { __emitAetherWs?: (payload: unknown) => void }
@@ -969,8 +1174,204 @@ test.describe('AetherChat Frontend E2E', () => {
       model: 'deepseek',
       tool_name: 'plugin__comfyui__run_workflow',
     }));
-    await expect(page.getByText('deepseek · 调用 plugin__comfyui__run_workflow', { exact: true })).toBeVisible();
-    await expect(page.getByText(/预计剩余：估算中/)).toBeVisible();
+    await expect(status).toHaveCount(1);
+    await expect(status).toHaveAttribute('data-phase', 'tool');
+    await expect(status).toContainText('deepseek · 正在使用 run_workflow');
+    await expect(page.getByText(/预计剩余/)).toHaveCount(0);
+
+    await page.evaluate(() => (
+      window as typeof window & { __emitAetherWs?: (payload: unknown) => void }
+    ).__emitAetherWs?.({
+      type: 'message_complete',
+      message: {
+        id: 'working-strip-complete',
+        session_id: '11111111-1111-4111-8111-111111111111',
+        author_model: 'deepseek',
+        role: 'assistant',
+        content: '状态条完成后只留下最终答复。',
+        created_at: new Date().toISOString(),
+      },
+    }));
+    await expect(status).toHaveCount(0);
+    await expect(page.getByText('状态条完成后只留下最终答复。')).toBeVisible();
+  });
+
+  test('keeps internal model history and live reasoning out of the chat feed', async ({ page }) => {
+    await expect(page.getByText('INTERNAL_MODEL_HISTORY_REQUEST')).toHaveCount(0);
+    await expect(page.getByText('INTERNAL_TOOL_RESULT_HISTORY')).toHaveCount(0);
+    await expect(page.getByText(/思考过程（安全摘要）/)).toHaveCount(0);
+    await page.evaluate(() => {
+      const emit = (
+        window as typeof window & { __emitAetherWs?: (payload: unknown) => void }
+      ).__emitAetherWs;
+      emit?.({
+        type: 'reasoning_step',
+        model: 'deepseek',
+        reset: true,
+        step: {
+          phase: 'analysis',
+          detail: '已整理 deepseek 的上下文。',
+          ts: new Date().toISOString(),
+        },
+      });
+      emit?.({
+        type: 'reasoning_step',
+        model: 'GLM',
+        reset: true,
+        step: {
+          phase: 'analysis',
+          detail: '已整理 GLM 的上下文。',
+          ts: new Date().toISOString(),
+        },
+      });
+      emit?.({
+        type: 'message_complete',
+        message: {
+          id: 'legacy-model-request-message',
+          session_id: '11111111-1111-4111-8111-111111111111',
+          author_model: 'Qwen',
+          role: 'assistant',
+          content: '让我先检查历史请求。\n\n让我继续调用工具。\n\n最终结果应保留。',
+          reasoning_summary: [
+            { phase: 'tool', detail: '已选择调用测试工具。', ts: new Date().toISOString() },
+            { phase: 'final', detail: '已整理最终答复。', ts: new Date().toISOString() },
+          ],
+          created_at: new Date().toISOString(),
+        },
+      });
+    });
+    await expect(page.getByText('已整理 deepseek 的上下文。')).toHaveCount(0);
+    await expect(page.getByText('已整理 GLM 的上下文。')).toHaveCount(0);
+    await expect(page.getByText('实时更新')).toHaveCount(0);
+    await expect(page.getByText('让我先检查历史请求。')).toHaveCount(0);
+    await expect(page.getByText('让我继续调用工具。')).toHaveCount(0);
+    await expect(page.getByText('最终结果应保留。')).toBeVisible();
+    await expect(page.getByText('继续数据库任务')).toBeVisible();
+    await expect(page.getByText('已恢复上次上下文。')).toBeVisible();
+  });
+
+  test('shows a factual execution receipt and opens the run audit', async ({ page }) => {
+    const receipt = page.getByLabel('实际执行与交付');
+    await expect(receipt).toBeVisible();
+    await expect(receipt.getByText('本次处理已完成')).toBeVisible();
+    await expect(receipt.getByText('结果核对 1')).toBeVisible();
+    await expect(receipt.getByText('交付文件 1')).toBeVisible();
+    await receipt.getByRole('button', { name: '查看运行审计' }).click();
+    await expect(page.getByRole('heading', { name: 'Agent 运行记录' })).toBeVisible();
+  });
+
+  test('marks legacy browser intents without desktop receipts as unverified', async ({ page }) => {
+    await page.evaluate(() => (
+      window as typeof window & { __emitAetherWs?: (payload: unknown) => void }
+    ).__emitAetherWs?.({
+      type: 'message_complete',
+      message: {
+        id: 'legacy-browser-message',
+        session_id: '11111111-1111-4111-8111-111111111111',
+        author_model: 'Qwen',
+        role: 'assistant',
+        content: '我已经帮你打开了浏览器。',
+        reasoning_summary: [
+          {
+            phase: 'analysis',
+            detail: '已筛选 1 个与请求相关的可用工具。',
+            ts: '2026-08-01T10:05:47.000Z',
+          },
+          {
+            phase: 'tool',
+            detail: '已选择调用 plugin__browser_links__open_url，等待授权或本机执行结果。',
+            ts: '2026-08-01T10:05:48.000Z',
+          },
+          {
+            phase: 'result',
+            detail: '工具 plugin__browser_links__open_url 执行成功，正在依据真实结果继续处理。',
+            ts: '2026-08-01T10:05:52.000Z',
+          },
+          {
+            phase: 'final',
+            detail: '已核对模型输出与工具结果，正在整理最终答复。',
+            ts: '2026-08-01T10:05:53.000Z',
+          },
+        ],
+        created_at: '2026-08-01T10:05:53.000Z',
+      },
+    }));
+
+    const warning = page.locator(
+      '[aria-label="实际执行与交付"][data-execution-status="unverified"]',
+    );
+    await expect(warning).toBeVisible();
+    await expect(warning.getByText('历史外部导航缺少桌面执行凭证')).toBeVisible();
+    await expect(warning.getByText(/不能证明浏览器已启动/)).toBeVisible();
+    await expect(warning.getByText('本次处理已完成')).toHaveCount(0);
+  });
+
+  test('accepts a desktop quick-entry intent and focuses the composer', async ({ page }) => {
+    await page.evaluate(() => (
+      window as typeof window & { __emitAetherLaunchIntent?: (intent: unknown) => void }
+    ).__emitAetherLaunchIntent?.({
+      id: 'launch-e2e-1',
+      action: 'compose',
+      prompt: '对比 Claude 并完善交付闭环',
+      mode: 'casual',
+      newConversation: false,
+      source: 'protocol',
+    }));
+    const composer = page.locator('textarea[data-aether-composer]');
+    await expect(composer).toHaveValue('对比 Claude 并完善交付闭环');
+    await expect(composer).toBeFocused();
+    await expect(page.getByText('当前: casual')).toBeVisible();
+    await expect(page.getByText('已从 AetherChat 链接载入输入内容')).toBeVisible();
+  });
+
+  test('executes a model browser intent and returns a desktop launch receipt', async ({ page }) => {
+    await page.evaluate(() => (
+      window as typeof window & { __emitAetherWs?: (payload: unknown) => void }
+    ).__emitAetherWs?.({
+      type: 'desktop_action_required',
+      action_id: 'browser-action-1',
+      desktop_action: {
+        kind: 'open_external',
+        url: 'https://www.youtube.com',
+        browser: 'firefox',
+      },
+    }));
+
+    await expect(page.getByText('Firefox 已接受打开链接请求')).toBeVisible();
+    await expect.poll(() => page.evaluate(() => {
+      const testWindow = window as typeof window & {
+        __aetherDesktopActions?: Array<{ type: string; payload?: unknown }>;
+        __aetherWsActions?: Array<Record<string, unknown>>;
+      };
+      return {
+        desktop: testWindow.__aetherDesktopActions?.find(
+          (item) => item.type === 'open-external',
+        ),
+        websocket: testWindow.__aetherWsActions?.find(
+          (item) => item.type === 'desktop_action_result',
+        ),
+      };
+    })).toMatchObject({
+      desktop: {
+        type: 'open-external',
+        payload: {
+          browser: 'firefox',
+          launcher: 'firefox',
+          url: 'https://www.youtube.com/',
+          verification: 'launcher_accepted',
+        },
+      },
+      websocket: {
+        type: 'desktop_action_result',
+        action_id: 'browser-action-1',
+        success: true,
+        receipt: {
+          browser: 'firefox',
+          launcher: 'firefox',
+          verification: 'launcher_accepted',
+        },
+      },
+    });
   });
 
   test('switches collaboration modes', async ({ page }) => {
@@ -1004,6 +1405,9 @@ test.describe('AetherChat Frontend E2E', () => {
   test('opens generated files and reveals their containing directory', async ({ page }) => {
     await expect(page.getByText('本次生成的文件')).toBeVisible();
     await expect(page.getByText('cover.png', { exact: true })).toBeVisible();
+    await expect(page.getByText(/保存位置：.*generated\/comfyui\/cover\.png/)).toBeVisible();
+    await page.getByRole('button', { name: '预览文件 cover.png' }).click();
+    await expect(page.getByRole('img', { name: 'cover.png' })).toBeVisible();
     await page.getByRole('button', { name: '打开文件 cover.png' }).click();
     await expect(page.getByText('已打开 cover.png')).toBeVisible();
     await page.getByRole('button', { name: '打开文件所在目录 cover.png' }).click();
@@ -1103,23 +1507,56 @@ test.describe('AetherChat Frontend E2E', () => {
     await expect(page.getByRole('region', { name: '资料安全预览' })).toContainText('项目资料需要可追溯引用');
   });
 
-  test('shows a chat approval card and submits an explicit one-time decision', async ({ page }) => {
+  test('uses a Claude/Codex-style approval chooser with keyboard control', async ({ page }) => {
     await page.locator('[data-aether-composer]').fill('这个操作需要授权');
     await page.getByRole('button', { name: '发送' }).click();
     const card = page.getByRole('article', { name: '模型操作授权' });
+    await expect(card.getByText('AetherChat 需要你的授权')).toBeVisible();
     await expect(card.getByText('允许模型运行沙箱命令？')).toBeVisible();
     await expect(card.getByText('npm test', { exact: true })).toBeVisible();
     await expect(card.getByText('风险：command_execution')).toBeVisible();
-    expect(await card.getByRole('group', { name: '模型操作授权' }).getByRole('button').allTextContents()).toEqual([
-      '拒绝', '本会话允许', '允许一次',
-    ]);
-    await expect(card.getByRole('button', { name: '允许一次' })).not.toBeFocused();
+    const chooser = card.getByRole('listbox', { name: '模型操作授权' });
+    const options = chooser.getByRole('option');
+    await expect(chooser).toBeFocused();
+    await expect(options).toHaveCount(3);
+    await expect(options.nth(0)).toContainText('1.');
+    await expect(options.nth(0)).toContainText('是，仅允许这一次');
+    await expect(options.nth(1)).toContainText('是，并在本会话中不再询问 run_command');
+    await expect(options.nth(2)).toContainText('否，并告诉 AetherChat 应如何调整');
+    await expect(options.nth(0)).toHaveAttribute('aria-selected', 'true');
+    await chooser.press('ArrowDown');
+    await expect(options.nth(1)).toHaveAttribute('aria-selected', 'true');
+    await chooser.press('ArrowUp');
 
     const decisionRequest = page.waitForRequest((request) => request.url().includes('/approvals/') && request.url().endsWith('/decision'));
-    await card.getByRole('button', { name: '允许一次' }).click();
+    await chooser.press('Enter');
     const request = await decisionRequest;
     expect(request.postDataJSON()).toEqual({ session_id: sessionId, decision: 'allow_once' });
-    await expect(card.getByText('已允许一次')).toBeVisible();
+    await expect(page.getByRole('article', { name: '模型操作授权' }).getByText('已允许一次')).toBeVisible();
+    await expect(page.locator('[data-aether-composer]')).toBeVisible();
+  });
+
+  test('collects rejection feedback and returns it with the denial', async ({ page }) => {
+    await page.locator('[data-aether-composer]').fill('这个操作需要授权');
+    await page.getByRole('button', { name: '发送' }).click();
+    const prompt = page.getByRole('article', { name: '模型操作授权' });
+    const chooser = prompt.getByRole('listbox', { name: '模型操作授权' });
+    await chooser.press('Escape');
+
+    const feedback = prompt.getByPlaceholder('输入反馈；留空将直接拒绝');
+    await expect(feedback).toBeFocused();
+    await feedback.fill('不要运行命令，改为只读检查配置');
+    const decisionRequest = page.waitForRequest((request) => request.url().includes('/approvals/') && request.url().endsWith('/decision'));
+    await feedback.press('Enter');
+    const request = await decisionRequest;
+    expect(request.postDataJSON()).toEqual({
+      session_id: sessionId,
+      decision: 'deny',
+      feedback: '不要运行命令，改为只读检查配置',
+    });
+    const record = page.getByRole('article', { name: '模型操作授权' });
+    await expect(record.getByText('已拒绝')).toBeVisible();
+    await expect(record.getByText('你的反馈：不要运行命令，改为只读检查配置')).toBeVisible();
   });
 
   test('reviews and edits persistent session memory', async ({ page }) => {
@@ -1191,6 +1628,30 @@ test.describe('AetherChat Frontend E2E', () => {
     await page.getByRole('button', { name: '添加', exact: true }).click();
     const request = await createRequest;
     expect(request.postDataJSON().depends_on).toEqual(['task-merged', 'task-done']);
+  });
+
+  test('creates and reviews durable read-only background schedules', async ({ page }) => {
+    await page.getByTitle('自动化').click();
+    const dialog = page.getByRole('dialog', { name: '自动化 panel' });
+    await expect(dialog.getByText('本机后台自动化', { exact: true })).toBeVisible();
+    await expect(dialog.getByText(/无人值守任务默认只读/)).toBeVisible();
+    await expect(dialog.getByText('每日项目摘要', { exact: true }).first()).toBeVisible();
+    await expect(dialog.getByText('已完成只读项目检查，未执行任何副作用。')).toBeVisible();
+    await expect(dialog.getByText('1 项待复核')).toBeVisible();
+
+    await dialog.getByRole('button', { name: '标记已复核' }).click();
+    await expect(dialog.getByText('0 项待复核')).toBeVisible();
+
+    await dialog.getByPlaceholder('任务名称，例如：每日项目摘要').fill('每周风险摘要');
+    await dialog.getByPlaceholder('后台执行指令').fill('只读汇总当前会话的风险和未完成事项。');
+    const createRequest = page.waitForRequest((request) => (
+      new URL(request.url()).pathname === '/automations/schedules'
+      && request.method() === 'POST'
+    ));
+    await dialog.getByRole('button', { name: '创建只读定时任务' }).click();
+    expect((await createRequest).postDataJSON().permission_mode).toBe('read_only');
+    await expect(dialog.getByText('每周风险摘要', { exact: true })).toBeVisible();
+    await expect(dialog.locator('article').filter({ hasText: '每日项目摘要' }).first().getByRole('button', { name: '立即运行' })).toBeVisible();
   });
 
   test('opens the command palette with Ctrl+K and navigates to a panel', async ({ page }) => {
@@ -1475,6 +1936,7 @@ test.describe('AetherChat Frontend E2E', () => {
       ['Memory', 'Local session memory'],
       ['Knowledge', 'Project knowledge base'],
       ['Tasks', 'Add'],
+      ['Automations', 'Local background automation'],
       ['Artifacts', 'File tree'],
       ['Changes', 'Changes and merges'],
       ['Tools', 'Tool catalog'],
@@ -1485,7 +1947,7 @@ test.describe('AetherChat Frontend E2E', () => {
       ['Runs', 'Agent run history'],
       ['Settings', 'Collaboration settings'],
     ] as const;
-    const untranslatedUi = /本机会话记忆|项目资料库|新建任务|文件树|变更与合并|工具仓|插件中心|MCP 连接器|本地电脑|模型 API|Agent 运行记录|协作设置/;
+    const untranslatedUi = /本机会话记忆|项目资料库|新建任务|本机后台自动化|创建定时任务|文件树|变更与合并|工具仓|插件中心|MCP 连接器|本地电脑|模型 API|Agent 运行记录|协作设置/;
     for (const [panel, expected] of panels) {
       await page.getByRole('button', { name: panel, exact: true }).click();
       const dialog = page.getByRole('dialog', { name: `${panel} panel` });

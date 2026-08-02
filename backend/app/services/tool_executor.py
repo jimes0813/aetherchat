@@ -35,7 +35,21 @@ async def execute_tool(
     linked_task_id = str(arguments.get("task_id") or "").strip()
     task_started = False
 
+    if registry is None:
+        from .tool_registry import tool_registry
+
+        registry = tool_registry
+    if tool_id is None:
+        registered = registry.find_by_name(name, session_id)
+        tool_id = registered.get("id") if registered else None
+    registered_tool = registry.get(tool_id) if tool_id else None
+
     try:
+        if registered_tool is not None:
+            registry.validate_arguments(
+                registered_tool.get("input_schema") or {},
+                arguments,
+            )
         artifact_service.normalize_session_id(session_id)
         if linked_task_id and name in {
             "write_artifact",
@@ -93,10 +107,24 @@ async def execute_tool(
                 )
 
         elif name == "write_artifact":
-            path = arguments.get("path", "output.txt")
-            content = arguments.get("content", "")
+            path = str(arguments["path"])
+            content = str(arguments["content"])
+            mode = str(arguments.get("mode") or "overwrite")
+            sequence = int(arguments.get("sequence", 0))
+            if mode == "overwrite" and sequence != 0:
+                raise ValueError("overwrite mode requires sequence=0")
+            if mode == "append" and sequence < 1:
+                raise ValueError("append mode requires sequence>=1")
             message = arguments.get("commit_message", f"Auto by {caller}")
             async with with_lock(redis_client, f"artifact:{session_id}:{path}"):
+                if mode == "append":
+                    try:
+                        previous = await artifact_service.read(session_id, path)
+                    except FileNotFoundError as exc:
+                        raise ValueError(
+                            "append mode requires an existing artifact; start with overwrite"
+                        ) from exc
+                    content = previous + content
                 written = await artifact_service.write(
                     session_id,
                     path,
@@ -104,7 +132,11 @@ async def execute_tool(
                     str(message),
                     caller,
                 )
-            output = {"artifact": written}
+            output = {
+                "artifact": written,
+                "write_mode": mode,
+                "sequence": sequence,
+            }
 
         elif name == "read_artifact":
             path = arguments.get("path", "README.md")
@@ -317,14 +349,6 @@ async def execute_tool(
         )
         if isinstance(output, dict) and synchronized_task is not None:
             output["task_sync"] = synchronized_task
-
-    if registry is None:
-        from .tool_registry import tool_registry
-
-        registry = tool_registry
-    if tool_id is None:
-        tool = registry.find_by_name(name, session_id)
-        tool_id = tool.get("id") if tool else None
 
     return registry.record_run(
         tool_id=tool_id,

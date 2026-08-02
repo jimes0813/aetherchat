@@ -48,6 +48,7 @@ async def build_messages_for_provider(
     provider_limit: int = 8192,
     output_reserve: int = 2048,
     system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+    max_conversation_messages: int | None = None,
 ) -> list[ChatMessage]:
     """Build a provider-specific context without claiming a fixed 8K limit.
 
@@ -61,7 +62,11 @@ async def build_messages_for_provider(
     input_budget = max(1024, limit - reserve - 256)
 
     copied = [message.model_copy(deep=True) for message in base_messages]
-    system_messages = [ChatMessage(role="system", content=system_prompt)]
+    system_messages = (
+        [ChatMessage(role="system", content=system_prompt)]
+        if system_prompt.strip()
+        else []
+    )
     system_messages.extend(message for message in copied if message.role == "system")
     conversation = [message for message in copied if message.role != "system"]
     truncated = False
@@ -69,6 +74,32 @@ async def build_messages_for_provider(
     while conversation and conversation[0].role != "user":
         conversation.pop(0)
         truncated = True
+
+    if (
+        max_conversation_messages is not None
+        and len(conversation) > max(1, int(max_conversation_messages))
+    ):
+        cutoff = len(conversation) - max(1, int(max_conversation_messages))
+        next_user_index = next(
+            (
+                index
+                for index, message in enumerate(conversation[cutoff:], start=cutoff)
+                if message.role == "user"
+            ),
+            None,
+        )
+        if next_user_index is None:
+            next_user_index = next(
+                (
+                    index
+                    for index in range(cutoff - 1, -1, -1)
+                    if conversation[index].role == "user"
+                ),
+                None,
+            )
+        if next_user_index is not None:
+            del conversation[:next_user_index]
+            truncated = True
 
     while conversation and _message_tokens(system_messages + conversation) > input_budget:
         next_user_index = next(

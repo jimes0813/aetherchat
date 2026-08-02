@@ -17,12 +17,29 @@ contextBridge.exposeInMainWorld('aetherRuntime', {
   backendStatus: argumentValue('aether-backend-status', 'starting'),
   appVersion: argumentValue('aether-app-version'),
   platform: argumentValue('aether-platform', process.platform),
+  quickEntryShortcut: argumentValue('aether-quick-entry-shortcut'),
   getApiToken: () => ipcRenderer.invoke('aether-runtime:api-token'),
-  openExternal: (url) => ipcRenderer.invoke('aether-external:open', url),
+  openExternal: (url, options = {}) => ipcRenderer.invoke(
+    'aether-external:open',
+    { url, ...options },
+  ),
   openArtifact: (sessionId, path, action = 'open') => ipcRenderer.invoke(
     'aether-artifact:open',
     { sessionId, path, action },
   ),
+  onLaunchIntent: (callback) => {
+    if (typeof callback !== 'function') return () => undefined;
+    const listener = (_event, intent) => callback(intent);
+    ipcRenderer.on('aether-intent:compose', listener);
+    void ipcRenderer.invoke('aether-intent:ready');
+    return () => ipcRenderer.removeListener('aether-intent:compose', listener);
+  },
+  onBackgroundChange: (callback) => {
+    if (typeof callback !== 'function') return () => undefined;
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('aether-background:changed', listener);
+    return () => ipcRenderer.removeListener('aether-background:changed', listener);
+  },
 });
 
 contextBridge.exposeInMainWorld('aetherDesktop', {

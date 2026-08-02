@@ -27,6 +27,7 @@ class PendingApproval:
     arguments: dict[str, Any]
     allow_session: bool
     created_at: str
+    feedback: str
     future: asyncio.Future[str]
 
     def public(self) -> dict[str, Any]:
@@ -86,6 +87,7 @@ class ApprovalService:
             arguments=arguments,
             allow_session=bool(allow_session),
             created_at=datetime.now(UTC).isoformat(),
+            feedback="",
             future=loop.create_future(),
         )
         with self._lock:
@@ -111,7 +113,13 @@ class ApprovalService:
             with self._lock:
                 self._pending.pop(pending.id, None)
 
-    def decide(self, approval_id: str, session_id: str, decision: ApprovalDecision) -> dict[str, Any]:
+    def decide(
+        self,
+        approval_id: str,
+        session_id: str,
+        decision: ApprovalDecision,
+        feedback: str = "",
+    ) -> dict[str, Any]:
         with self._lock:
             pending = self._pending.get(str(approval_id))
             if pending is None:
@@ -122,13 +130,23 @@ class ApprovalService:
                 raise ValueError("此高风险操作只能逐次授权")
             if decision == "allow_session":
                 self._session_grants.add((pending.session_id, pending.risk))
+            pending.feedback = (
+                " ".join(str(feedback or "").split())[:2000]
+                if decision == "deny"
+                else ""
+            )
             if not pending.future.done():
                 pending.future.get_loop().call_soon_threadsafe(
                     _resolve_future,
                     pending.future,
                     decision,
                 )
-        return {"id": pending.id, "decision": decision, "resolved": True}
+        return {
+            "id": pending.id,
+            "decision": decision,
+            "feedback": pending.feedback,
+            "resolved": True,
+        }
 
     def clear_session(self, session_id: str) -> None:
         value = str(session_id)

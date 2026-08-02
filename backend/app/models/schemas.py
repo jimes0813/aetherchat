@@ -71,6 +71,7 @@ class Message(BaseModel):
     cost_usd: float = 0.0
     attachments: list[dict[str, Any]] = Field(default_factory=list)
     generated_files: list[dict[str, Any]] = Field(default_factory=list)
+    reasoning_summary: list[dict[str, Any]] = Field(default_factory=list)
     created_at: datetime
 
 class Task(BaseModel):
@@ -113,6 +114,8 @@ class WSMessage(BaseModel):
     task: Task | None = None
     budget_remaining: float | None = None
     content: str | None = None
+    step: dict[str, Any] | None = None
+    reset: bool | None = None
 
 class ClientAction(BaseModel):
     type: str

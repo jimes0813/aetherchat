@@ -1,5 +1,7 @@
 import asyncio
+import errno
 import os
+import socket
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -36,9 +38,35 @@ class LocalModelRuntimeService:
             _, _, base = self._endpoint(config)
             async with httpx.AsyncClient(trust_env=False, timeout=2.0) as client:
                 response = await client.get(f"{base}/models")
-            return response.status_code < 500
+            return response.is_success
         except Exception:
             return False
+
+    @classmethod
+    def _port_is_bound(cls, config: ProviderConfig) -> bool:
+        """Return whether another process already owns the configured loopback port."""
+        host, port, _ = cls._endpoint(config)
+        probe_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            probe_socket.bind((host, port))
+            return False
+        except OSError as exc:
+            if exc.errno == errno.EADDRINUSE:
+                return True
+            raise LocalModelRuntimeError(f"无法检查本地模型端口 {host}:{port}：{exc}") from exc
+        finally:
+            probe_socket.close()
+
+    async def _wait_for_endpoint(self, config: ProviderConfig, timeout: float) -> bool:
+        """Give an already-bound endpoint time to recover from a transient probe failure."""
+        deadline = asyncio.get_running_loop().time() + max(0.0, timeout)
+        while True:
+            if await self._probe(config):
+                return True
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return False
+            await asyncio.sleep(min(0.5, remaining))
 
     @staticmethod
     def _validate_file(value: str | None, label: str, *, executable: bool = False) -> Path:
@@ -72,7 +100,11 @@ class LocalModelRuntimeService:
         if config.type != "local":
             return {"ready": True, "managed": False, "started": False}
         if await self._probe(config):
-            return {"ready": True, "managed": config.name in self._processes, "started": False}
+            process = self._processes.get(config.name)
+            managed = bool(process and process.returncode is None)
+            if process and process.returncode is not None:
+                self._processes.pop(config.name, None)
+            return {"ready": True, "managed": managed, "started": False}
         if config.local_runtime == "external":
             _, port, _ = self._endpoint(config)
             raise LocalModelRuntimeError(
@@ -83,11 +115,36 @@ class LocalModelRuntimeService:
         lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
             if await self._probe(config):
-                return {"ready": True, "managed": config.name in self._processes, "started": False}
+                process = self._processes.get(config.name)
+                return {
+                    "ready": True,
+                    "managed": bool(process and process.returncode is None),
+                    "started": False,
+                }
             existing = self._processes.get(config.name)
+            started = False
             if existing and existing.returncode is None:
                 process = existing
             else:
+                if existing:
+                    self._processes.pop(config.name, None)
+                host, port, base = self._endpoint(config)
+                if self._port_is_bound(config):
+                    adoption_timeout = max(
+                        3.0,
+                        min(float(config.startup_timeout or 300), 10.0),
+                    )
+                    if await self._wait_for_endpoint(config, adoption_timeout):
+                        return {
+                            "ready": True,
+                            "managed": False,
+                            "started": False,
+                            "adopted": True,
+                        }
+                    raise LocalModelRuntimeError(
+                        "本地模型端口已被占用，但 OpenAI 兼容接口未就绪："
+                        f"{base}/models（{host}:{port}）；请检查占用该端口的进程"
+                    )
                 command = self._command(config)
                 log_root = Path(os.environ.get("AETHERCHAT_DATA_DIR", Path.home() / ".aetherchat")) / "model-logs"
                 log_root.mkdir(parents=True, exist_ok=True)
@@ -104,6 +161,7 @@ class LocalModelRuntimeService:
                 finally:
                     log_handle.close()
                 self._processes[config.name] = process
+                started = True
 
             timeout = max(5.0, min(float(config.startup_timeout or 300), 900.0))
             deadline = asyncio.get_running_loop().time() + timeout
@@ -112,10 +170,18 @@ class LocalModelRuntimeService:
                     return {
                         "ready": True,
                         "managed": True,
-                        "started": True,
+                        "started": started,
                         "pid": process.pid,
                     }
                 if process.returncode is not None:
+                    self._processes.pop(config.name, None)
+                    if self._port_is_bound(config) and await self._wait_for_endpoint(config, 3.0):
+                        return {
+                            "ready": True,
+                            "managed": False,
+                            "started": False,
+                            "adopted": True,
+                        }
                     raise LocalModelRuntimeError(
                         f"本地模型进程启动失败（退出码 {process.returncode}），请查看 model-logs/{config.name}.log"
                     )

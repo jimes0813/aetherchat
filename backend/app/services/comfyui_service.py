@@ -16,6 +16,8 @@ import httpx
 
 from .comfyui_runtime import ComfyUIRuntimeError, comfyui_runtime
 
+DEFAULT_IMAGE_MODEL = "RealVisXL_V5.0_Lightning_fp16.safetensors"
+
 
 class ComfyUIError(RuntimeError):
     pass
@@ -82,7 +84,12 @@ class ComfyUIService:
     async def status(self) -> dict[str, Any]:
         runtime = await self.ensure_ready()
         stats = await self._get_json("/system_stats", 5)
-        inventory = await self.inventory(_ensure_runtime=False)
+        # Status is fed back into model context. Keep workflow entries compact;
+        # callers that need node maps and input contracts use workflow_schema.
+        inventory = await self.inventory(
+            include_workflow_details=False,
+            _ensure_runtime=False,
+        )
         return {
             "ready": True,
             "url": self.base_url,
@@ -177,7 +184,7 @@ class ComfyUIService:
         self,
         prompt: str,
         *,
-        model: str = "RealVisXL_V5.0_Lightning_fp16.safetensors",
+        model: str | None = None,
         negative_prompt: str = "blurry, low quality, distorted, watermark, text, bad anatomy",
         width: int = 768,
         height: int = 768,
@@ -189,6 +196,52 @@ class ComfyUIService:
     ) -> dict[str, Any]:
         width, height = self._dimensions(width, height)
         inventory = await self.inventory(include_workflow_details=False)
+        requested_model = str(model or "").strip()
+        if requested_model.casefold() in {"", "auto", "default"}:
+            checkpoints = [
+                str(item)
+                for item in inventory.get("checkpoints", [])
+                if str(item).strip()
+            ]
+            diffusion_models = [
+                str(item)
+                for item in inventory.get("diffusion_models", [])
+                if str(item).strip()
+            ]
+            model = next(
+                (
+                    candidate
+                    for candidate in checkpoints
+                    if candidate.casefold() == DEFAULT_IMAGE_MODEL.casefold()
+                ),
+                None,
+            )
+            if model is None:
+                model = next(
+                    (
+                        candidate
+                        for candidate in checkpoints
+                        if "/" not in candidate
+                        and "\\" not in candidate
+                        and "ltx" not in candidate.casefold()
+                    ),
+                    None,
+                )
+            if model is None:
+                model = next(
+                    (
+                        candidate
+                        for candidate in diffusion_models
+                        if "qwen_image" in candidate.casefold()
+                    ),
+                    None,
+                )
+            if model is None:
+                raise ComfyUIError(
+                    "No supported image checkpoint or Qwen-Image model is installed"
+                )
+        else:
+            model = requested_model
         if model in inventory["checkpoints"]:
             graph = self._checkpoint_image_graph(
                 prompt, negative_prompt, model, width, height, steps, cfg, seed, lora, lora_strength

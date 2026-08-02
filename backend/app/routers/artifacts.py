@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from ..services.artifact_service import (
@@ -157,6 +157,28 @@ async def native_artifact_location(session_id: str, path: str):
         raise HTTPException(status_code=404, detail="Artifact not found") from exc
     except ArtifactPathError as exc:
         raise _bad_path(exc) from exc
+
+
+@router.get("/{path:path}/content")
+async def artifact_content(session_id: str, path: str):
+    """Stream the exact artifact bytes for authenticated in-app previews."""
+
+    try:
+        location = await artifact_svc.native_location(session_id, path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Artifact not found") from exc
+    except ArtifactPathError as exc:
+        raise _bad_path(exc) from exc
+    return FileResponse(
+        path=location["path"],
+        media_type=location["mime_type"],
+        filename=location["display_name"],
+        content_disposition_type="inline",
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.get("/{path:path}/diff")

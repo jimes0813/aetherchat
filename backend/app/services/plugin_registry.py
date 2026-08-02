@@ -256,7 +256,12 @@ BUILTIN_PLUGINS = [
             _action(
                 "write_document",
                 "写入文档",
-                "写入本机文档；TXT/MD/JSON/CSV/TSV 可用绝对 path 和 data.text 直接新建，结构化文档需提供 source_path；覆盖时默认创建备份。",
+                (
+                    "写入本机短文档；path 必须是绝对路径。TXT/MD/JSON/CSV/TSV "
+                    "可用绝对 path 和 data.text 直接新建，结构化文档需提供 source_path；"
+                    "覆盖时默认创建备份。长文必须先用 write_artifact 分块，再用 "
+                    "documents.export_to_local 一次性导出。"
+                ),
                 "computer_write_document",
                 properties={
                     "path": {"type": "string"},
@@ -279,9 +284,17 @@ BUILTIN_PLUGINS = [
         actions=[_action(
             "open_url",
             "打开链接",
-            "只允许 http:// 或 https:// 地址。",
+            "只允许 http:// 或 https:// 地址；用户指定 Firefox/火狐时 browser 必须设为 firefox。",
             "open_url",
-            properties={"url": {"type": "string", "title": "链接地址"}},
+            properties={
+                "url": {"type": "string", "title": "链接地址"},
+                "browser": {
+                    "type": "string",
+                    "title": "浏览器",
+                    "enum": ["default", "firefox"],
+                    "description": "默认浏览器或 Firefox",
+                },
+            },
             required=["url"],
         )],
     ),
@@ -297,7 +310,7 @@ BUILTIN_PLUGINS = [
             _action(
                 "status",
                 "检查 ComfyUI",
-                "检查本机 ComfyUI、GPU、模型和工作流；工作流包含节点映射、依赖图及可覆盖输入。",
+                "检查本机 ComfyUI、GPU、模型和工作流摘要；具体节点映射与输入请调用 workflow_schema。",
                 "comfyui_status",
             ),
             _action(
@@ -313,11 +326,14 @@ BUILTIN_PLUGINS = [
             _action(
                 "generate_image",
                 "生成图像",
-                "用本地 SDXL checkpoint 或 Qwen-Image 生成图像；先调用 status 获取准确模型名。",
+                "用本地 SDXL checkpoint 或 Qwen-Image 生成图像；model 可省略并自动选择可用默认模型。",
                 "comfyui_generate_image",
                 properties={
                     "prompt": {"type": "string", "description": "完整画面提示词"},
-                    "model": {"type": "string", "description": "status 返回的 checkpoint 或 Qwen-Image 文件名"},
+                    "model": {
+                        "type": "string",
+                        "description": "可选；status 返回的模型名，省略或传 auto 时自动选择",
+                    },
                     "negative_prompt": {"type": "string"},
                     "width": {"type": "integer", "minimum": 256, "maximum": 2048},
                     "height": {"type": "integer", "minimum": 256, "maximum": 2048},
@@ -328,7 +344,7 @@ BUILTIN_PLUGINS = [
                     "lora_strength": {"type": "number", "minimum": -4, "maximum": 4},
                     "task_id": {"type": "string", "description": "可选关联任务 ID"},
                 },
-                required=["prompt", "model"],
+                required=["prompt"],
             ),
             _action(
                 "generate_video",
@@ -797,7 +813,10 @@ class PluginRegistry:
             parsed = urlparse(url)
             if parsed.scheme not in {"http", "https"} or not parsed.netloc:
                 raise ValueError("Only valid http:// or https:// URLs are allowed")
-            return {"kind": "open_external", "url": url}
+            browser = str(arguments.get("browser") or "default").strip().lower()
+            if browser not in {"default", "firefox"}:
+                raise ValueError("Browser must be default or firefox")
+            return {"kind": "open_external", "url": url, "browser": browser}
         if handler == "list_windows":
             return {"windows": self._visible_windows()}
         if handler == "desktop_capabilities":
@@ -823,7 +842,7 @@ class PluginRegistry:
             if handler == "comfyui_generate_image":
                 return await comfyui_service.generate_image(
                     arguments["prompt"],
-                    model=arguments["model"],
+                    model=arguments.get("model"),
                     negative_prompt=arguments.get(
                         "negative_prompt",
                         "blurry, low quality, distorted, watermark, text, bad anatomy",
@@ -939,6 +958,11 @@ class PluginRegistry:
                 "source": "session_workspace",
                 "workspace_path": path_argument,
             }
+        if handler == "computer_write_document" and not is_absolute_path:
+            raise ValueError(
+                "write_document path must be absolute; use write_artifact for a "
+                "workspace-relative path, then export_to_local"
+            )
         if handler == "computer_list_directory" and path_argument and not is_absolute_path:
             normalized = "" if path_argument in {".", "./"} else self.artifacts.normalize_path(path_argument)
             prefix = f"{normalized}/" if normalized else ""

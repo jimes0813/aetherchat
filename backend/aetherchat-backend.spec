@@ -11,6 +11,7 @@ hiddenimports = [
     'uvicorn.protocols.websockets.auto',
     'uvicorn.lifespan.on',
     'app.main',
+    'mcp_servers.aetherchat_local_audit',
 ]
 if sys.platform == 'win32':
     hiddenimports += [
@@ -37,7 +38,7 @@ for package in packages:
 
 a = Analysis(
     ['aetherchat_backend.py'],
-    pathex=[],
+    pathex=['..'],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,

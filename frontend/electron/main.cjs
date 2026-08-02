@@ -1,4 +1,17 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain, shell, desktopCapturer, screen } = require('electron');
+const {
+  app,
+  BrowserWindow,
+  Menu,
+  Notification,
+  Tray,
+  desktopCapturer,
+  dialog,
+  globalShortcut,
+  ipcMain,
+  nativeImage,
+  screen,
+  shell,
+} = require('electron');
 const { spawn } = require('child_process');
 const { randomBytes, randomUUID, timingSafeEqual } = require('crypto');
 const path = require('path');
@@ -8,6 +21,8 @@ const net = require('net');
 const { stageUpdate } = require('./update-verifier.cjs');
 const { launchWindowsInstaller } = require('./update-launcher.cjs');
 const { buildContextMenuTemplate } = require('./context-menu.cjs');
+const { openExternalNavigation } = require('./external-navigation.cjs');
+const { launchIntentFromArgv, quickEntryIntent } = require('./launch-intent.cjs');
 
 const isDev = !app.isPackaged;
 let backendProcess = null;
@@ -25,6 +40,129 @@ let computerUseSessionApproved = false;
 let computerConsentQueue = Promise.resolve();
 let gracefulShutdownPromise = null;
 let gracefulShutdownComplete = false;
+let pendingLaunchIntent = launchIntentFromArgv(process.argv);
+let launchIntentSequence = 0;
+const launchIntentReadyRenderers = new Set();
+let quickEntryShortcut = '';
+let tray = null;
+let quitRequested = false;
+let trayNoticeShown = false;
+let automationPollTimer = null;
+let knownReviewItems = null;
+
+const TRAY_ICON_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAACXBIWXMAAAABAAAAAQBPJcTWAAABXElEQVR4nGPQ01CmKWIYtWDUguFjQUZS3MSeFgia0N1sqq9FZQuuXzzz+d0zOCrMSaemBVFhvsimA9HOzeuoacHCuVPQLHj/8qmtuTF1LDDUUX9y/zrE3NPH9sHtaKwpoY4F2akJcEMLclKuXDgBYZ84vJs6Fmxasxxi4rsXT8wNdadP6oLb5+ViT6kFFsZ6b58/Qo7YiGBvuAUTuloptaC6LA9uXFVJPkTw3o3LEJHrl07paSpSZMGhvVshZn148wsebBbOng63Fegh8i1wtrX49PYpxKBH967Bc/LmdcvgFiyYPZl8C7pa6tGSPyYCWmygpUaWBZqKF88cgZhy8/L5id1tyGjFktlwO4DFFDkWBPu74UktpgYab188gMiuX7mUHAtmTeuFWxDk44GpAJhqIbJvnj0E5g+SLairKoREaXdbHVYFseFB0GjvbsOT4wZNhTNqwagFA2gBAOhI7ghBmJHOAAAAAElFTkSuQmCC';
+
+function showMainWindow() {
+  const win = createWindow();
+  if (win.isMinimized()) win.restore();
+  if (!win.isVisible()) win.show();
+  win.focus();
+  return win;
+}
+
+function updateTrayMenu(reviewItems = 0) {
+  if (!tray) return;
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: '打开 AetherChat', click: () => showMainWindow() },
+    { label: '快速输入', click: () => activateLaunchIntent(quickEntryIntent()) },
+    {
+      label: reviewItems > 0 ? `待复核后台任务：${reviewItems}` : '后台任务：无待复核项',
+      enabled: false,
+    },
+    { type: 'separator' },
+    {
+      label: '退出 AetherChat',
+      click: () => {
+        quitRequested = true;
+        app.quit();
+      },
+    },
+  ]));
+}
+
+function createTray() {
+  if (tray) return tray;
+  const icon = nativeImage.createFromDataURL(TRAY_ICON_DATA_URL).resize({ width: 20, height: 20 });
+  tray = new Tray(icon);
+  tray.setToolTip('AetherChat · 本机后台任务');
+  tray.on('click', () => showMainWindow());
+  updateTrayMenu();
+  return tray;
+}
+
+function startAutomationReviewPolling() {
+  if (automationPollTimer) return;
+  const poll = async () => {
+    try {
+      const status = await backendRequest('/automations/status', { timeoutMs: 5000 });
+      const reviewItems = Math.max(0, Number(status?.review_items || 0));
+      updateTrayMenu(reviewItems);
+      if (knownReviewItems !== null && reviewItems !== knownReviewItems) {
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (!win.isDestroyed()) {
+            win.webContents.send('aether-background:changed', { reviewItems });
+          }
+        }
+      }
+      if (
+        knownReviewItems !== null
+        && reviewItems > knownReviewItems
+        && Notification.isSupported()
+      ) {
+        const notification = new Notification({
+          title: 'AetherChat 后台任务已有结果',
+          body: `${reviewItems} 项结果等待复核。`,
+        });
+        notification.on('click', () => showMainWindow());
+        notification.show();
+      }
+      knownReviewItems = reviewItems;
+    } catch {
+      // The backend can briefly be unavailable while starting or stopping.
+    }
+  };
+  void poll();
+  automationPollTimer = setInterval(poll, 15_000);
+}
+
+function stopAutomationReviewPolling() {
+  if (automationPollTimer) clearInterval(automationPollTimer);
+  automationPollTimer = null;
+  knownReviewItems = null;
+}
+
+function sequencedLaunchIntent(intent) {
+  if (!intent) return null;
+  launchIntentSequence += 1;
+  return {
+    ...intent,
+    id: `launch-${Date.now()}-${launchIntentSequence}`,
+  };
+}
+
+pendingLaunchIntent = sequencedLaunchIntent(pendingLaunchIntent);
+
+function flushLaunchIntent(win) {
+  if (
+    !pendingLaunchIntent
+    || !win
+    || win.isDestroyed()
+    || !launchIntentReadyRenderers.has(win.webContents.id)
+  ) return false;
+  win.webContents.send('aether-intent:compose', pendingLaunchIntent);
+  pendingLaunchIntent = null;
+  return true;
+}
+
+function activateLaunchIntent(intent) {
+  pendingLaunchIntent = sequencedLaunchIntent(intent);
+  if (!app.isReady()) return;
+  const win = createWindow();
+  if (win.isMinimized()) win.restore();
+  if (!win.isVisible()) win.show();
+  win.focus();
+  flushLaunchIntent(win);
+}
 
 function updatePublicKey() {
   if (process.env.AETHERCHAT_UPDATE_PUBLIC_KEY_B64) {
@@ -449,6 +587,7 @@ function createWindow() {
   const existing = BrowserWindow.getAllWindows()[0];
   if (existing) {
     if (existing.isMinimized()) existing.restore();
+    if (!existing.isVisible()) existing.show();
     existing.focus();
     return existing;
   }
@@ -469,8 +608,13 @@ function createWindow() {
         `--aether-backend-status=${backendStatus}`,
         `--aether-app-version=${app.getVersion()}`,
         `--aether-platform=${process.platform}`,
+        `--aether-quick-entry-shortcut=${quickEntryShortcut}`,
       ],
     },
+  });
+  const rendererId = win.webContents.id;
+  win.webContents.once('destroyed', () => {
+    launchIntentReadyRenderers.delete(rendererId);
   });
 
   if (isDev && process.env.VITE_DEV_SERVER_URL) {
@@ -499,6 +643,18 @@ function createWindow() {
   win.webContents.on('context-menu', (_event, params) => {
     Menu.buildFromTemplate(buildContextMenuTemplate(params)).popup({ window: win });
   });
+  win.on('close', (event) => {
+    if (quitRequested || gracefulShutdownComplete || !tray) return;
+    event.preventDefault();
+    win.hide();
+    if (!trayNoticeShown && Notification.isSupported()) {
+      trayNoticeShown = true;
+      new Notification({
+        title: 'AetherChat 仍在后台运行',
+        body: '定时任务与排队任务会继续执行；可从系统托盘重新打开或完全退出。',
+      }).show();
+    }
+  });
   return win;
 }
 
@@ -506,7 +662,18 @@ const menu = Menu.buildFromTemplate([
   { label: '文件', submenu: [{ role: 'quit', label: '退出' }] },
   { label: '编辑', submenu: [{ role: 'undo', label: '撤销' }, { role: 'redo', label: '重做' }, { type: 'separator' }, { role: 'copy', label: '复制' }, { role: 'paste', label: '粘贴' }] },
   { label: '视图', submenu: [{ role: 'reload', label: '刷新' }, ...(isDev ? [{ role: 'toggleDevTools', label: '开发者工具' }] : []), { role: 'togglefullscreen', label: '全屏' }] },
-  { label: '运行', submenu: [{ label: '打开工作台', click: () => createWindow() }] },
+  {
+    label: '运行',
+    submenu: [
+      { label: '打开工作台', click: () => createWindow() },
+      {
+        label: process.platform === 'darwin'
+          ? '快速输入（Cmd+Option+Space）'
+          : '快速输入（Ctrl+Alt+Space）',
+        click: () => activateLaunchIntent(quickEntryIntent()),
+      },
+    ],
+  },
   {
     label: '帮助',
     submenu: [{ label: '检查签名更新', click: () => checkForSignedUpdate() }, { type: 'separator' }, {
@@ -542,10 +709,11 @@ ipcMain.on('aether-window:close', (event) => {
 
 ipcMain.handle('aether-external:open', async (_event, value) => {
   assertTrustedDesktopSender(_event);
-  const url = new URL(String(value || ''));
-  if (!/^https?:$/.test(url.protocol)) throw new Error('Only HTTP(S) links are allowed');
-  await shell.openExternal(url.toString());
-  return true;
+  return openExternalNavigation(value, {
+    platform: process.platform,
+    spawnProcess: spawn,
+    shellOpenExternal: (url) => shell.openExternal(url),
+  });
 });
 
 ipcMain.handle('aether-artifact:open', async (event, value) => {
@@ -580,6 +748,14 @@ ipcMain.handle('aether-artifact:open', async (event, value) => {
 ipcMain.handle('aether-runtime:api-token', async (event) => {
   assertTrustedDesktopSender(event);
   return apiAccessToken;
+});
+
+ipcMain.handle('aether-intent:ready', async (event) => {
+  assertTrustedDesktopSender(event);
+  launchIntentReadyRenderers.add(event.sender.id);
+  const win = BrowserWindow.fromWebContents(event.sender);
+  flushLaunchIntent(win);
+  return true;
 });
 
 ipcMain.handle('aether-desktop:status', async (event) => {
@@ -786,12 +962,26 @@ ipcMain.handle('aether-desktop:mouse', async (_event, value) => {
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) app.quit();
 
-app.on('second-instance', () => {
-  createWindow();
+app.on('second-instance', (_event, commandLine) => {
+  const intent = launchIntentFromArgv(commandLine);
+  if (intent) {
+    activateLaunchIntent(intent);
+  } else {
+    createWindow();
+  }
+});
+
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  const intent = launchIntentFromArgv([url]);
+  if (intent) activateLaunchIntent(intent);
 });
 
 app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return;
+  if (app.isPackaged && !app.setAsDefaultProtocolClient('aetherchat')) {
+    console.warn('Unable to register the aetherchat:// protocol handler');
+  }
   try {
     await startComputerConsentServer();
     const selected = await selectBackendPort(backendPort);
@@ -808,17 +998,41 @@ app.whenReady().then(async () => {
     console.error('Unable to prepare the AetherChat backend:', error);
   }
   Menu.setApplicationMenu(menu);
-  createWindow();
+  try {
+    createTray();
+  } catch (error) {
+    console.warn('Unable to create the background tray icon:', error);
+  }
+  if (globalShortcut.register('CommandOrControl+Alt+Space', () => {
+    activateLaunchIntent(quickEntryIntent());
+  })) {
+    quickEntryShortcut = process.platform === 'darwin'
+      ? 'Cmd+Option+Space'
+      : 'Ctrl+Alt+Space';
+  } else {
+    console.warn('Unable to register the global quick-entry shortcut');
+  }
+  const win = createWindow();
+  flushLaunchIntent(win);
+  startAutomationReviewPolling();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
+  if (!tray && process.platform !== 'darwin') app.quit();
+});
+
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll();
+  stopAutomationReviewPolling();
+  if (tray) tray.destroy();
+  tray = null;
 });
 
 app.on('before-quit', (event) => {
+  quitRequested = true;
   if (gracefulShutdownComplete) return;
   event.preventDefault();
   if (gracefulShutdownPromise) return;
@@ -834,6 +1048,7 @@ app.on('before-quit', (event) => {
     }
     desktopFileHandles.clear();
     desktopHandleOwners.clear();
+    stopAutomationReviewPolling();
     stopComputerConsentServer();
     stopBackend();
     gracefulShutdownComplete = true;

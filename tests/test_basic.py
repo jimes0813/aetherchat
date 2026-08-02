@@ -10,7 +10,7 @@ import sys
 import tempfile
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -62,6 +62,11 @@ from app.services.approval_service import ApprovalService, approval_service  # n
 from app.services.knowledge_service import knowledge_service  # noqa: E402
 from app.services.memory_service import MemoryService  # noqa: E402
 from app.services.agent_run_service import AgentRunService  # noqa: E402
+from app.services.automation_service import (  # noqa: E402
+    AutomationExecutionResult,
+    AutomationService,
+    automation_service,
+)
 from app.services.git_workspace_service import (  # noqa: E402
     GitWorkspaceError,
     GitWorkspaceService,
@@ -355,6 +360,52 @@ def test_agent_tool_can_upsert_a_shared_memory_entity():
     stored = chat_database.get_memory(session_id)["entities"]
     assert stored[0]["key"] == "character:林夏"
     assert stored[0]["metadata"]["chapter"] == 3
+
+
+def test_write_artifact_rejects_truncated_arguments_and_supports_chunks():
+    from app.services.tool_executor import artifact_service, execute_tool
+
+    session_id = str(uuid4())
+    malformed = asyncio.run(execute_tool(
+        "write_artifact",
+        {"_raw": '{"path":"draft.md","content":"truncated'},
+        "model:qwen",
+        session_id,
+    ))
+    assert malformed["status"] == "error"
+    assert "JSON 未完整生成" in malformed["error"]
+    assert malformed["arguments"]["_raw"].startswith(
+        "[malformed tool arguments omitted"
+    )
+
+    first = asyncio.run(execute_tool(
+        "write_artifact",
+        {
+            "path": "draft.md",
+            "content": "第一段。",
+            "mode": "overwrite",
+            "sequence": 0,
+        },
+        "model:qwen",
+        session_id,
+    ))
+    second = asyncio.run(execute_tool(
+        "write_artifact",
+        {
+            "path": "draft.md",
+            "content": "第二段。",
+            "mode": "append",
+            "sequence": 1,
+        },
+        "model:qwen",
+        session_id,
+    ))
+    assert first["status"] == second["status"] == "success"
+    assert second["result"]["write_mode"] == "append"
+    assert second["result"]["sequence"] == 1
+    assert asyncio.run(artifact_service.read(session_id, "draft.md")) == (
+        "第一段。第二段。"
+    )
 
 
 def test_agent_run_state_events_retry_and_restart_recovery(tmp_path):
@@ -1041,8 +1092,8 @@ def test_agent_run_persists_tool_chain_checkpoint_and_idempotent_replay(tmp_path
             "content": "hello",
             "api_key": "must-not-be-persisted",
         },
-        round_index=0,
-        call_index=0,
+        round_index=4,
+        call_index=2,
     )
     assert replay["disposition"] == "replay"
     assert replay["result"]["result"]["version"] == 1
@@ -1376,8 +1427,15 @@ async def test_approval_service_supports_once_session_deny_and_fail_closed():
     with pytest.raises(ValueError):
         service.decide(once_only.id, "session-a", "allow_session")
     denied = asyncio.create_task(service.wait(once_only.id, timeout=1))
-    service.decide(once_only.id, "session-a", "deny")
+    result = service.decide(
+        once_only.id,
+        "session-a",
+        "deny",
+        "不要写文件，改为只读检查",
+    )
+    assert result["feedback"] == "不要写文件，改为只读检查"
     assert await denied == "deny"
+    assert once_only.feedback == "不要写文件，改为只读检查"
 
 
 def test_tasks_are_uuid_validated_session_scoped_and_persisted(client, tmp_path, monkeypatch):
@@ -1591,6 +1649,10 @@ def test_chat_history_and_task_events_survive_database_restart(client):
                 "mime_type": "text/markdown",
                 "size_bytes": 128,
             }] if role == "assistant" else [],
+            reasoning_summary=[{
+                "phase": "analysis",
+                "detail": "已整理上下文。",
+            }] if role == "assistant" else [],
             created_at=datetime.now(timezone.utc),
         ))
 
@@ -1604,6 +1666,10 @@ def test_chat_history_and_task_events_survive_database_restart(client):
     assert history.status_code == 200
     assert history.json()[1]["author_model"] == "qwen"
     assert history.json()[1]["generated_files"][0]["path"] == "generated/report.md"
+    assert history.json()[1]["reasoning_summary"] == [{
+        "phase": "analysis",
+        "detail": "已整理上下文。",
+    }]
     sessions = client.get("/sessions/").json()
     restored_session = next(item for item in sessions if item["id"] == str(session_id))
     assert restored_session["message_count"] == 2
@@ -1641,6 +1707,14 @@ def test_cached_chat_search_native_file_location_and_session_delete(client):
     assert native.status_code == 200
     native_path = Path(native.json()["path"])
     assert native_path.is_file()
+    content = client.get(
+        "/artifacts/cache/result.txt/content",
+        params={"session_id": session_id},
+    )
+    assert content.status_code == 200
+    assert content.content == b"persistent generated output"
+    assert content.headers["x-content-type-options"] == "nosniff"
+    assert content.headers["content-disposition"].startswith("inline;")
 
     message = Message(
         id=uuid4(),
@@ -1851,6 +1925,62 @@ async def test_provider_context_drops_complete_native_tool_turns():
     ]
 
 
+@pytest.mark.asyncio
+async def test_provider_context_caps_recent_messages_at_a_user_boundary():
+    messages = []
+    for index in range(10):
+        messages.extend([
+            ChatMessage(role="user", content=f"user-{index}"),
+            ChatMessage(role="assistant", content=f"answer-{index}"),
+        ])
+    messages.append(ChatMessage(role="user", content="LATEST-REQUEST"))
+
+    result = await build_messages_for_provider(
+        messages,
+        provider_limit=32_768,
+        output_reserve=2048,
+        max_conversation_messages=8,
+    )
+    conversation = [message for message in result if message.role != "system"]
+
+    assert len(conversation) <= 8
+    assert conversation[0].role == "user"
+    assert conversation[-1].content == "LATEST-REQUEST"
+    assert all(message.content != "user-0" for message in conversation)
+    assert any(
+        "上下文上限" in message.content
+        for message in result
+        if message.role == "system"
+    )
+
+
+@pytest.mark.asyncio
+async def test_provider_context_keeps_latest_multi_model_turn_together():
+    messages = [
+        ChatMessage(role="user", content=f"old-user-{index}")
+        if index % 2 == 0
+        else ChatMessage(role="assistant", content=f"old-answer-{index}")
+        for index in range(20)
+    ]
+    messages.append(ChatMessage(role="user", content="LATEST-REQUEST"))
+    messages.extend(
+        ChatMessage(role="assistant", content=f"model-answer-{index}")
+        for index in range(10)
+    )
+
+    result = await build_messages_for_provider(
+        messages,
+        provider_limit=32_768,
+        output_reserve=2048,
+        max_conversation_messages=8,
+    )
+    conversation = [message for message in result if message.role != "system"]
+
+    assert conversation[0].content == "LATEST-REQUEST"
+    assert len(conversation) == 11
+    assert conversation[-1].content == "model-answer-9"
+
+
 class _AsyncChunkStream:
     def __init__(self, chunks):
         self._chunks = iter(chunks)
@@ -1984,6 +2114,7 @@ async def test_openai_provider_streams_tools_and_allows_local_without_key(monkey
                 ChatMessage(role="system", content="second instruction"),
             ],
             tools=tools,
+            tool_choice="required",
         )
     ]
 
@@ -2016,7 +2147,9 @@ async def test_openai_provider_streams_tools_and_allows_local_without_key(monkey
         },
     ]
     assert captured["request"]["tools"][0]["function"]["name"] == "list_tasks"
+    assert captured["request"]["tool_choice"] == "required"
     assert [chunk["delta"] for chunk in chunks if chunk["delta"]] == ["first ", "second"]
+    assert sum(bool(chunk.get("tool_activity")) for chunk in chunks) == 1
     assert next(chunk["tool_calls"] for chunk in chunks if chunk.get("tool_calls")) == [{
         "id": "call-1",
         "name": "list_tasks",
@@ -2114,6 +2247,7 @@ async def test_anthropic_provider_accepts_shared_tool_definitions(monkeypatch):
                 ChatMessage(role="system", content="second instruction"),
             ],
             tools=[ToolDefinition(name="read_artifact", description="Read")],
+            tool_choice="required",
         )
     ]
 
@@ -2123,6 +2257,7 @@ async def test_anthropic_provider_accepts_shared_tool_definitions(monkeypatch):
         "description": "Read",
         "input_schema": {"type": "object", "properties": {}},
     }]
+    assert captured["request"]["tool_choice"] == {"type": "any"}
     assert captured["request"]["messages"] == [
         {"role": "user", "content": "hello"},
         {
@@ -2171,6 +2306,7 @@ async def test_anthropic_provider_accepts_shared_tool_definitions(monkeypatch):
         },
     ]
     assert chunks[0]["delta"] == "ok"
+    assert sum(bool(chunk.get("tool_activity")) for chunk in chunks) == 1
     assert next(chunk["tool_calls"] for chunk in chunks if chunk.get("tool_calls")) == [{
         "id": "toolu-new",
         "name": "read_artifact",
@@ -2265,6 +2401,133 @@ def test_orchestrator_routes_tools_and_caps_local_active_context(monkeypatch):
     assert provider_limit == 8192
     assert output_reserve == 2048
     assert tool_tokens == 0
+    monkeypatch.delenv("AETHERCHAT_LOCAL_MAX_HISTORY_MESSAGES", raising=False)
+    assert orchestrator._history_message_limit(local) == 8
+    monkeypatch.setenv("AETHERCHAT_LOCAL_MAX_HISTORY_MESSAGES", "20")
+    assert orchestrator._history_message_limit(local) == 20
+
+    remote = SimpleNamespace(config=ProviderConfig(
+        name="remote",
+        type="openai_compat",
+        model="remote-model",
+        api_key_ref="REMOTE_KEY",
+    ))
+    assert orchestrator._history_message_limit(remote) is None
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_requires_real_comfyui_generation_without_status_round(monkeypatch):
+    class RequiredComfyProvider(_FakeProvider):
+        def __init__(self):
+            super().__init__("required-comfy")
+            self.requests = []
+
+        async def stream_chat(self, messages, tools=None, **kwargs):
+            tool_names = [tool.name for tool in (tools or [])]
+            self.requests.append({
+                "tools": tool_names,
+                "tool_choice": kwargs.get("tool_choice"),
+            })
+            if len(self.requests) == 1:
+                yield {
+                    "delta": "",
+                    "usage": None,
+                    "tool_calls": [{
+                        "id": "comfy-generate",
+                        "name": "plugin__comfyui__generate_image",
+                        "arguments": {
+                            "prompt": "a blue ceramic mug, studio light",
+                        },
+                    }],
+                }
+            else:
+                raise AssertionError("successful required generation must not request a summary round")
+            yield {
+                "delta": "",
+                "usage": {"prompt_tokens": 10, "completion_tokens": 4},
+            }
+
+    async def fake_plugin_invoke(tool_name, _session_id, _caller, _arguments):
+        return {
+            "plugin_id": "comfyui",
+            "action": "generate_image",
+            "status": "success",
+            "result": {
+                "generated_files": [{
+                    "path": "generated/comfyui/prompt/image.png",
+                    "name": "image.png",
+                    "mime_type": "image/png",
+                    "size_bytes": 256,
+                    "source": "comfyui",
+                }],
+            },
+        }
+
+    provider = RequiredComfyProvider()
+    orchestrator = _orchestrator_with([provider])
+    monkeypatch.setattr(
+        orchestrator_module.plugin_registry,
+        "invoke_tool",
+        fake_plugin_invoke,
+    )
+
+    async def allow_tool(_queue, _model, _tool_name, _arguments):
+        return True, ""
+
+    orchestrator._authorize_model_tool = allow_tool
+    events = [
+        event
+        async for event in orchestrator.stream_user_message({
+            "content": "请用 ComfyUI 生成一张蓝色陶瓷杯图片",
+            "targets": ["required-comfy"],
+            "mode": "casual",
+        })
+    ]
+
+    assert provider.requests[0] == {
+        "tools": ["plugin__comfyui__generate_image"],
+        "tool_choice": "required",
+    }
+    assert len(provider.requests) == 1
+    assert any(
+        event["type"] == "tool_run"
+        and event["run"]["tool_name"] == "plugin__comfyui__generate_image"
+        and event["run"]["status"] == "success"
+        for event in events
+    )
+    completed = next(
+        event["message"]
+        for event in events
+        if event["type"] == "message_complete"
+        and event["message"]["author_model"] == "required-comfy"
+    )
+    assert completed["generated_files"][0]["path"] == (
+        "generated/comfyui/prompt/image.png"
+    )
+    assert "可直接预览或打开" in completed["content"]
+    assert "generated/comfyui/prompt/image.png" in completed["content"]
+    assert [step["phase"] for step in completed["reasoning_summary"]] == [
+        "analysis",
+        "tool",
+        "result",
+        "final",
+    ]
+    assert all(
+        "a blue ceramic mug" not in step["detail"]
+        for step in completed["reasoning_summary"]
+    )
+    assert any(
+        event["type"] == "reasoning_step"
+        and event["model"] == "required-comfy"
+        for event in events
+    )
+    assert SessionOrchestrator._required_comfyui_tools("图片呢") == []
+    assert SessionOrchestrator._required_comfyui_tools(
+        "请生成一张图片"
+    ) == ["plugin__comfyui__generate_image"]
+    assert SessionOrchestrator._required_comfyui_tools(
+        "请用 ComfyUI 生成一张蓝色陶瓷杯的产品摄影图"
+    ) == ["plugin__comfyui__generate_image"]
 
 
 @pytest.mark.asyncio
@@ -2287,6 +2550,99 @@ async def test_orchestrator_emits_factual_provider_status_telemetry():
     assert statuses[0]["context_tokens"] > 0
     assert statuses[0]["tool_count"] == 0
     assert statuses[1]["first_token_ms"] >= 0
+    completed = next(
+        event["message"]
+        for event in events
+        if event["type"] == "message_complete"
+        and event["message"]["author_model"] == "telemetry"
+    )
+    assert [step["phase"] for step in completed["reasoning_summary"]] == [
+        "analysis",
+        "final",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_reports_tool_activity_before_arguments_finish():
+    class ToolActivityProvider(_FakeProvider):
+        async def stream_chat(self, messages, tools=None, **kwargs):
+            yield {"delta": "", "usage": None, "tool_activity": True}
+            yield {"delta": "done", "usage": None}
+            yield {
+                "delta": "",
+                "usage": {"prompt_tokens": 10, "completion_tokens": 1},
+            }
+
+    events = await _collect_events(
+        _orchestrator_with([ToolActivityProvider("tool-activity")]),
+        ["tool-activity"],
+    )
+    statuses = [
+        event for event in events
+        if event["type"] == "provider_status"
+    ]
+
+    assert [event["phase"] for event in statuses] == [
+        "requesting",
+        "tool",
+        "finalizing",
+    ]
+    assert statuses[1]["detail"] == "模型已开始构造工具调用"
+    assert statuses[1]["first_token_ms"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_caps_only_local_provider_history():
+    provider = _FakeProvider("local-window")
+    provider.config.type = "local"
+    orchestrator = _orchestrator_with([provider])
+    orchestrator._history_loaded = True
+    orchestrator.conversation_history = [
+        ChatMessage(
+            role="user" if index % 2 == 0 else "assistant",
+            content=f"history-{index}",
+        )
+        for index in range(20)
+    ]
+
+    await _collect_events(orchestrator, ["local-window"])
+    conversation = [
+        message
+        for message in provider.received_messages
+        if message.role != "system"
+    ]
+
+    assert len(conversation) <= 8
+    assert conversation[0].role == "user"
+    assert conversation[-1].content == "offline orchestration"
+    assert all(message.content != "history-0" for message in conversation)
+
+
+@pytest.mark.asyncio
+async def test_reasoning_summaries_are_emitted_for_every_selected_model():
+    providers = [_FakeProvider("model-a"), _FakeProvider("model-b")]
+    events = await _collect_events(
+        _orchestrator_with(providers),
+        ["model-a", "model-b"],
+    )
+    completed = {
+        event["message"]["author_model"]: event["message"]
+        for event in events
+        if event["type"] == "message_complete"
+        and event["message"]["role"] == "assistant"
+    }
+    assert set(completed) == {"model-a", "model-b"}
+    assert all(
+        [step["phase"] for step in message["reasoning_summary"]]
+        == ["analysis", "final"]
+        for message in completed.values()
+    )
+    live_models = {
+        event["model"]
+        for event in events
+        if event["type"] == "reasoning_step"
+    }
+    assert live_models == {"model-a", "model-b"}
 
 
 @pytest.mark.asyncio
@@ -3152,7 +3508,7 @@ class _ToolLoopProvider(_FakeProvider):
         self.calls += 1
         if self.calls == 1:
             yield {
-                "delta": "",
+                "delta": "让我先检查历史请求；这段工具轮草稿不应显示。",
                 "usage": None,
                 "tool_calls": [{
                     "id": "call-1",
@@ -3231,6 +3587,37 @@ class _ApprovalToolProvider(_FakeProvider):
         yield {"delta": "", "usage": {"prompt_tokens": 10, "completion_tokens": 2}}
 
 
+class _RejectedApprovalToolProvider(_FakeProvider):
+    def __init__(self):
+        super().__init__("rejected-approval-model")
+        self.calls = 0
+        self.received_feedback = False
+
+    async def stream_chat(self, messages, tools=None, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            yield {
+                "delta": "",
+                "usage": None,
+                "tool_calls": [{
+                    "id": "rejected-approval-call",
+                    "name": "write_artifact",
+                    "arguments": {"path": "denied.md", "content": "must not be written"},
+                }],
+            }
+        else:
+            observation = next(
+                message for message in reversed(messages)
+                if message.role == "tool"
+            )
+            self.received_feedback = (
+                '"status": "denied"' in observation.content
+                and "不要写文件，改为只读总结" in observation.content
+            )
+            yield {"delta": "已按反馈改为只读总结", "usage": None}
+        yield {"delta": "", "usage": {"prompt_tokens": 10, "completion_tokens": 2}}
+
+
 class _ParallelToolProvider(_FakeProvider):
     def __init__(self):
         super().__init__("parallel-tools")
@@ -3303,6 +3690,22 @@ async def test_orchestrator_reenters_model_after_tool_and_attaches_observation_i
     assert provider.calls == 2
     assert provider.received_observation is True
     assert any(event["type"] == "tool_run" for event in events)
+    completed = next(
+        event["message"]
+        for event in events
+        if event["type"] == "message_complete"
+        and event["message"]["author_model"] == "tool-loop"
+    )
+    assert completed["content"] == "闭环完成"
+    assert "让我先检查历史请求" not in completed["content"]
+    assert not any(
+        "让我先检查历史请求" in str(event.get("delta") or "")
+        for event in events
+    )
+    assert any(
+        event["type"] == "stream_reset"
+        for event in events
+    )
     assert any(
         event["type"] == "message_complete"
         and event["message"]["author_model"] == "tool-loop"
@@ -3342,12 +3745,76 @@ def test_orchestrator_repairs_missing_and_duplicate_tool_call_ids():
         {"id": "stable-call", "name": "first", "arguments": {}},
         {"id": "stable-call", "name": "second", "arguments": {"value": 2}},
         {"id": "", "name": "third", "arguments": "raw"},
+        {
+            "id": "json-string",
+            "name": "write_artifact",
+            "arguments": '{"path":"parsed.md","content":"ok"}',
+        },
     ])
 
     assert calls[0].id == "stable-call"
-    assert len({call.id for call in calls}) == 3
+    assert len({call.id for call in calls}) == 4
     assert all(call.id for call in calls)
     assert calls[2].arguments == {"_raw": "raw"}
+    assert calls[3].arguments == {"path": "parsed.md", "content": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_stops_repeated_truncated_file_writes_before_execution():
+    class TruncatedWriteProvider(_FakeProvider):
+        def __init__(self):
+            super().__init__("truncated-writer")
+            self.calls = 0
+            self.tool_names: list[set[str]] = []
+
+        async def stream_chat(self, messages, tools=None, **kwargs):
+            self.calls += 1
+            self.tool_names.append({tool.name for tool in tools or []})
+            yield {
+                "delta": "",
+                "usage": None,
+                "tool_calls": [{
+                    "id": f"truncated-{self.calls}",
+                    "name": "plugin__desktop_control__write_document",
+                    "arguments": {
+                        "_raw": '{"path":"/tmp/long.md","data":{"text":"truncated'
+                    },
+                }],
+            }
+            yield {
+                "delta": "",
+                "usage": {"prompt_tokens": 10, "completion_tokens": 10},
+            }
+
+    provider = TruncatedWriteProvider()
+    orchestrator = _orchestrator_with([provider])
+
+    async def unexpected_approval(*_args, **_kwargs):
+        raise AssertionError("invalid arguments must be rejected before approval")
+
+    orchestrator._authorize_model_tool = unexpected_approval
+    events = [
+        event
+        async for event in orchestrator.stream_user_message({
+            "content": "把这篇长文保存到桌面文件",
+            "targets": [provider.config.name],
+            "mode": "casual",
+        })
+    ]
+
+    assert provider.calls == 3
+    assert "plugin__desktop_control__write_document" in provider.tool_names[0]
+    assert "plugin__desktop_control__write_document" not in provider.tool_names[1]
+    assert sum(event.get("type") == "approval_required" for event in events) == 0
+    assert any(
+        event.get("code") == "invalid_file_tool_arguments"
+        for event in events
+    )
+    assert any(
+        event.get("type") == "message_complete"
+        and "避免反复覆盖或产生空文件" in event["message"]["content"]
+        for event in events
+    )
 
 
 @pytest.mark.asyncio
@@ -3396,7 +3863,7 @@ async def test_orchestrator_resumes_from_checkpoint_without_repeating_side_effec
     first.begin_agent_run(run["id"])
 
     async def allow_tool(_queue, _model, _tool_name, _arguments):
-        return True
+        return True, ""
 
     first._authorize_model_tool = allow_tool
     tool_runs_before = len(tool_registry.list_runs(session_id=session_id, limit=None))
@@ -3543,7 +4010,7 @@ async def test_orchestrator_applies_steer_before_stale_tool_side_effect(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_agent_run_keeps_turn_limit_partial_output_failed(tmp_path, monkeypatch):
+async def test_agent_run_drops_turn_limit_tool_draft_from_chat(tmp_path, monkeypatch):
     database = ChatDatabase(tmp_path / "orchestrator-turn-limit.sqlite3")
     run_service = AgentRunService(database)
     session_id = str(uuid4())
@@ -3589,12 +4056,12 @@ async def test_agent_run_keeps_turn_limit_partial_output_failed(tmp_path, monkey
     assert failed["status"] == "failed"
     assert database.list_agent_steps(run["id"])[0]["status"] == "failed"
     assert any(event.get("code") == "model_turn_limit" for event in events)
-    assert any(
+    assert not any(
         event["type"] == "message_complete"
-        and event.get("partial") is True
-        and event["message"]["content"] == "尚未完成"
+        and event["message"].get("role") == "assistant"
         for event in events
     )
+    assert not any(event.get("delta") == "尚未完成" for event in events)
 
 
 @pytest.mark.asyncio
@@ -3647,6 +4114,99 @@ async def test_orchestrator_pauses_for_structured_chat_approval():
         and event["message"]["generated_files"][0]["path"] == "approved.md"
         for event in events
     )
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_returns_rejection_feedback_to_the_model():
+    provider = _RejectedApprovalToolProvider()
+    orchestrator = _orchestrator_with([provider])
+    stream = orchestrator.stream_user_message({
+        "content": "请更新项目说明",
+        "targets": ["rejected-approval-model"],
+        "mode": "project",
+    })
+    events = []
+    async for event in stream:
+        events.append(event)
+        if event["type"] == "approval_required":
+            approval_service.decide(
+                event["approval"]["id"],
+                orchestrator.session_id,
+                "deny",
+                "不要写文件，改为只读总结",
+            )
+
+    resolved = next(event for event in events if event["type"] == "approval_resolved")
+    assert resolved["decision"] == "deny"
+    assert resolved["feedback"] == "不要写文件，改为只读总结"
+    assert provider.received_feedback is True
+    assert any(
+        event["type"] == "tool_run"
+        and event["run"]["status"] == "error"
+        and "不要写文件，改为只读总结" in event["run"]["error"]
+        for event in events
+    )
+    assert any(
+        event["type"] == "message_complete"
+        and event["message"]["content"] == "已按反馈改为只读总结"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_browser_navigation_requires_a_matching_desktop_receipt():
+    requested_actions = []
+
+    async def execute_desktop_action(action):
+        requested_actions.append(action)
+        return {
+            "success": True,
+            "kind": "external_navigation",
+            "url": action["url"],
+            "browser": action["browser"],
+            "launcher": "firefox",
+            "verification": "launcher_accepted",
+            "accepted_at": "2026-08-01T10:05:52Z",
+        }
+
+    plugin_result = {
+        "plugin_id": "browser-links",
+        "plugin_name": "浏览器链接",
+        "action": "open_url",
+        "status": "success",
+        "result": {
+            "kind": "open_external",
+            "url": "https://www.youtube.com",
+            "browser": "firefox",
+        },
+    }
+    orchestrator = SessionOrchestrator(
+        str(uuid4()),
+        desktop_action_handler=execute_desktop_action,
+    )
+    completed = await orchestrator._complete_desktop_action(
+        "plugin__browser_links__open_url",
+        plugin_result,
+    )
+
+    assert requested_actions == [{
+        "kind": "open_external",
+        "url": "https://www.youtube.com",
+        "browser": "firefox",
+    }]
+    assert completed["result"]["execution_receipt"]["launcher"] == "firefox"
+    assert SessionOrchestrator._requested_browser("请用 fierfox 打开") == "firefox"
+    assert SessionOrchestrator._browser_execution_receipt({
+        "status": "success",
+        "result": plugin_result,
+    }) is None
+
+    without_desktop = SessionOrchestrator(str(uuid4()))
+    with pytest.raises(RuntimeError, match="没有活动的 AetherChat 桌面客户端"):
+        await without_desktop._complete_desktop_action(
+            "plugin__browser_links__open_url",
+            plugin_result,
+        )
 
 
 @pytest.mark.asyncio
@@ -3712,6 +4272,62 @@ def test_websocket_action_error_does_not_close_connection(client):
         websocket.send_json({"type": "interrupt", "scope": "all"})
         acknowledgement = websocket.receive_json()
         assert acknowledgement == {"type": "interrupt_ack", "scope": "all"}
+
+
+def test_websocket_waits_for_desktop_navigation_receipt(client, monkeypatch):
+    async def navigation_stream(self, action):
+        assert self.desktop_action_handler is not None
+        receipt = await self.desktop_action_handler({
+            "kind": "open_external",
+            "url": "https://www.youtube.com",
+            "browser": "firefox",
+        })
+        yield {"type": "desktop_action_test", "receipt": receipt}
+
+    monkeypatch.setattr(SessionOrchestrator, "stream_user_message", navigation_stream)
+
+    session_id = str(uuid4())
+    with client.websocket_connect(f"/ws/sessions/{session_id}") as websocket:
+        websocket.send_json({
+            "type": "post_message",
+            "content": "用 Firefox 打开 YouTube",
+            "targets": ["Qwen"],
+        })
+        assert websocket.receive_json() == {"type": "ack"}
+        assert websocket.receive_json()["type"] == "agent_run_update"
+        request = websocket.receive_json()
+        assert request["type"] == "desktop_action_required"
+        assert request["desktop_action"] == {
+            "kind": "open_external",
+            "url": "https://www.youtube.com",
+            "browser": "firefox",
+        }
+
+        websocket.send_json({
+            "type": "desktop_action_result",
+            "action_id": request["action_id"],
+            "success": True,
+            "receipt": {
+                "success": True,
+                "kind": "external_navigation",
+                "url": "https://www.youtube.com/",
+                "browser": "firefox",
+                "launcher": "firefox",
+                "verification": "launcher_accepted",
+                "accepted_at": "2026-08-01T10:05:52Z",
+            },
+        })
+        completed = websocket.receive_json()
+        assert completed["type"] == "desktop_action_test"
+        assert completed["receipt"] == {
+            "success": True,
+            "kind": "external_navigation",
+            "url": "https://www.youtube.com",
+            "browser": "firefox",
+            "launcher": "firefox",
+            "verification": "launcher_accepted",
+            "accepted_at": "2026-08-01T10:05:52Z",
+        }
 
 
 def test_websocket_interrupt_is_processed_while_agent_run_is_active(client, monkeypatch):
@@ -4372,7 +4988,15 @@ def test_plugin_lifecycle_permissions_and_builtin_actions(client):
     assert safe_link.json()["result"] == {
         "kind": "open_external",
         "url": "https://example.com/docs",
+        "browser": "default",
     }
+
+    invalid_browser = client.post("/plugins/browser-links/invoke", json={
+        "action": "open_url",
+        "session_id": session_id,
+        "arguments": {"url": "https://example.com", "browser": "untrusted"},
+    })
+    assert invalid_browser.status_code == 400
 
     disabled = client.patch("/plugins/visualize", json={"enabled": False})
     assert disabled.status_code == 200
@@ -4517,6 +5141,78 @@ def test_comfyui_graphs_cover_local_image_and_video_pipelines():
         },
     ]})
     assert rewired["nodes"][1]["inputs"][0]["link"] == 10
+
+
+@pytest.mark.asyncio
+async def test_comfyui_generate_image_auto_selects_available_default(monkeypatch):
+    from app.services.comfyui_service import ComfyUIService
+
+    service = ComfyUIService()
+    captured = {}
+
+    async def fake_inventory(**_kwargs):
+        return {
+            "checkpoints": [
+                "other-model.safetensors",
+                "RealVisXL_V5.0_Lightning_fp16.safetensors",
+            ],
+            "diffusion_models": ["qwen_image_2512_fp8_e4m3fn.safetensors"],
+            "loras": [],
+        }
+
+    async def fake_submit(graph, timeout, metadata):
+        captured["graph"] = graph
+        captured["timeout"] = timeout
+        captured["metadata"] = metadata
+        return {"completed": True, "files": []}
+
+    monkeypatch.setattr(service, "inventory", fake_inventory)
+    monkeypatch.setattr(service, "_submit_and_wait", fake_submit)
+
+    result = await service.generate_image(
+        "a blue ceramic mug",
+        width=256,
+        height=256,
+        steps=1,
+    )
+
+    assert result["completed"] is True
+    assert captured["graph"]["1"]["inputs"]["ckpt_name"] == (
+        "RealVisXL_V5.0_Lightning_fp16.safetensors"
+    )
+    assert captured["metadata"]["parameters"]["model"] == (
+        "RealVisXL_V5.0_Lightning_fp16.safetensors"
+    )
+
+
+@pytest.mark.asyncio
+async def test_comfyui_status_keeps_workflow_inventory_compact(monkeypatch):
+    from app.services.comfyui_service import ComfyUIService
+
+    service = ComfyUIService()
+    captured = {}
+
+    async def fake_ready():
+        return {"ready": True}
+
+    async def fake_get_json(_path, _timeout):
+        return {"system": {}, "devices": []}
+
+    async def fake_inventory(**kwargs):
+        captured.update(kwargs)
+        return {"workflows": [{"name": "sample", "path": "/sample.json"}]}
+
+    monkeypatch.setattr(service, "ensure_ready", fake_ready)
+    monkeypatch.setattr(service, "_get_json", fake_get_json)
+    monkeypatch.setattr(service, "inventory", fake_inventory)
+
+    result = await service.status()
+
+    assert result["ready"] is True
+    assert captured == {
+        "include_workflow_details": False,
+        "_ensure_runtime": False,
+    }
 
 
 @pytest.mark.asyncio
@@ -5129,3 +5825,236 @@ async def test_computer_use_stable_and_fuzzy_selectors_can_refresh_stale_snapsho
     assert point == (50, 32)
     assert snapshot_id == "refreshed"
     assert retried is True
+
+
+def test_automation_api_crud_manual_run_and_review(client, monkeypatch):
+    session_id = str(uuid4())
+
+    async def fake_background_executor(job):
+        assert job["permission_snapshot"]["mode"] == "read_only"
+        assert job["permission_snapshot"]["allowed_tools"] == []
+        return AutomationExecutionResult(
+            status="completed",
+            summary="后台摘要已生成",
+            budget_spent_usd=0.0123,
+        )
+
+    monkeypatch.setattr(automation_service, "_executor", fake_background_executor)
+    first_run = datetime.now(timezone.utc) + timedelta(hours=2)
+    payload = {
+        "session_id": session_id,
+        "name": "每小时只读摘要",
+        "prompt": "只读取当前会话并生成摘要，不修改任何文件。",
+        "mode": "project",
+        "targets": ["all"],
+        "trigger_type": "interval",
+        "interval_minutes": 60,
+        "timezone": "Asia/Chongqing",
+        "next_run_at": first_run.isoformat(),
+        "enabled": True,
+        "max_budget_usd": 0.5,
+        "permission_mode": "read_only",
+    }
+    created = client.post("/automations/schedules", json=payload)
+    assert created.status_code == 201
+    schedule = created.json()
+    assert schedule["permission_snapshot"]["allowed_tools"] == []
+    assert schedule["next_run_at"] == first_run.isoformat()
+
+    rejected = client.post(
+        "/automations/schedules",
+        json={**payload, "name": "不安全任务", "permission_mode": "full_access"},
+    )
+    assert rejected.status_code == 422
+
+    listed = client.get(
+        "/automations/schedules",
+        params={"session_id": session_id},
+    )
+    assert [item["id"] for item in listed.json()] == [schedule["id"]]
+
+    paused = client.patch(
+        f"/automations/schedules/{schedule['id']}",
+        json={"session_id": session_id, "enabled": False},
+    )
+    assert paused.status_code == 200
+    assert paused.json()["enabled"] is False
+
+    queued = client.post(
+        f"/automations/schedules/{schedule['id']}/run",
+        json={"session_id": session_id},
+    )
+    assert queued.status_code == 202
+    job_id = queued.json()["id"]
+
+    completed_job = None
+    for _ in range(100):
+        completed_job = automation_service.database.get_background_job(
+            job_id,
+            session_id=session_id,
+        )
+        if completed_job["status"] == "completed":
+            break
+        time.sleep(0.02)
+    assert completed_job is not None
+    assert completed_job["status"] == "completed"
+    assert completed_job["summary"] == "后台摘要已生成"
+    assert completed_job["budget_spent_usd"] == pytest.approx(0.0123)
+    assert completed_job["reviewed_at"] is None
+    listed_jobs = client.get(
+        "/automations/jobs",
+        params={"session_id": session_id},
+    )
+    assert listed_jobs.status_code == 200
+    assert listed_jobs.json()[0]["id"] == job_id
+
+    reviewed = client.post(
+        f"/automations/jobs/{job_id}/review",
+        json={"session_id": session_id},
+    )
+    assert reviewed.status_code == 200
+    assert reviewed.json()["reviewed_at"]
+    assert client.delete(
+        f"/automations/schedules/{schedule['id']}",
+        params={"session_id": session_id},
+    ).json()["deleted"] is True
+
+
+@pytest.mark.asyncio
+async def test_automation_scheduler_materializes_once_and_reclaims_expired_lease(tmp_path):
+    database = ChatDatabase(tmp_path / "automations.sqlite3")
+    session_id = str(uuid4())
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    calls = []
+
+    async def fake_executor(job):
+        calls.append(job["id"])
+        await asyncio.sleep(0)
+        return AutomationExecutionResult(status="completed", summary="ok")
+
+    schedule = database.create_automation_schedule(
+        session_id=session_id,
+        name="可恢复循环任务",
+        prompt="生成只读摘要",
+        mode="project",
+        targets=["all"],
+        trigger_type="interval",
+        interval_minutes=30,
+        timezone="UTC",
+        next_run_at=(now - timedelta(minutes=95)).isoformat(),
+        enabled=True,
+        max_budget_usd=1.0,
+        permission_snapshot={"policy_version": 1, "mode": "read_only", "allowed_tools": []},
+    )
+    service = AutomationService(
+        database,
+        AgentRunService(database),
+        poll_interval=0.01,
+        lease_seconds=6,
+        concurrency=1,
+        executor=fake_executor,
+    )
+    materialized = await service.run_cycle(now)
+    assert len(materialized) == 1
+    await asyncio.gather(*list(service._active_tasks.values()))
+    await service.run_cycle(now)
+    first_jobs = database.list_background_jobs(session_id)
+    assert len(first_jobs) == 1
+    assert first_jobs[0]["status"] == "completed"
+    assert first_jobs[0]["permission_snapshot"]["mode"] == "read_only"
+    advanced = database.get_automation_schedule(schedule["id"], session_id=session_id)
+    assert advanced is not None
+    assert datetime.fromisoformat(advanced["next_run_at"]) > now
+
+    stranded = database.create_background_job(
+        schedule_id=None,
+        session_id=session_id,
+        trigger_type="manual",
+        action={"content": "恢复我", "targets": ["all"], "mode": "project"},
+        permission_snapshot={"mode": "read_only", "allowed_tools": []},
+        max_budget_usd=1.0,
+        scheduled_for=now.isoformat(),
+    )
+    claimed = database.claim_background_job(
+        worker_id="dead-worker",
+        now=now.isoformat(),
+        lease_expires_at=(now - timedelta(seconds=1)).isoformat(),
+    )
+    assert claimed["id"] == stranded["id"]
+    assert claimed["attempt"] == 1
+
+    await service.run_cycle(now)
+    await asyncio.gather(*list(service._active_tasks.values()))
+    recovered = database.get_background_job(stranded["id"])
+    assert recovered is not None
+    assert recovered["status"] == "completed"
+    assert recovered["attempt"] == 2
+    assert calls.count(stranded["id"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_background_run_rejects_unapproved_side_effect_before_execution(tmp_path):
+    database = ChatDatabase(tmp_path / "background-read-only.sqlite3")
+    run_service = AgentRunService(database)
+    session_id = str(uuid4())
+    action = {
+        "content": "分析项目，并尝试写入一个文件",
+        "targets": ["solo"],
+        "mode": "casual",
+        "_background_job_id": str(uuid4()),
+        "_background_allowed_tools": [],
+        "_background_read_only": True,
+    }
+    run = run_service.create(session_id, action)
+    action["_agent_run_id"] = run["id"]
+
+    class BackgroundProvider(_FakeProvider):
+        def __init__(self):
+            super().__init__("solo")
+            self.calls = 0
+
+        async def stream_chat(self, messages, tools=None, **kwargs):
+            self.calls += 1
+            assert "write_artifact" not in {tool.name for tool in (tools or [])}
+            assert any(
+                "无人值守执行" in message.content
+                for message in messages
+                if message.role == "system"
+            )
+            if self.calls == 1:
+                yield {
+                    "delta": "",
+                    "usage": None,
+                    "tool_calls": [{
+                        "id": "blocked-background-write",
+                        "name": "write_artifact",
+                        "arguments": {
+                            "path": "must-not-exist.md",
+                            "content": "forbidden",
+                        },
+                    }],
+                }
+                return
+            observation = next(
+                message for message in reversed(messages) if message.role == "tool"
+            )
+            assert observation.tool_error is True
+            assert "后台权限快照不允许" in observation.content
+            yield {"delta": "已完成只读分析，未修改文件。", "usage": None}
+
+    orchestrator = SessionOrchestrator(session_id, mode="casual")
+    orchestrator.providers = {"solo": BackgroundProvider()}
+    orchestrator.refresh_providers = lambda: None
+    orchestrator.run_service = run_service
+    orchestrator.begin_agent_run(run["id"])
+    tool_runs_before = len(tool_registry.list_runs(session_id=session_id, limit=None))
+    async for event in orchestrator.stream_user_message(action):
+        run_service.observe(run["id"], event)
+    completed = run_service.finish(run["id"])
+
+    assert completed["status"] == "completed"
+    assert len(tool_registry.list_runs(session_id=session_id, limit=None)) == tool_runs_before
+    calls = database.list_agent_tool_calls(run["id"])
+    assert len(calls) == 1
+    assert calls[0]["status"] == "denied"
+    assert calls[0]["result"]["status"] == "denied"

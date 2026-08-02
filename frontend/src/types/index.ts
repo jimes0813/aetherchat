@@ -11,6 +11,13 @@ export interface Message {
   cost_usd?: number;
   attachments?: KnowledgeAttachment[];
   generated_files?: GeneratedFile[];
+  reasoning_summary?: ReasoningStep[];
+}
+
+export interface ReasoningStep {
+  phase: 'analysis' | 'tool' | 'result' | 'final';
+  detail: string;
+  ts?: string;
 }
 
 export interface GeneratedFile {
@@ -21,6 +28,12 @@ export interface GeneratedFile {
   size_bytes?: number;
   kind?: string;
   source?: string;
+}
+
+export interface GeneratedFileView {
+  location?: string | null;
+  preview_url?: string | null;
+  mime_type?: string;
 }
 
 export interface KnowledgeAttachment {
@@ -48,6 +61,7 @@ export interface ApprovalRequest {
   allow_session: boolean;
   created_at: string;
   decision?: 'allow_once' | 'allow_session' | 'deny';
+  feedback?: string;
 }
 
 export interface SessionMemory {
@@ -322,6 +336,68 @@ export interface Task {
   ready?: boolean;
 }
 
+export interface AutomationSchedule {
+  id: string;
+  session_id: string;
+  name: string;
+  prompt: string;
+  mode: 'casual' | 'roundtable' | 'project';
+  targets: string[];
+  trigger_type: 'once' | 'interval';
+  interval_minutes?: number | null;
+  timezone: string;
+  next_run_at?: string | null;
+  enabled: boolean;
+  max_budget_usd: number;
+  permission_snapshot: {
+    policy_version?: number;
+    mode: 'read_only';
+    allowed_tools: string[];
+    captured_at?: string;
+  };
+  last_run_at?: string | null;
+  last_status?: BackgroundJobStatus | null;
+  last_error?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type BackgroundJobStatus =
+  | 'queued'
+  | 'running'
+  | 'cancel_requested'
+  | 'waiting_review'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export interface BackgroundJob {
+  id: string;
+  schedule_id?: string | null;
+  schedule_name?: string | null;
+  session_id: string;
+  agent_run_id?: string | null;
+  trigger_type: 'schedule' | 'manual';
+  status: BackgroundJobStatus;
+  action: {
+    content?: string;
+    targets?: string[];
+    mode?: string;
+  };
+  permission_snapshot: AutomationSchedule['permission_snapshot'];
+  max_budget_usd: number;
+  budget_spent_usd: number;
+  scheduled_for: string;
+  attempt: number;
+  summary: string;
+  error?: string | null;
+  reviewed_at?: string | null;
+  created_at: string;
+  updated_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+}
+
 export interface Artifact {
   id: string;
   session_id: string;
@@ -356,6 +432,7 @@ export interface WorkspaceSettings {
   sandbox: 'Docker 严格沙箱' | '只读预览' | '关闭执行';
   language: '中文优先' | '中英双语';
   uiLocale: 'zh-CN' | 'en-US';
+  reasoningDisplay: '显示' | '隐藏';
 }
 
 export interface ToolItem {
@@ -388,7 +465,7 @@ export interface ToolRun {
 }
 
 export interface WSMessage {
-  type: 'ack' | 'system' | 'delta' | 'provider_status' | 'stream_reset' | 'message_complete' | 'task_update' | 'artifact_update' | 'cost_update' | 'user_message' | 'tool_update' | 'tool_run' | 'tool_call' | 'tool_result' | 'tool_result_replayed' | 'approval_required' | 'approval_resolved' | 'agent_run_update' | 'plan_created' | 'plan_confirmation_required' | 'plan_updated' | 'plan_replanned' | 'plan_rejected' | 'plan_step_update' | 'plan_step_output' | 'review_recorded' | 'workspace_verified' | 'steer_ack' | 'steer_applied' | 'interrupted' | 'error';
+  type: 'ack' | 'system' | 'delta' | 'provider_status' | 'reasoning_step' | 'stream_reset' | 'message_complete' | 'task_update' | 'artifact_update' | 'cost_update' | 'user_message' | 'tool_update' | 'tool_run' | 'tool_call' | 'tool_result' | 'tool_result_replayed' | 'desktop_action_required' | 'approval_required' | 'approval_resolved' | 'agent_run_update' | 'plan_created' | 'plan_confirmation_required' | 'plan_updated' | 'plan_replanned' | 'plan_rejected' | 'plan_step_update' | 'plan_step_output' | 'review_recorded' | 'workspace_verified' | 'steer_ack' | 'steer_applied' | 'interrupted' | 'error';
   model?: string;
   delta?: string;
   seq?: number;
@@ -402,6 +479,7 @@ export interface WSMessage {
   approval?: ApprovalRequest;
   approval_id?: string;
   decision?: ApprovalRequest['decision'];
+  feedback?: string;
   agent_run?: AgentRun;
   goal?: AgentGoal;
   plan_steps?: AgentPlanStep[];
@@ -419,6 +497,12 @@ export interface WSMessage {
   targets?: string[];
   tool_call_id?: string;
   tool_name?: string;
+  action_id?: string;
+  desktop_action?: {
+    kind: 'open_external';
+    url: string;
+    browser: 'default' | 'firefox';
+  };
   generated_files?: GeneratedFile[];
   phase?: 'preparing' | 'requesting' | 'streaming' | 'tool' | 'finalizing';
   detail?: string;
@@ -429,6 +513,8 @@ export interface WSMessage {
   round_index?: number;
   first_token_ms?: number;
   elapsed_ms?: number;
+  step?: ReasoningStep;
+  reset?: boolean;
 }
 
 export interface Provider {

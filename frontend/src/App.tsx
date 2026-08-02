@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
+  AlarmClock,
   Archive,
   Brain,
   Bot,
@@ -37,6 +38,8 @@ import {
   X,
 } from 'lucide-react';
 import { Composer } from './components/Composer';
+import { AutomationPanel } from './components/AutomationPanel';
+import { ModelWorkingStrip, type AgentActivityItem } from './components/ModelWorkingStrip';
 import { TaskBoard } from './components/TaskBoard';
 import { UnifiedFeed } from './components/UnifiedFeed';
 import { SafeMarkdown } from './components/SafeMarkdown';
@@ -44,24 +47,10 @@ import { useDialogFocus } from './components/useDialogFocus';
 import { useI18n } from './i18n';
 import { useSessionStore } from './stores/sessionStore';
 import { connectWS } from './ws/client';
-import type { AgentRun, AgentWorkspaceCandidate, ApprovalRequest, Conversation, GeneratedFile, GitRepository, KnowledgeAttachment, MCPConnection, MergeProposal, Message, ModelConfig, PluginInvokeResult, PluginItem, SessionMemory, Task, TaskEvent, ToolItem, ToolRun, WorkspaceSettings, WSMessage } from './types';
+import type { AgentRun, AgentWorkspaceCandidate, ApprovalRequest, Conversation, GeneratedFile, GeneratedFileView, GitRepository, KnowledgeAttachment, MCPConnection, MergeProposal, Message, ModelConfig, PluginInvokeResult, PluginItem, SessionMemory, Task, TaskEvent, ToolItem, ToolRun, WorkspaceSettings, WSMessage } from './types';
 
 const API_BASE = window.aetherRuntime?.apiBase ?? import.meta.env.VITE_API_BASE ?? 'http://localhost:8000';
 let apiAuthToken = '';
-
-type AgentActivityItem = {
-  model: string;
-  phase: 'preparing' | 'requesting' | 'streaming' | 'thinking' | 'tool' | 'waiting' | 'running' | 'finalizing';
-  toolName?: string;
-  startedAt: number;
-  detail?: string;
-  contextMessages?: number;
-  contextTokens?: number;
-  toolCount?: number;
-  toolSchemaTokens?: number;
-  roundIndex?: number;
-  firstTokenMs?: number;
-};
 
 function withApiAuth(init: RequestInit = {}): RequestInit {
   const headers = new Headers(init.headers);
@@ -171,6 +160,15 @@ type ArtifactVersion = {
   content_encoding: 'utf-8' | 'base64' | 'external';
 };
 
+type LaunchIntent = {
+  id: string;
+  action: 'compose';
+  prompt: string;
+  mode: 'casual' | 'roundtable' | 'project' | null;
+  newConversation: boolean;
+  source: 'protocol' | 'shortcut';
+};
+
 const formatDateTime = (value?: string | null) => {
   if (!value) return '尚未开始';
   return new Intl.DateTimeFormat(document.documentElement.lang === 'en-US' ? 'en-US' : 'zh-CN', {
@@ -231,6 +229,16 @@ type DesktopScreenshotSaveResult = {
   sizeBytes: number;
 };
 
+type ExternalNavigationReceipt = {
+  success: true;
+  kind: 'external_navigation';
+  url: string;
+  browser: 'default' | 'firefox';
+  launcher: 'system_default' | 'firefox';
+  verification: 'launcher_accepted';
+  accepted_at: string;
+};
+
 declare global {
   interface Window {
     aetherWindow?: {
@@ -243,13 +251,21 @@ declare global {
       backendStatus: 'starting' | 'ready' | 'unavailable';
       appVersion?: string;
       platform?: string;
+      quickEntryShortcut?: string;
       getApiToken?: () => Promise<string>;
-      openExternal?: (url: string) => Promise<boolean>;
+      openExternal?: (
+        url: string,
+        options?: { browser?: 'default' | 'firefox' },
+      ) => Promise<ExternalNavigationReceipt>;
       openArtifact?: (
         sessionId: string,
         path: string,
         action?: 'open' | 'reveal',
       ) => Promise<{ opened: boolean; action: 'open' | 'reveal'; displayName: string }>;
+      onLaunchIntent?: (callback: (intent: LaunchIntent) => void) => () => void;
+      onBackgroundChange?: (
+        callback: (payload: { reviewItems: number }) => void,
+      ) => () => void;
     };
     aetherDesktop?: {
       status: () => Promise<Record<string, unknown>>;
@@ -291,6 +307,7 @@ function App() {
     setMessages,
     setConversations,
     addDelta,
+    addReasoningStep,
     resetStream,
     finishStream,
     setBudget,
@@ -313,7 +330,7 @@ function App() {
   } = useSessionStore();
   const { locale, t, ui } = useI18n();
   const activePanelLabel = activePanel ? ({
-    记忆: t('memory'), 资料: t('knowledge'), 任务: t('tasks'), 工件: t('artifacts'), 合并: t('changes'),
+    记忆: t('memory'), 资料: t('knowledge'), 任务: t('tasks'), 自动化: t('automations'), 工件: t('artifacts'), 合并: t('changes'),
     工具: t('tools'), 插件: t('plugins'), 连接: t('connections'), 电脑: t('computer'), 模型: t('models'),
     运行: t('runs'), 设置: t('settings'),
   } as Record<string, string>)[activePanel] : ui('检查器');
@@ -331,12 +348,20 @@ function App() {
   const [agentActivity, setAgentActivity] = useState<Record<string, AgentActivityItem>>({});
   const [gitRepository, setGitRepository] = useState<GitRepository | null>(null);
   const [verificationCommands, setVerificationCommands] = useState('');
+  const [pendingLaunchIntent, setPendingLaunchIntent] = useState<LaunchIntent | null>(null);
+  const [composerDraft, setComposerDraft] = useState<{ id: string; text: string; clear?: boolean } | null>(null);
   const inspectorDialog = useDialogFocus<HTMLDivElement>(Boolean(activePanel), () => setActivePanel(null));
 
   useEffect(() => {
     document.documentElement.lang = locale;
     document.title = locale === 'en-US' ? 'AetherChat Desktop' : 'AetherChat 中文协作工作台';
   }, [locale]);
+
+  useEffect(() => window.aetherRuntime?.onLaunchIntent?.((intent) => {
+    if (intent?.action === 'compose' && typeof intent.id === 'string') {
+      setPendingLaunchIntent(intent);
+    }
+  }), []);
 
   useEffect(() => {
     setAgentActivity({});
@@ -483,20 +508,66 @@ function App() {
     void loadConversations();
   }, [authReady, authToken]);
 
-  const createPersistentConversation = async () => {
+  useEffect(() => {
+    if (!authReady || !authToken) return undefined;
+    return window.aetherRuntime?.onBackgroundChange?.(() => {
+      fetchJson<Message[]>(
+        `${API_BASE}/sessions/${sessionId}/messages?limit=5000`,
+      ).then(setMessages).catch(() => undefined);
+      fetchJson<AgentRun[]>(
+        `${API_BASE}/agent-runs?session_id=${encodeURIComponent(sessionId)}`,
+      ).then(setAgentRuns).catch(() => undefined);
+      void loadConversations();
+    });
+  }, [authReady, authToken, sessionId, setMessages, setConversations]);
+
+  const createPersistentConversation = async (
+    modeOverride?: 'casual' | 'roundtable' | 'project' | null,
+  ) => {
     try {
+      const requestedMode = modeOverride || currentMode;
       const session = await fetchJson<StoredSession>(`${API_BASE}/sessions/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: '新协作会话', mode: currentMode }),
+        body: JSON.stringify({ title: '新协作会话', mode: requestedMode }),
       });
       selectConversation(session.id);
       setMainView('chat');
       await loadConversations();
+      return session.id;
     } catch (error) {
       setNotice(`新建会话失败：${String(error)}`);
+      return null;
     }
   };
+
+  useEffect(() => {
+    if (!pendingLaunchIntent || !authReady || !authToken) return undefined;
+    let cancelled = false;
+    const applyLaunchIntent = async () => {
+      const requestedMode = pendingLaunchIntent.mode;
+      if (requestedMode) {
+        updateSettings({ mode: MODE_TO_SETTING[requestedMode] });
+      }
+      if (pendingLaunchIntent.newConversation) {
+        await createPersistentConversation(requestedMode);
+      }
+      if (cancelled) return;
+      setMainView('chat');
+      setActivePanel(null);
+      setComposerDraft({
+        id: pendingLaunchIntent.id,
+        text: pendingLaunchIntent.prompt,
+        clear: pendingLaunchIntent.newConversation,
+      });
+      setPendingLaunchIntent(null);
+      setNotice(pendingLaunchIntent.source === 'shortcut'
+        ? '快速输入已就绪'
+        : '已从 AetherChat 链接载入输入内容');
+    };
+    void applyLaunchIntent();
+    return () => { cancelled = true; };
+  }, [pendingLaunchIntent, authReady, authToken]);
   const fetchToken = async () => {
     try {
       const desktopToken = await window.aetherRuntime?.getApiToken?.();
@@ -518,6 +589,41 @@ function App() {
     if (!authReady || !authToken) return;
     setConnection('connecting');
     wsClient.current = connectWS(sessionId, (event: WSMessage) => {
+      if (
+        event.type === 'desktop_action_required'
+        && event.action_id
+        && event.desktop_action?.kind === 'open_external'
+      ) {
+        const actionId = event.action_id;
+        const url = String(event.desktop_action.url || '');
+        const browser = event.desktop_action.browser === 'firefox' ? 'firefox' : 'default';
+        void (async () => {
+          try {
+            if (!window.aetherRuntime?.openExternal) {
+              throw new Error('当前不是可执行外部导航的 AetherChat 桌面环境');
+            }
+            const receipt = await window.aetherRuntime.openExternal(url, { browser });
+            const sent = wsClient.current?.sendAction({
+              type: 'desktop_action_result',
+              action_id: actionId,
+              success: true,
+              receipt,
+            });
+            if (!sent) throw new Error('桌面启动成功，但运行连接已断开，无法写入执行凭证');
+            setNotice(browser === 'firefox'
+              ? 'Firefox 已接受打开链接请求'
+              : '系统浏览器已接受打开链接请求');
+          } catch (error) {
+            wsClient.current?.sendAction({
+              type: 'desktop_action_result',
+              action_id: actionId,
+              success: false,
+              error: String(error),
+            });
+            setNotice(`外部导航失败：${String(error)}`);
+          }
+        })();
+      }
       if (event.type === 'provider_status' && event.model && event.phase) {
         setAgentActivity((items) => ({
           ...items,
@@ -525,6 +631,7 @@ function App() {
             model: event.model!,
             phase: event.phase!,
             startedAt: items[event.model!]?.startedAt ?? Date.now(),
+            updatedAt: Date.now(),
             toolName: items[event.model!]?.toolName,
             detail: event.detail,
             contextMessages: event.context_messages,
@@ -545,8 +652,12 @@ function App() {
             model: event.model!,
             phase: 'streaming',
             startedAt: items[event.model!]?.startedAt ?? Date.now(),
+            updatedAt: Date.now(),
           },
         }));
+      }
+      if (event.type === 'reasoning_step' && event.model && event.step) {
+        addReasoningStep(event.model, event.step, Boolean(event.reset));
       }
       if (event.type === 'stream_reset' && event.model) resetStream(event.model);
       if (event.type === 'message_complete' && event.message) {
@@ -588,6 +699,7 @@ function App() {
             phase: 'waiting',
             toolName: event.approval!.tool_name,
             startedAt: items[event.approval!.model]?.startedAt ?? Date.now(),
+            updatedAt: Date.now(),
           },
         }));
         setApprovals((items) => items.some((item) => item.id === event.approval?.id)
@@ -604,12 +716,13 @@ function App() {
               phase: 'tool',
               toolName: resumed.toolName,
               startedAt: items[resumed.model]?.startedAt ?? Date.now(),
+              updatedAt: Date.now(),
             },
           }));
           delete approvalActivity.current[event.approval_id];
         }
         setApprovals((items) => items.map((item) => item.id === event.approval_id
-          ? { ...item, decision: event.decision }
+          ? { ...item, decision: event.decision, feedback: event.feedback || item.feedback }
           : item));
       }
       if (event.type === 'tool_call' && event.model && event.tool_name) {
@@ -621,6 +734,7 @@ function App() {
             phase: 'tool',
             toolName: event.tool_name,
             startedAt: items[event.model!]?.startedAt ?? Date.now(),
+            updatedAt: Date.now(),
           },
         }));
       }
@@ -636,6 +750,7 @@ function App() {
             phase: 'requesting',
             detail: '工具执行完成，正在等待模型继续',
             startedAt: items[event.model!]?.startedAt ?? Date.now(),
+            updatedAt: Date.now(),
           },
         }));
       }
@@ -724,6 +839,7 @@ function App() {
                   model,
                   phase: 'running',
                   startedAt: items[model]?.startedAt ?? Date.now(),
+                  updatedAt: Date.now(),
                 },
               };
             }
@@ -776,22 +892,25 @@ function App() {
       if (event.type === 'plan_step_output' && event.model) finishStream(event.model);
       if (event.type === 'steer_ack') setNotice(t('steerQueued'));
       if (event.type === 'cost_update' && typeof event.budget_remaining === 'number') setBudget(event.budget_remaining);
+      if (event.type === 'interrupted' && event.model) {
+        finishStream(event.model);
+        setAgentActivity((items) => {
+          const next = { ...items };
+          delete next[event.model!];
+          return next;
+        });
+      }
       if (event.type === 'error' && (event as any).message) {
+        const errorMessage = String((event as any).message);
         if (event.model) {
+          finishStream(event.model);
           setAgentActivity((items) => {
             const next = { ...items };
             delete next[event.model!];
             return next;
           });
         }
-        addMessage({
-          id: crypto.randomUUID(),
-          session_id: sessionId,
-          author_model: '系统',
-          role: 'system',
-          content: String((event as any).message),
-          created_at: new Date().toISOString(),
-        });
+        setNotice(errorMessage);
       }
       if (event.type === 'ack' || ((event as any).type === 'system' && (event as any).content === 'Connected')) setConnection('online');
       if ((event as any).type === 'system' && (event as any).content === 'Disconnected') setConnection('offline');
@@ -827,7 +946,7 @@ function App() {
   }, [setActivePanel]);
 
   const commandItems = useMemo<CommandItem[]>(() => {
-    const panels = (['记忆', '资料', '任务', '工件', '合并', '工具', '插件', '连接', '电脑', '模型', '运行', '设置'] as const).map((panel) => ({
+    const panels = (['记忆', '资料', '任务', '自动化', '工件', '合并', '工具', '插件', '连接', '电脑', '模型', '运行', '设置'] as const).map((panel) => ({
       id: `panel-${panel}`,
       label: `打开${panel}面板`,
       hint: '命令',
@@ -889,14 +1008,7 @@ function App() {
       } : {}),
     });
     if (!sent) {
-      addMessage({
-        id: crypto.randomUUID(),
-        session_id: sessionId,
-        author_model: '系统',
-        role: 'system',
-        content: '后端未连接，消息未发送。内容仍保留在输入框中，请等待连接恢复后重试。',
-        created_at: new Date().toISOString(),
-      });
+      setNotice('后端未连接，消息未发送。内容仍保留在输入框中，请等待连接恢复后重试。');
     }
     return Boolean(sent);
   };
@@ -1012,14 +1124,22 @@ function App() {
   const decideApproval = async (
     approval: ApprovalRequest,
     decision: 'allow_once' | 'allow_session' | 'deny',
+    feedback = '',
   ) => {
+    const normalizedFeedback = decision === 'deny' ? feedback.trim() : '';
     try {
       await fetchJson(`${API_BASE}/approvals/${approval.id}/decision`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId, decision }),
+        body: JSON.stringify({
+          session_id: sessionId,
+          decision,
+          ...(normalizedFeedback ? { feedback: normalizedFeedback } : {}),
+        }),
       });
-      setApprovals((items) => items.map((item) => item.id === approval.id ? { ...item, decision } : item));
+      setApprovals((items) => items.map((item) => item.id === approval.id
+        ? { ...item, decision, feedback: normalizedFeedback || undefined }
+        : item));
     } catch (error) {
       setNotice(`授权处理失败：${String(error)}`);
     }
@@ -1190,6 +1310,46 @@ function App() {
     setActivePanel('工件');
   };
 
+  const resolveGeneratedFile = useCallback(async (
+    file: GeneratedFile,
+    includePreview = false,
+  ): Promise<GeneratedFileView> => {
+    if (!file.path) {
+      return {
+        location: file.url || null,
+        preview_url: includePreview ? file.url || null : null,
+        mime_type: file.mime_type,
+      };
+    }
+    const encodedPath = file.path.split('/').map(encodeURIComponent).join('/');
+    const location = await fetchJson<{
+      path: string;
+      mime_type?: string;
+    }>(
+      `${API_BASE}/artifacts/${encodedPath}/native-location?session_id=${encodeURIComponent(sessionId)}`,
+    );
+    const mimeType = location.mime_type || file.mime_type || 'application/octet-stream';
+    const safeInlineMedia = (
+      /^(image\/(?:png|jpeg|webp|gif)|video\/|audio\/)/i.test(mimeType)
+    );
+    if (!includePreview || !safeInlineMedia) {
+      return { location: location.path, mime_type: mimeType };
+    }
+    const response = await fetch(
+      `${API_BASE}/artifacts/${encodedPath}/content?session_id=${encodeURIComponent(sessionId)}`,
+      withApiAuth(),
+    );
+    if (!response.ok) {
+      throw new Error(`文件预览加载失败：HTTP ${response.status}`);
+    }
+    const blob = await response.blob();
+    return {
+      location: location.path,
+      preview_url: URL.createObjectURL(blob),
+      mime_type: mimeType,
+    };
+  }, [sessionId]);
+
   const openGeneratedFile = async (
     file: GeneratedFile,
     action: 'open' | 'reveal',
@@ -1222,6 +1382,9 @@ function App() {
     }
   };
 
+  const sessionApprovals = approvals.filter((item) => item.session_id === sessionId);
+  const pendingApprovals = sessionApprovals.filter((item) => !item.decision);
+
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-[#e9e1d6] text-[#2f2a24]">
       <a href="#aether-main-content" className="aether-skip-link">Skip to main content / 跳到主要内容</a>
@@ -1244,8 +1407,6 @@ function App() {
             connection={connection}
             providerCount={providers.length}
             activeProviderCount={modelConfigs.filter((model) => model.type === 'local' || model.has_api_key).length}
-            agentActivity={agentActivity}
-            agentRuns={agentRuns}
             budgetRemaining={budget.remaining}
             spendPct={spendPct}
             mode={workspaceSettings.mode}
@@ -1275,10 +1436,11 @@ function App() {
           <MainViewTabs value={mainView} onChange={setMainView} />
           {mainView === 'chat' && (
             <UnifiedFeed
-              approvals={approvals.filter((item) => item.session_id === sessionId)}
-              onApprovalDecision={(approval, decision) => void decideApproval(approval, decision)}
+              approvals={sessionApprovals.filter((item) => Boolean(item.decision))}
               onInspectGeneratedFile={inspectGeneratedFile}
+              onResolveGeneratedFile={resolveGeneratedFile}
               onOpenGeneratedFile={(file, action) => void openGeneratedFile(file, action)}
+              onOpenRunHistory={() => setActivePanel('运行')}
             />
           )}
           {mainView === 'history' && (
@@ -1293,12 +1455,17 @@ function App() {
             />
           )}
           {mainView === 'tasks' && <TaskHistory tasks={tasks} events={taskEvents} />}
+          {mainView === 'chat' && <ModelWorkingStrip activity={agentActivity} />}
           {mainView === 'chat' && (
             <Composer
               onSend={sendMessage}
               onUpload={uploadAttachments}
               providers={providers.map((provider) => provider.name)}
               onInterrupt={(scope) => wsClient.current?.sendAction({ type: 'interrupt', scope })}
+              draft={composerDraft}
+              approval={pendingApprovals[0]}
+              queuedApprovalCount={Math.max(0, pendingApprovals.length - 1)}
+              onApprovalDecision={decideApproval}
             />
           )}
         </section>
@@ -1437,6 +1604,7 @@ function ActivityRail({ activePanel, setActivePanel }: ActivityRailProps) {
     { label: t('memory'), icon: Brain, panel: '记忆' },
     { label: t('knowledge'), icon: FolderOpen, panel: '资料' },
     { label: t('tasks'), icon: LayoutList, panel: '任务' },
+    { label: t('automations'), icon: AlarmClock, panel: '自动化' },
     { label: t('artifacts'), icon: FileCode2, panel: '工件' },
     { label: t('changes'), icon: GitMerge, panel: '合并' },
     { label: t('tools'), icon: Wrench, panel: '工具' },
@@ -1777,8 +1945,6 @@ interface CommandHeaderProps {
   connection: ReturnType<typeof useSessionStore.getState>['connection'];
   providerCount: number;
   activeProviderCount: number;
-  agentActivity: Record<string, AgentActivityItem>;
-  agentRuns: AgentRun[];
   budgetRemaining: number;
   spendPct: number;
   mode: string;
@@ -1790,8 +1956,6 @@ function CommandHeader({
   connection,
   providerCount,
   activeProviderCount,
-  agentActivity,
-  agentRuns,
   budgetRemaining,
   spendPct,
   mode,
@@ -1799,69 +1963,6 @@ function CommandHeader({
   onOpenSearch,
 }: CommandHeaderProps) {
   const { ui } = useI18n();
-  const [now, setNow] = useState(Date.now());
-  const activeAgents = Object.values(agentActivity);
-  useEffect(() => {
-    if (!activeAgents.length) return undefined;
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [activeAgents.length]);
-  const activeRun = agentRuns.find((run) => (
-    ['queued', 'running', 'waiting_approval'].includes(run.status)
-  ));
-  const historicalDurations = agentRuns
-    .filter((run) => run.status === 'completed' && run.completed_at)
-    .map((run) => (
-      Date.parse(run.completed_at!) - Date.parse(run.started_at || run.created_at)
-    ))
-    .filter((duration) => duration > 0 && duration < 24 * 60 * 60 * 1000)
-    .sort((left, right) => left - right);
-  const medianDuration = historicalDurations.length
-    ? historicalDurations[Math.floor(historicalDurations.length / 2)]
-    : null;
-  const elapsed = activeRun
-    ? Math.max(0, now - Date.parse(activeRun.started_at || activeRun.created_at))
-    : 0;
-  const estimatedRemaining = medianDuration === null
-    ? null
-    : Math.max(0, medianDuration - elapsed);
-  const durationLabel = (milliseconds: number) => {
-    const seconds = Math.max(0, Math.round(milliseconds / 1000));
-    if (seconds < 60) return `${seconds} 秒`;
-    return `${Math.ceil(seconds / 60)} 分钟`;
-  };
-  const primaryActivity = activeAgents[0];
-  const phaseLabel = primaryActivity?.phase === 'tool'
-    ? `调用 ${primaryActivity.toolName || '工具'}`
-    : primaryActivity?.phase === 'waiting'
-      ? `等待授权${primaryActivity.toolName ? ` · ${primaryActivity.toolName}` : ''}`
-      : primaryActivity?.phase === 'running'
-        ? '执行计划步骤'
-        : primaryActivity?.phase === 'requesting'
-          ? '等待模型首个 token'
-          : primaryActivity?.phase === 'streaming'
-            ? '正在流式生成'
-            : primaryActivity?.phase === 'finalizing'
-              ? '正在保存结果'
-              : primaryActivity?.phase === 'preparing'
-                ? '正在整理上下文'
-                : '正在生成';
-  const factualStatus = primaryActivity
-    ? [
-        primaryActivity.contextMessages !== undefined
-          ? `上下文 ${primaryActivity.contextMessages} 条`
-          : '',
-        primaryActivity.contextTokens !== undefined
-          ? `约 ${primaryActivity.contextTokens.toLocaleString()} tokens`
-          : '',
-        primaryActivity.toolCount !== undefined
-          ? `工具 ${primaryActivity.toolCount} 个`
-          : '',
-        primaryActivity.firstTokenMs !== undefined
-          ? `首 token ${(primaryActivity.firstTokenMs / 1000).toFixed(1)} 秒`
-          : '',
-      ].filter(Boolean).join(' · ')
-    : '';
   return (
     <header className="flex h-14 items-center gap-3 border-b border-[#e7dfd3] bg-[#fbfaf7] px-4">
       <div className="min-w-0">
@@ -1873,32 +1974,6 @@ function CommandHeader({
         {ui('Ctrl+K 搜索命令、文件、模型或任务')}
       </button>
       <div className="ml-auto flex items-center gap-2">
-        {primaryActivity && (
-          <div
-            className="aether-agent-status relative flex max-w-80 items-center gap-2 overflow-hidden rounded-lg border border-[#91b8ca] bg-[#eaf5f9] px-2 py-2 text-xs text-[#285a72] xl:px-3"
-            aria-live="polite"
-            aria-label={`${primaryActivity.model} · ${phaseLabel}`}
-            title={`${primaryActivity.detail || phaseLabel}${factualStatus ? `\n${factualStatus}` : ''}`}
-          >
-            <span className="aether-agent-orbit relative h-3 w-3 shrink-0 rounded-full bg-[#397c9d]" />
-            <div className="min-w-0 xl:hidden">
-              <div className="max-w-36 truncate font-semibold">{primaryActivity.model} / {phaseLabel}</div>
-            </div>
-            <div className="hidden min-w-0 xl:block">
-              <div className="truncate font-semibold">
-                {primaryActivity.model}{activeAgents.length > 1 ? ` +${activeAgents.length - 1}` : ''} · {phaseLabel}
-              </div>
-              <div className="truncate text-[10px] text-[#58788a]">
-                已运行 {durationLabel(now - primaryActivity.startedAt)}
-                {' · '}
-                {estimatedRemaining === null ? '预计剩余：估算中' : `预计剩余约 ${durationLabel(estimatedRemaining)}`}
-              </div>
-              <div className="max-w-72 truncate text-[10px] text-[#416d80]">
-                {factualStatus || primaryActivity.detail || '等待运行数据'}
-              </div>
-            </div>
-          </div>
-        )}
         <div className="flex items-center gap-2 rounded-lg border border-[#e1d9cd] bg-white px-3 py-2 text-xs text-[#6d6258]">
           <Users size={15} />
           {ui('{active}/{total} 个模型已配置', { active: activeProviderCount, total: providerCount })}
@@ -2074,7 +2149,7 @@ function InspectorPanel(props: InspectorProps) {
   } = useSessionStore();
   const { t, ui } = useI18n();
   const activePanelLabel = activePanel ? ({
-    记忆: t('memory'), 资料: t('knowledge'), 任务: t('tasks'), 工件: t('artifacts'), 合并: t('changes'),
+    记忆: t('memory'), 资料: t('knowledge'), 任务: t('tasks'), 自动化: t('automations'), 工件: t('artifacts'), 合并: t('changes'),
     工具: t('tools'), 插件: t('plugins'), 连接: t('connections'), 电脑: t('computer'), 模型: t('models'),
     运行: t('runs'), 设置: t('settings'),
   } as Record<string, string>)[activePanel] : ui('检查器');
@@ -2100,7 +2175,9 @@ function InspectorPanel(props: InspectorProps) {
   const [modelRuntime, setModelRuntime] = useState<'external' | 'llama_cpp'>('external');
   const [modelPath, setModelPath] = useState('');
   const [modelExecutable, setModelExecutable] = useState('/usr/local/bin/llama-server');
-  const [modelRuntimeArgs, setModelRuntimeArgs] = useState('--n-gpu-layers\n-1\n--ctx-size\n32768\n--flash-attn\non');
+  const [modelRuntimeArgs, setModelRuntimeArgs] = useState(
+    '--n-gpu-layers\n-1\n--ctx-size\n32768\n--flash-attn\non\n--parallel\n1',
+  );
   const [editingModelName, setEditingModelName] = useState<string | null>(null);
   const [modelVerifyStatus, setModelVerifyStatus] = useState('未验证');
   const [knowledgeAttachments, setKnowledgeAttachments] = useState<KnowledgeAttachment[]>([]);
@@ -2567,9 +2644,9 @@ function InspectorPanel(props: InspectorProps) {
     <aside aria-label={`${activePanelLabel} panel`} className="aether-inspector-shell flex h-full min-h-0 flex-col overflow-hidden bg-[#f2eadf]">
       <div className="border-b border-[#d8cfc3] p-3">
         <div className="flex items-center gap-2">
-          <div className="grid min-w-0 flex-1 grid-cols-12 gap-1 rounded-lg bg-[#e4dbcf] p-1">
+          <div className="grid min-w-0 flex-1 grid-cols-7 gap-1 rounded-lg bg-[#e4dbcf] p-1">
             {([
-              ['记忆', t('memory')], ['资料', t('knowledge')], ['任务', t('tasks')], ['工件', t('artifacts')],
+              ['记忆', t('memory')], ['资料', t('knowledge')], ['任务', t('tasks')], ['自动化', t('automations')], ['工件', t('artifacts')],
               ['合并', t('changes')], ['工具', t('tools')], ['插件', t('plugins')], ['连接', t('connections')],
               ['电脑', t('computer')], ['模型', t('models')], ['运行', t('runs')], ['设置', t('settings')],
             ] as const).map(([panel, label]) => (
@@ -2803,6 +2880,18 @@ function InspectorPanel(props: InspectorProps) {
             </label>
           )}
           <TaskBoard onPatchTask={props.onPatchTask} />
+        </div>
+      )}
+
+      {activePanel === '自动化' && (
+        <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto">
+          <AutomationPanel
+            apiBase={props.apiBase}
+            sessionId={props.sessionId}
+            models={modelConfigs.map((model) => model.name)}
+            request={fetchJson}
+            onOpenRuns={() => setActivePanel('运行')}
+          />
         </div>
       )}
 
@@ -3236,11 +3325,12 @@ function InspectorPanel(props: InspectorProps) {
             ['sandbox', '沙箱策略', ['Docker 严格沙箱', '只读预览', '关闭执行']],
             ['language', '语言策略', ['中文优先', '中英双语']],
             ['uiLocale', t('uiLanguage'), ['zh-CN', 'en-US']],
+            ['reasoningDisplay', '思考过程摘要', ['显示', '隐藏']],
           ] as Array<[keyof WorkspaceSettings, string, string[]]>).map(([key, label, options]) => (
             <label key={String(key)} className="mb-4 block">
               <span className="mb-1 block text-xs font-semibold text-[#7a7065]">{ui(String(label))}</span>
               <select
-                value={workspaceSettings[key]}
+                value={workspaceSettings[key] ?? (key === 'reasoningDisplay' ? '显示' : '')}
                 onChange={(event) => props.onUpdateSettings({ [key]: event.target.value } as Partial<WorkspaceSettings>)}
                 className="h-10 w-full rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none"
               >
@@ -3558,10 +3648,16 @@ function PluginCenter({ apiBase, sessionId }: { apiBase: string; sessionId: stri
         body: JSON.stringify({ action: action.id, session_id: sessionId, arguments: argumentsForAction }),
       });
       setLastResult(result);
-      const payload = result.result as { kind?: string; url?: string } | null;
+      const payload = result.result as {
+        kind?: string;
+        url?: string;
+        browser?: 'default' | 'firefox';
+      } | null;
       if (payload?.kind === 'open_external' && payload.url) {
         if (!window.aetherRuntime?.openExternal) throw new Error('当前不是可打开外部链接的桌面运行环境');
-        await window.aetherRuntime.openExternal(payload.url);
+        await window.aetherRuntime.openExternal(payload.url, {
+          browser: payload.browser || 'default',
+        });
       }
       setStatus(`${plugin.name} · ${action.label} 执行成功`);
     } catch (error) {
@@ -4604,6 +4700,9 @@ function DesktopStatusBar({ connection, budgetRemaining, uiLocale, sandbox, toke
       <span>{t('budget', { value: budgetRemaining.toFixed(2) })}</span>
       <button onClick={onRefreshToken} title="刷新本地 WebSocket 授权，不显示或复制令牌" className="rounded bg-[#8d5f35] px-1.5 py-0.5 text-[10px] text-white">{tokenStatus}</button>
       <button onClick={onToggleLanguage} title={t('switchUiLanguage')} aria-label={t('switchUiLanguage')} className="rounded bg-[#8d5f35] px-1.5 py-0.5 text-[10px] text-white">{uiLocale === 'zh-CN' ? 'EN' : '中文'}</button>
+      {window.aetherRuntime?.quickEntryShortcut && (
+        <span>{ui('{shortcut} 快速输入', { shortcut: window.aetherRuntime.quickEntryShortcut })}</span>
+      )}
       <span className="ml-auto">AetherChat Desktop · {ui('多模型 Agent 工作台')}</span>
     </footer>
   );

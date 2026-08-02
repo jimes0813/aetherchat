@@ -12,6 +12,7 @@ from .routers import (
     agent_runs,
     approvals,
     artifacts,
+    automations,
     desktop,
     export,
     knowledge,
@@ -27,6 +28,7 @@ from .routers import (
 )
 from .services import tool_executor
 from .services.agent_run_service import agent_run_service
+from .services.automation_service import automation_service
 from .services.comfyui_runtime import comfyui_runtime
 from .services.local_auth import demo_token_response, require_api_access
 from .services.local_model_runtime import local_model_runtime
@@ -45,7 +47,9 @@ async def lifespan(app: FastAPI):
     tasks.redis_client = redis_client
     tool_executor.redis_client = redis_client
     agent_run_service.recover()
+    await automation_service.start()
     yield
+    await automation_service.stop()
     if redis_client is not None:
         await redis_client.aclose()
     await comfyui_runtime.shutdown()
@@ -78,13 +82,19 @@ app.include_router(knowledge.router, prefix="/knowledge", tags=["knowledge"], de
 app.include_router(approvals.router, prefix="/approvals", tags=["approvals"], dependencies=protected)
 app.include_router(memory.router, prefix="/memory", tags=["memory"], dependencies=protected)
 app.include_router(agent_runs.router, prefix="/agent-runs", tags=["agent-runs"], dependencies=protected)
+app.include_router(automations.router, prefix="/automations", tags=["automations"], dependencies=protected)
 app.include_router(workspaces.router, prefix="/workspaces", tags=["workspaces"], dependencies=protected)
 app.include_router(mcp.router, prefix="/mcp-connections", tags=["mcp"], dependencies=protected)
 app.include_router(mcp.callback_router, prefix="/mcp-connections", tags=["mcp-oauth-callback"])
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "aetherchat", "redis": redis_client is not None}
+    return {
+        "status": "ok",
+        "service": "aetherchat",
+        "redis": redis_client is not None,
+        "automation": automation_service.status(),
+    }
 
 @app.post("/auth/token")
 async def login_for_token():

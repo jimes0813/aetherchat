@@ -1,3 +1,4 @@
+import { useCallback } from 'react';
 import { useSessionStore } from './stores/sessionStore';
 
 export type UiLocale = 'zh-CN' | 'en-US';
@@ -5,13 +6,16 @@ export type UiLocale = 'zh-CN' | 'en-US';
 const resources = {
   'zh-CN': {
     chat: '对话', memory: '记忆', knowledge: '资料', tasks: '任务', artifacts: '文件', changes: '变更',
-    tools: '工具', plugins: '插件', connections: '连接', computer: '电脑', models: '模型', runs: '运行', settings: '设置',
-    feedTitle: '统一对话流', feedDescription: '所有模型的回复、工具调用和决策记录会合并在这里。', live: '实时协作',
+    tools: '工具', plugins: '插件', connections: '连接', computer: '电脑', models: '模型', runs: '运行', automations: '自动化', settings: '设置',
+    feedTitle: '统一对话流', feedDescription: '这里只显示你的请求与模型最终答复；运行细节保留在审计记录中。', live: '实时协作',
     emptyTitle: '发送第一条中文协作请求', emptyDescription: '可让模型拆分任务、评审方案、写入工件或发起合并。', you: '你',
     allModels: '@全部模型', addAttachment: '添加附件', composerPlaceholder: '输入指令，或拖入图片 / PDF / Office / 代码资料',
     send: '发送', interrupt: '中断 {target}', steerQueued: '已加入运行转向，将在下一安全边界应用', planCreated: '已建立可审阅的项目计划', parsing: '正在安全解析', chunks: '{count} 段', remove: '移除 {name}',
-    approvalLabel: '模型操作授权', approvalRequest: '{model} 请求调用 {tool}', approvalRisk: '风险：{risk}',
-    approvalScope: '授权范围：仅本次操作；会话授权仅在显示时可选', redactedArgs: '查看经过脱敏的参数',
+    approvalLabel: '模型操作授权', approvalPromptHeading: 'AetherChat 需要你的授权', approvalRequest: '{model} 请求调用 {tool}', approvalRisk: '风险：{risk}',
+    approvalScope: '授权范围：仅本次操作；会话授权仅在显示时可选', redactedArgs: '查看经过脱敏的参数', approvalChoose: '请选择如何继续：',
+    approvalAllowOnceChoice: '是，仅允许这一次', approvalAllowSessionChoice: '是，并在本会话中不再询问 {tool}', approvalDenyChoice: '否，并告诉 AetherChat 应如何调整',
+    approvalKeyboardHint: '↑/↓ 选择 · Enter 确认 · Esc 拒绝', approvalFeedbackLabel: '告诉 AetherChat 应如何调整', approvalFeedbackPlaceholder: '输入反馈；留空将直接拒绝',
+    approvalFeedbackHint: 'Enter 拒绝并发送 · Esc 返回选项', approvalBack: '返回', approvalDenySubmit: '拒绝并发送', approvalSubmitting: '正在提交决定…', approvalQueued: '另有 {count} 个授权请求排队', approvalFeedbackSummary: '你的反馈：{feedback}',
     deny: '拒绝', allowSession: '本会话允许', allowOnce: '允许一次', denied: '已拒绝', sessionAllowed: '本会话已允许', onceAllowed: '已允许一次',
     streaming: '{model} 正在输出', uiLanguage: '界面语言', collaborationSettings: '协作设置', close: '关闭',
     sandbox: '沙箱 {value}', budget: '预算 ${value}', switchUiLanguage: '切换界面语言',
@@ -19,13 +23,16 @@ const resources = {
   },
   'en-US': {
     chat: 'Chat', memory: 'Memory', knowledge: 'Knowledge', tasks: 'Tasks', artifacts: 'Artifacts', changes: 'Changes',
-    tools: 'Tools', plugins: 'Plugins', connections: 'Connections', computer: 'Computer', models: 'Models', runs: 'Runs', settings: 'Settings',
-    feedTitle: 'Unified conversation', feedDescription: 'Model responses, tool calls, and decisions appear in one auditable timeline.', live: 'Live collaboration',
+    tools: 'Tools', plugins: 'Plugins', connections: 'Connections', computer: 'Computer', models: 'Models', runs: 'Runs', automations: 'Automations', settings: 'Settings',
+    feedTitle: 'Unified conversation', feedDescription: 'Only your requests and final model responses appear here; run details stay in the audit log.', live: 'Live collaboration',
     emptyTitle: 'Send your first collaboration request', emptyDescription: 'Ask models to split tasks, review a plan, edit artifacts, or propose a merge.', you: 'You',
     allModels: '@All models', addAttachment: 'Add attachment', composerPlaceholder: 'Enter an instruction or drop images, PDF, Office, or code files',
     send: 'Send', interrupt: 'Stop {target}', steerQueued: 'Steering queued and will apply at the next safe boundary', planCreated: 'A reviewable project plan was created', parsing: 'Parsing safely', chunks: '{count} chunks', remove: 'Remove {name}',
-    approvalLabel: 'Model action authorization', approvalRequest: '{model} requests {tool}', approvalRisk: 'Risk: {risk}',
-    approvalScope: 'Scope: this action only; session access is available only when shown', redactedArgs: 'View redacted parameters',
+    approvalLabel: 'Model action authorization', approvalPromptHeading: 'AetherChat needs your approval', approvalRequest: '{model} requests {tool}', approvalRisk: 'Risk: {risk}',
+    approvalScope: 'Scope: this action only; session access is available only when shown', redactedArgs: 'View redacted parameters', approvalChoose: 'Choose how you would like to proceed:',
+    approvalAllowOnceChoice: 'Yes, just this once', approvalAllowSessionChoice: "Yes, and don't ask again for {tool} in this session", approvalDenyChoice: 'No, and tell AetherChat what to do differently',
+    approvalKeyboardHint: 'Use ↑/↓ to select · Enter to confirm · Esc to deny', approvalFeedbackLabel: 'Tell AetherChat what to do differently', approvalFeedbackPlaceholder: 'Type feedback, or leave blank to deny',
+    approvalFeedbackHint: 'Enter to deny and send · Esc to return', approvalBack: 'Back', approvalDenySubmit: 'Deny and send', approvalSubmitting: 'Submitting decision…', approvalQueued: '{count} more approval request(s) queued', approvalFeedbackSummary: 'Your feedback: {feedback}',
     deny: 'Deny', allowSession: 'Allow for session', allowOnce: 'Allow once', denied: 'Denied', sessionAllowed: 'Allowed for session', onceAllowed: 'Allowed once',
     streaming: '{model} is responding', uiLanguage: 'Interface language', collaborationSettings: 'Collaboration settings', close: 'Close',
     sandbox: 'Sandbox {value}', budget: 'Budget ${value}', switchUiLanguage: 'Switch interface language',
@@ -164,6 +171,47 @@ const englishUi: Record<string, string> = {
   'GGUF 模型绝对路径': 'Absolute GGUF model path', 'llama-server 绝对路径': 'Absolute llama-server path',
   '每行一个启动参数': 'One startup argument per line', 'llama.cpp 启动参数': 'llama.cpp startup arguments',
   '启动并验证': 'Start and verify',
+  '{shortcut} 快速输入': '{shortcut} Quick entry',
+  '处理摘要': 'Processing notes', '工具请求': 'Tool requests', '结果核对': 'Result checks', '交付文件': 'Delivered files',
+  '实际执行与交付': 'Actual execution and delivery',
+  '执行已结束，存在需检查的结果': 'Execution ended with results that need review',
+  '历史外部导航缺少桌面执行凭证': 'Historical external navigation lacks a desktop execution receipt',
+  '该历史记录只证明生成了打开链接意图，不能证明浏览器已启动；请重新发起该操作。': 'This historical record only proves that an open-link intent was created; it does not prove that a browser launched. Run the action again.',
+  '本次处理已完成': 'This run is complete', '已记录本次处理结果': 'Processing results recorded',
+  '这里只汇总 AetherChat 实际观察到的编排事件、工具结果和已保存文件；模型文字本身不视为执行凭证。': 'This receipt only summarizes orchestration events, tool results, and saved files observed by AetherChat; model text alone is not execution evidence.',
+  '查看运行审计': 'View run audit',
+  '思考过程（安全摘要） · {count} 步': 'Reasoning summary (safe) · {count} steps',
+  '实时更新': 'Live updates',
+  '展示可审计的处理摘要与工具轨迹，不包含模型私密思维链。': 'Shows an auditable processing summary and tool trail without exposing private chain-of-thought.',
+  '分析': 'Analysis', '工具选择': 'Tool selection', '整理答复': 'Finalizing',
+  '本机后台自动化': 'Local background automation',
+  '窗口关闭后由托盘中的本机服务继续执行；完全退出后，排队任务会在下次启动时恢复。': 'The local tray service keeps running after the window closes; queued jobs resume after the next launch if the app is fully quit.',
+  '刷新自动化状态': 'Refresh automation status',
+  '已启用': 'Enabled', '后台运行': 'Background runs', '待复核': 'Needs review',
+  '无人值守任务默认只读；高风险副作用不会弹出或继承临时会话授权。': 'Unattended jobs are read-only by default; high-risk side effects never prompt for or inherit temporary session access.',
+  '创建定时任务': 'Create scheduled task',
+  '任务名称，例如：每日项目摘要': 'Task name, for example: Daily project summary',
+  '后台执行指令': 'Background instruction', '触发方式': 'Trigger', '循环间隔': 'Recurring interval',
+  '单次执行': 'Run once', '目标模型': 'Target model', '全部可用模型': 'All available models',
+  '首次执行': 'First run', '间隔分钟': 'Interval in minutes', '预算上限（美元）': 'Budget limit (USD)',
+  '单次预算上限（美元）': 'Per-run budget limit (USD)', '创建中...': 'Creating…',
+  '创建只读定时任务': 'Create read-only schedule', '定时任务': 'Schedules',
+  '已暂停': 'Paused', '每 {count} 分钟': 'Every {count} minutes', '下次：{value}': 'Next: {value}',
+  '只读权限': 'Read-only permissions', '立即运行': 'Run now', '暂停': 'Pause',
+  '删除定时任务 {name}': 'Delete schedule {name}', '当前会话还没有定时任务': 'No schedules in this conversation',
+  '后台任务与复核收件箱': 'Background jobs and review inbox', '{count} 项待复核': '{count} items to review',
+  '已删除的定时任务': 'Deleted schedule', '手动触发': 'Manual trigger', '计划触发': 'Scheduled trigger',
+  '正在取消': 'Cancelling', '等待人工复核': 'Awaiting human review', '已取消': 'Cancelled',
+  '尝试 {attempt} 次 · 已用 ${spent} / ${limit}': 'Attempt {attempt} · Spent ${spent} / ${limit}',
+  '取消任务': 'Cancel job', '标记已复核': 'Mark reviewed', '尚无后台执行记录': 'No background job history',
+  '名称、指令和首次执行时间不能为空': 'Name, instruction, and first-run time are required',
+  '定时任务已创建；权限快照固定为只读': 'Schedule created with a fixed read-only permission snapshot',
+  '定时任务已启用': 'Schedule enabled', '定时任务已暂停': 'Schedule paused',
+  '后台任务已排队，关闭窗口后仍会继续': 'Background job queued and will continue after the window closes',
+  '删除这个定时任务？已产生的运行记录会保留。': 'Delete this schedule? Existing run history will be retained.',
+  '定时任务已删除': 'Schedule deleted', '已请求取消后台任务': 'Background job cancellation requested',
+  '无后续执行': 'No next run', '自动化加载失败：': 'Failed to load automations: ',
+  '运行失败：': 'Run failed: ', '取消失败：': 'Cancellation failed: ', '复核更新失败：': 'Failed to update review: ',
 };
 
 export function translate(locale: UiLocale, key: TranslationKey, values: Record<string, string | number> = {}) {
@@ -197,9 +245,17 @@ export function localize(locale: UiLocale, text: string, values: Record<string, 
 
 export function useI18n() {
   const locale = useSessionStore((state) => state.settings.uiLocale || 'zh-CN');
+  const t = useCallback(
+    (key: TranslationKey, values?: Record<string, string | number>) => translate(locale, key, values),
+    [locale],
+  );
+  const ui = useCallback(
+    (text: string, values?: Record<string, string | number>) => localize(locale, text, values),
+    [locale],
+  );
   return {
     locale,
-    t: (key: TranslationKey, values?: Record<string, string | number>) => translate(locale, key, values),
-    ui: (text: string, values?: Record<string, string | number>) => localize(locale, text, values),
+    t,
+    ui,
   };
 }

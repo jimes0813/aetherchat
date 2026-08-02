@@ -2,9 +2,12 @@ import asyncio
 import json
 import os
 import re
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from contextlib import suppress
 from datetime import UTC, datetime
+from pathlib import Path
 from time import monotonic
+from typing import Any
 from uuid import UUID, uuid4
 
 from ..models.schemas import ChatMessage, Message, ProviderConfig, ToolCall, ToolDefinition
@@ -29,7 +32,19 @@ from .tool_registry import ToolInvoke, tool_registry
 MAX_MODEL_TOOL_ROUNDS = 12
 MAX_MODEL_TURNS = 32
 MAX_PSEUDO_TOOL_RETRIES = 2
+MAX_INVALID_FILE_TOOL_CALLS = 3
 PSEUDO_TOOL_CALL_RE = re.compile(r"请求执行工具\s*[:：]\s*([A-Za-z0-9_]+)")
+COMFYUI_STATUS_TOOL = "plugin__comfyui__status"
+COMFYUI_IMAGE_TOOL = "plugin__comfyui__generate_image"
+COMFYUI_VIDEO_TOOL = "plugin__comfyui__generate_video"
+COMFYUI_WORKFLOW_TOOL = "plugin__comfyui__run_workflow"
+BROWSER_OPEN_TOOL = "plugin__browser_links__open_url"
+DESKTOP_WRITE_DOCUMENT_TOOL = "plugin__desktop_control__write_document"
+FILE_WRITE_TOOLS = {
+    "write_artifact",
+    "plugin__documents__export_to_local",
+    DESKTOP_WRITE_DOCUMENT_TOOL,
+}
 _COMPUTER_USE_LOCK = asyncio.Lock()
 
 # Simple Facilitator for loop detection and summaries (PR10 starter)
@@ -71,7 +86,15 @@ DEFAULT_PROVIDERS = [
 ]
 
 class SessionOrchestrator:
-    def __init__(self, session_id: str, tenant_id: str = "demo", mode: str = "casual"):
+    def __init__(
+        self,
+        session_id: str,
+        tenant_id: str = "demo",
+        mode: str = "casual",
+        desktop_action_handler: (
+            Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None
+        ) = None,
+    ):
         self.session_id = session_id
         self.tenant_id = tenant_id
         self.mode: str = mode  # casual | roundtable | project
@@ -91,6 +114,7 @@ class SessionOrchestrator:
         self._active_run_id: str | None = None
         self._run_steers: list[dict] = []
         self._plan_cancelled = False
+        self.desktop_action_handler = desktop_action_handler
 
     def begin_agent_run(self, run_id: str, steers: list[dict] | None = None) -> None:
         self._active_run_id = str(run_id)
@@ -148,12 +172,76 @@ class SessionOrchestrator:
                 return True
         return False
 
+    @staticmethod
+    def _requested_browser(content: str) -> str:
+        if re.search(r"(?:\bfirefox\b|\bfierfox\b|火狐)", content, re.IGNORECASE):
+            return "firefox"
+        return "default"
+
+    @staticmethod
+    def _browser_execution_receipt(payload: dict[str, Any]) -> dict[str, Any] | None:
+        plugin_envelope = payload.get("result")
+        navigation = (
+            plugin_envelope.get("result")
+            if isinstance(plugin_envelope, dict)
+            else None
+        )
+        receipt = (
+            navigation.get("execution_receipt")
+            if isinstance(navigation, dict)
+            else None
+        )
+        if (
+            isinstance(receipt, dict)
+            and receipt.get("success") is True
+            and receipt.get("verification") == "launcher_accepted"
+        ):
+            return receipt
+        return None
+
+    async def _complete_desktop_action(
+        self,
+        tool_name: str,
+        plugin_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        if tool_name != BROWSER_OPEN_TOOL:
+            return plugin_result
+        result = plugin_result.get("result")
+        if not isinstance(result, dict) or result.get("kind") != "open_external":
+            raise RuntimeError("外部导航插件没有返回可执行的桌面动作")
+        if self.desktop_action_handler is None:
+            raise RuntimeError(
+                "外部导航未执行：当前没有活动的 AetherChat 桌面客户端可确认浏览器启动"
+            )
+        receipt = await self.desktop_action_handler({
+            "kind": "open_external",
+            "url": str(result.get("url") or ""),
+            "browser": str(result.get("browser") or "default"),
+        })
+        if receipt.get("success") is not True:
+            raise RuntimeError(
+                str(receipt.get("error") or "桌面客户端未确认外部导航")
+            )
+        return {
+            **plugin_result,
+            "result": {
+                **result,
+                "execution_receipt": receipt,
+            },
+        }
+
     async def stream_user_message(self, action: dict) -> AsyncIterator[dict]:
         self.refresh_providers()
         workspace_service = (
             self.run_service.workspace_service or git_workspace_service
         )
         agent_run_id = str(action.get("_agent_run_id") or self._active_run_id or "").strip()
+        background_job_id = str(action.get("_background_job_id") or "").strip()
+        background_allowed_tools = {
+            str(value)
+            for value in action.get("_background_allowed_tools") or []
+            if str(value).strip()
+        }
         pending_steers = action.get("_pending_steers") or []
         if agent_run_id and self._active_run_id is None:
             self.begin_agent_run(agent_run_id, pending_steers)
@@ -248,6 +336,10 @@ class SessionOrchestrator:
             }
             return
         available_tool_definitions = self._available_tools()
+        tool_definitions_by_name = {
+            definition.name: definition
+            for definition in available_tool_definitions
+        }
         base_routed_tools = self._route_tools(
             content,
             available_tool_definitions,
@@ -318,6 +410,16 @@ class SessionOrchestrator:
                     "使用 upsert_memory_entity 写入会话共享记忆，避免重复确认；不要把密码、令牌或其他秘密写入共享记忆。"
                 ),
             ))
+        if BROWSER_OPEN_TOOL in base_tool_names:
+            context_msgs.insert(0, ChatMessage(
+                role="system",
+                content=(
+                    "浏览器导航要求：只为用户明确要求的目标调用一次 open_url，不要先打开搜索页或无关站点。"
+                    "用户指定 Firefox/火狐时把 browser 设为 firefox。工具只有在 execution_receipt.success=true "
+                    "时才表示桌面启动器已接受打开请求；这不证明网页内容、登录状态或加载结果，未经电脑观察工具"
+                    "核验时不得声称已看见页面内容。"
+                ),
+            ))
         if attachment_context:
             context_msgs.insert(0, ChatMessage(role="system", content=attachment_context))
         if project_knowledge_context:
@@ -327,6 +429,19 @@ class SessionOrchestrator:
             context_msgs.insert(0, ChatMessage(role="system", content="请优先使用清晰、准确的中文回复。"))
         elif language == "中英双语":
             context_msgs.insert(0, ChatMessage(role="system", content="请使用中英双语回复，先中文后英文。"))
+        if "write_artifact" in base_tool_names:
+            context_msgs.insert(0, ChatMessage(
+                role="system",
+                content=(
+                    "文件写入要求：不得把长文全文塞进一次工具参数。超过约 1200 个汉字时，"
+                    "使用 write_artifact 分块写入：首块 mode=overwrite、sequence=0，"
+                    "后续每块 mode=append、sequence 依次递增，且每块不超过 1200 个汉字。"
+                    "需要保存到本机时，分块完成后只调用一次 documents.export_to_local，"
+                    "传工作区相对 path 与本机绝对 destination_path。"
+                    "不要用 desktop_control.write_document 写工作区相对路径，也不要在失败后"
+                    "原样重发同一长参数。"
+                ),
+            ))
         if any(name.startswith("plugin__desktop_control__") for name in base_tool_names):
             context_msgs.insert(0, ChatMessage(
                 role="system",
@@ -338,7 +453,7 @@ class SessionOrchestrator:
                     "write_artifact 只写入当前会话工件库；run_command 在隔离的 /workspace 中执行，"
                     "不能访问或写入本机桌面。要在本机新建 TXT/MD/JSON/CSV/TSV 文件，"
                     "优先调用 documents 的 export_to_local，传入工作区相对 path 与本机绝对 destination_path；"
-                    "也可调用 desktop_control 的 write_document，传入绝对 path 和 data.text。"
+                    "只有短内容才可直接调用 desktop_control 的 write_document，且必须传绝对 path 和 data.text。"
                     "不要向用户输出‘请求执行工具’来代替调用；必须发送结构化工具调用。"
                     "用户在普通聊天文本中输入‘允许’不等于授权；真实授权必须由对话中的独立授权卡片完成。"
                     "不得猜测敏感数据，不得绕过本机授权对话框。"
@@ -349,12 +464,28 @@ class SessionOrchestrator:
                 role="system",
                 content=(
                     "你可以与本机 ComfyUI 图像/视频模型协作。用户要求生成视觉内容时，"
-                    "先调用 comfyui.status 获取当前真实模型和工作流，再选择 generate_image、"
-                    "generate_video 或 run_workflow；复杂工作流可先调用 workflow_schema 获取节点映射、"
+                    "直接选择 generate_image、generate_video 或 run_workflow；generate_image 的 model "
+                    "可省略以自动选择默认模型。只有用户询问环境状态或确实需要盘点资源时才调用 "
+                    "comfyui.status；复杂工作流可先调用 workflow_schema 获取节点映射、"
                     "依赖与可覆盖输入，不要猜节点 ID。不要声称已经生成而不调用工具。"
                     "你负责把用户意图整理为包含主体、环境、构图、光线、风格及动作的完整提示词，"
                     "ComfyUI 负责生成。工具返回文件后必须明确报告实际 filename 或 URL，"
                     "并引用 metadata_artifact；该 JSON 已保存 prompt、模型、seed、尺寸和工作流来源。"
+                ),
+            ))
+        if background_job_id:
+            allowed_description = (
+                "、".join(sorted(background_allowed_tools))
+                if background_allowed_tools else "无"
+            )
+            context_msgs.insert(0, ChatMessage(
+                role="system",
+                content=(
+                    "本次请求由 AetherChat 本机后台调度器触发。"
+                    "无人值守执行必须遵守创建任务时固化的权限快照；"
+                    f"允许的副作用工具白名单：{allowed_description}。"
+                    "未列入白名单的副作用不得请求授权、不得尝试绕过，"
+                    "只能输出分析结果并明确需要人工处理的后续动作。"
                 ),
             ))
 
@@ -372,6 +503,16 @@ class SessionOrchestrator:
             workspace_id = str(execution.get("workspace_id") or "") or None
             publish_message = bool(execution.get("publish_message", True))
             allow_side_effects = bool(execution.get("allow_side_effects", True))
+
+            def tool_is_allowed(tool_name: str) -> bool:
+                if not self.run_service.is_side_effecting_tool(tool_name):
+                    return True
+                if not allow_side_effects:
+                    return False
+                if background_job_id:
+                    return tool_name in background_allowed_tools
+                return True
+
             routed_tools = self._route_tools(
                 content,
                 available_tool_definitions,
@@ -385,12 +526,17 @@ class SessionOrchestrator:
                         or workspace_id is not None
                     )
                     and (
-                        allow_side_effects
-                        or not self.run_service.is_side_effecting_tool(
-                            tool.name
-                        )
+                        tool_is_allowed(tool.name)
                     )
                 )
+            ]
+            required_comfyui_tools = [
+                name
+                for name in self._required_comfyui_tools(
+                    content,
+                    {**action, **execution},
+                )
+                if tool_is_allowed(name)
             ]
             full_parts: list[str] = []
             total_prompt_tokens = 0
@@ -399,9 +545,43 @@ class SessionOrchestrator:
             completed = False
             message_emitted = False
             pseudo_tool_retries = 0
+            invalid_file_tool_calls = 0
+            disabled_tool_names: set[str] = set()
             generated_files: list[dict] = []
+            reasoning_summary: list[dict[str, str]] = []
             request_started_at = monotonic()
             first_token_reported = False
+
+            async def record_reasoning(phase: str, detail: str) -> None:
+                """Publish a safe, observable reasoning summary.
+
+                This intentionally records orchestration facts only. Provider
+                hidden reasoning and raw chain-of-thought are never persisted
+                or forwarded to the renderer.
+                """
+
+                normalized = " ".join(str(detail or "").split())[:240]
+                if not normalized or len(reasoning_summary) >= 32:
+                    return
+                entry = {
+                    "phase": phase,
+                    "detail": normalized,
+                    "ts": datetime.now(UTC).isoformat(),
+                }
+                if reasoning_summary and (
+                    reasoning_summary[-1]["phase"] == phase
+                    and reasoning_summary[-1]["detail"] == normalized
+                ):
+                    return
+                reasoning_summary.append(entry)
+                await queue.put({
+                    "type": "reasoning_step",
+                    "model": name,
+                    "step": entry,
+                    "reset": len(reasoning_summary) == 1,
+                    "plan_step_id": plan_step_id,
+                })
+
             try:
                 if self._is_interrupted(name):
                     return
@@ -412,27 +592,53 @@ class SessionOrchestrator:
                     self._context_limits(provider, provider_tools)
                 )
                 restored_context, tool_round = self._restore_checkpoint(checkpoint)
+                system_prompt = self._provider_system_prompt(name, provider)
                 if restored_context:
-                    local_context = restored_context
+                    source_context = restored_context
+                    context_system_prompt = ""
                 else:
                     source_context = execution.get("context_messages") or context_msgs
                     step_instruction = str(execution.get("instruction") or "").strip()
-                    system_prompt = self._provider_system_prompt(name, provider)
                     if step_instruction:
                         system_prompt = (
                             f"{system_prompt}\n\n"
                             "【当前 Plan Step】\n"
                             f"{step_instruction}"
                         )
-                    local_context = await build_messages_for_provider(
-                        source_context,
-                        provider_limit=provider_limit,
-                        output_reserve=output_reserve,
-                        system_prompt=system_prompt,
-                    )
+                    context_system_prompt = system_prompt
+                local_context = await build_messages_for_provider(
+                    source_context,
+                    provider_limit=provider_limit,
+                    output_reserve=output_reserve,
+                    system_prompt=context_system_prompt,
+                    max_conversation_messages=(
+                        self._history_message_limit(provider)
+                    ),
+                )
+                required_comfyui_index = 0
+                required_comfyui_failed = False
+                for required_name in required_comfyui_tools:
+                    matching_results = [
+                        message
+                        for message in local_context
+                        if message.role == "tool" and message.name == required_name
+                    ]
+                    if any(not message.tool_error for message in matching_results):
+                        required_comfyui_index += 1
+                        continue
+                    if matching_results:
+                        required_comfyui_failed = True
+                    break
                 estimated_context_tokens = sum(
                     estimate_tokens(message.content) + 8
                     for message in local_context
+                )
+                await record_reasoning(
+                    "analysis",
+                    (
+                        f"已整理 {len(local_context)} 条上下文，"
+                        f"并筛选 {len(provider_tools)} 个与请求相关的可用工具。"
+                    ),
                 )
                 await queue.put({
                     "type": "provider_status",
@@ -485,6 +691,40 @@ class SessionOrchestrator:
                 for _provider_turn in range(MAX_MODEL_TURNS):
                     if self._is_interrupted(name):
                         break
+                    forced_tool_name = (
+                        required_comfyui_tools[required_comfyui_index]
+                        if (
+                            not required_comfyui_failed
+                            and required_comfyui_index < len(required_comfyui_tools)
+                        )
+                        else None
+                    )
+                    forced_tool = next(
+                        (
+                            tool for tool in provider_tools
+                            if tool.name == forced_tool_name
+                        ),
+                        None,
+                    )
+                    if forced_tool_name and forced_tool is None:
+                        required_comfyui_failed = True
+                        full_parts = [
+                            (
+                                f"无法执行本次生成：所需工具 `{forced_tool_name}` 当前未启用。"
+                                "请启用 ComfyUI 插件后重试。"
+                            )
+                        ]
+                        completed = True
+                        break
+                    request_tools = (
+                        [forced_tool]
+                        if forced_tool is not None
+                        else [
+                            tool for tool in provider_tools
+                            if tool.name not in disabled_tool_names
+                        ]
+                    )
+                    force_tool_call = forced_tool is not None
                     if _provider_turn > 0:
                         request_started_at = monotonic()
                         first_token_reported = False
@@ -499,7 +739,7 @@ class SessionOrchestrator:
                             "detail": "工具结果已加入上下文，正在等待模型继续",
                             "context_messages": len(local_context),
                             "context_tokens": estimated_context_tokens,
-                            "tool_count": len(provider_tools),
+                            "tool_count": len(request_tools),
                             "tool_schema_tokens": tool_schema_tokens,
                             "round_index": tool_round,
                             "elapsed_ms": 0,
@@ -510,12 +750,32 @@ class SessionOrchestrator:
                     round_usage: dict | None = None
                     async for chunk in provider.stream_chat(
                         messages=local_context,
-                        tools=provider_tools,
+                        tools=request_tools,
                         session_id=self.session_id,
+                        tool_choice="required" if force_tool_call else None,
                     ):
                         if self._is_interrupted(name):
                             break
                         delta = chunk.get("delta") or ""
+                        if chunk.get("tool_activity") and not first_token_reported:
+                            first_token_reported = True
+                            elapsed_ms = round(
+                                (monotonic() - request_started_at) * 1000
+                            )
+                            await queue.put({
+                                "type": "provider_status",
+                                "model": name,
+                                "phase": "tool",
+                                "detail": "模型已开始构造工具调用",
+                                "context_messages": len(local_context),
+                                "context_tokens": estimated_context_tokens,
+                                "tool_count": len(request_tools),
+                                "tool_schema_tokens": tool_schema_tokens,
+                                "round_index": tool_round,
+                                "first_token_ms": elapsed_ms,
+                                "elapsed_ms": elapsed_ms,
+                                "ts": datetime.now(UTC).isoformat(),
+                            })
                         if delta:
                             if not first_token_reported:
                                 first_token_reported = True
@@ -526,7 +786,7 @@ class SessionOrchestrator:
                                     "detail": "已收到首个 token，正在生成回复",
                                     "context_messages": len(local_context),
                                     "context_tokens": estimated_context_tokens,
-                                    "tool_count": len(provider_tools),
+                                    "tool_count": len(request_tools),
                                     "tool_schema_tokens": tool_schema_tokens,
                                     "round_index": tool_round,
                                     "first_token_ms": round(
@@ -538,12 +798,6 @@ class SessionOrchestrator:
                                     "ts": datetime.now(UTC).isoformat(),
                                 })
                             round_text += delta
-                            await queue.put({
-                                "type": "delta",
-                                "model": name,
-                                "delta": delta,
-                                "ts": datetime.now(UTC).isoformat(),
-                            })
                         round_tool_calls.extend(chunk.get("tool_calls") or [])
                         if round_tool_calls and not first_token_reported:
                             first_token_reported = True
@@ -554,7 +808,7 @@ class SessionOrchestrator:
                                 "detail": "模型已返回结构化工具调用",
                                 "context_messages": len(local_context),
                                 "context_tokens": estimated_context_tokens,
-                                "tool_count": len(provider_tools),
+                                "tool_count": len(request_tools),
                                 "tool_schema_tokens": tool_schema_tokens,
                                 "round_index": tool_round,
                                 "first_token_ms": round(
@@ -567,9 +821,6 @@ class SessionOrchestrator:
                             })
                         if chunk.get("usage"):
                             round_usage = chunk["usage"]
-
-                    if round_text.strip():
-                        full_parts.append(round_text.strip())
 
                     became_exhausted = False
                     if round_usage:
@@ -587,8 +838,6 @@ class SessionOrchestrator:
                         await queue.put({"type": "cost_update", "budget_remaining": self.budget_remaining})
 
                     if self._has_pending_steers(name):
-                        if full_parts and full_parts[-1] == round_text.strip():
-                            full_parts.pop()
                         if round_text.strip():
                             local_context.append(ChatMessage(
                                 role="assistant",
@@ -596,6 +845,34 @@ class SessionOrchestrator:
                             ))
                         await queue.put({"type": "stream_reset", "model": name})
                         await apply_queued_steers()
+                        continue
+
+                    if force_tool_call and not round_tool_calls:
+                        await queue.put({"type": "stream_reset", "model": name})
+                        pseudo_tool_retries += 1
+                        if pseudo_tool_retries > MAX_PSEUDO_TOOL_RETRIES:
+                            await queue.put({
+                                "type": "error",
+                                "code": "required_tool_not_called",
+                                "model": name,
+                                "message": (
+                                    f"{name} 未按要求调用 {forced_tool_name}；"
+                                    "已停止，避免把未执行的图片生成表述为成功。"
+                                ),
+                            })
+                            break
+                        if round_text.strip():
+                            local_context.append(ChatMessage(
+                                role="assistant",
+                                content=round_text.strip(),
+                            ))
+                        local_context.append(ChatMessage(
+                            role="user",
+                            content=(
+                                f"必须立即调用工具 {forced_tool_name}。"
+                                "不要输出计划、解释或未来时描述；本轮只能返回结构化工具调用。"
+                            ),
+                        ))
                         continue
 
                     pseudo_match = PSEUDO_TOOL_CALL_RE.search(round_text)
@@ -632,8 +909,6 @@ class SessionOrchestrator:
                                 # ordinary prompts.
                                 provider_tools.append(candidate)
                                 definition = candidate
-                        if full_parts and full_parts[-1] == round_text.strip():
-                            full_parts.pop()
                         await queue.put({"type": "stream_reset", "model": name})
                         if definition is None:
                             await queue.put({
@@ -665,6 +940,20 @@ class SessionOrchestrator:
                         continue
 
                     if not round_tool_calls:
+                        final_text = round_text.strip()
+                        if final_text:
+                            # Only the terminal provider turn is user-facing. Text
+                            # emitted alongside tool requests is execution scratch
+                            # space (for example, repeated "让我检查…" requests) and
+                            # must stay in the model context instead of becoming
+                            # chat history or a live chat bubble.
+                            full_parts = [final_text]
+                            await queue.put({
+                                "type": "delta",
+                                "model": name,
+                                "delta": final_text,
+                                "ts": datetime.now(UTC).isoformat(),
+                            })
                         completed = True
                         break
                     if became_exhausted:
@@ -684,7 +973,16 @@ class SessionOrchestrator:
                         })
                         break
 
+                    # Older renderers may still have shown provider deltas before
+                    # learning that this turn contains a tool call. Clear that
+                    # draft defensively; current renderers receive no such deltas.
+                    await queue.put({"type": "stream_reset", "model": name})
                     canonical_tool_calls = self._normalize_tool_calls(round_tool_calls)
+                    for tool_call in canonical_tool_calls:
+                        await record_reasoning(
+                            "tool",
+                            f"已选择调用 {tool_call.name}，等待授权或本机执行结果。",
+                        )
                     local_context.append(ChatMessage(
                         role="assistant",
                         content=round_text.strip(),
@@ -705,7 +1003,28 @@ class SessionOrchestrator:
                         tool_run_id: str | None = None,
                         replayed: bool = False,
                     ) -> None:
+                        nonlocal invalid_file_tool_calls
                         tool_results.append((tool_call, payload, images))  # noqa: B023
+                        result_status = str(payload.get("status") or "unknown")
+                        if result_status == "success":
+                            if tool_call.name in FILE_WRITE_TOOLS:
+                                invalid_file_tool_calls = 0
+                            result_detail = "执行成功，正在依据真实结果继续处理。"
+                            if tool_call.name == BROWSER_OPEN_TOOL:
+                                receipt = self._browser_execution_receipt(payload)
+                                if receipt is not None:
+                                    browser = str(receipt.get("browser") or "default")
+                                    url = str(receipt.get("url") or "")[:500]
+                                    result_detail = (
+                                        f"桌面启动器已确认由 {browser} 接受打开 {url}；"
+                                        "该凭证不等同于网页内容已加载。"
+                                    )
+                        else:
+                            result_detail = "执行未成功，正在依据错误信息调整后续答复。"
+                        await record_reasoning(
+                            "result",
+                            f"工具 {tool_call.name} {result_detail}",
+                        )
                         discovered = self._generated_files_from_tool_result(
                             tool_call.name,
                             payload,
@@ -750,6 +1069,20 @@ class SessionOrchestrator:
                     for call_index, tool_call in enumerate(canonical_tool_calls):
                         tool_name = tool_call.name
                         arguments = tool_call.arguments
+                        if tool_name == BROWSER_OPEN_TOOL:
+                            arguments = {
+                                **arguments,
+                                "browser": str(
+                                    arguments.get("browser")
+                                    or self._requested_browser(content)
+                                ),
+                            }
+                        argument_error = self._tool_argument_error(
+                            tool_name,
+                            arguments,
+                            tool_definitions_by_name.get(tool_name),
+                        )
+                        is_file_write = tool_name in FILE_WRITE_TOOLS
                         if agent_run_id:
                             call_record = self.run_service.begin_tool_call(
                                 run_id=agent_run_id,
@@ -763,6 +1096,11 @@ class SessionOrchestrator:
                                 round_index=tool_round,
                                 call_index=call_index,
                                 plan_step_id=plan_step_id,
+                                dedupe_across_rounds=(
+                                    argument_error is None
+                                    if is_file_write
+                                    else None
+                                ),
                             )
                             tool_call_records[tool_call.id] = call_record
                             await queue.put({
@@ -781,6 +1119,19 @@ class SessionOrchestrator:
                                     "status": "error",
                                     "error": "已完成工具调用缺少可恢复结果。",
                                 }
+                                if (
+                                    tool_name == BROWSER_OPEN_TOOL
+                                    and str(replay_payload.get("status") or "") == "success"
+                                    and self._browser_execution_receipt(replay_payload) is None
+                                ):
+                                    replay_payload = {
+                                        "tool": tool_name,
+                                        "status": "error",
+                                        "error": (
+                                            "历史外部导航记录缺少桌面启动凭证，"
+                                            "不能重放为成功；请发起新的浏览器操作。"
+                                        ),
+                                    }
                                 await remember_tool_result(
                                     tool_call,
                                     replay_payload,
@@ -808,32 +1159,73 @@ class SessionOrchestrator:
                                     "message": call_record.get("error"),
                                 })
                                 continue
-                            if (
-                                not allow_side_effects
-                                and self.run_service.is_side_effecting_tool(tool_name)
-                            ):
-                                await remember_tool_result(
-                                    tool_call,
-                                    {
-                                        "tool": tool_name,
-                                        "status": "denied",
-                                        "error": (
+                        if argument_error is not None:
+                            if is_file_write:
+                                invalid_file_tool_calls += 1
+                                if tool_name == DESKTOP_WRITE_DOCUMENT_TOOL:
+                                    disabled_tool_names.add(tool_name)
+                            await remember_tool_result(
+                                tool_call,
+                                {
+                                    "tool": tool_name,
+                                    "status": "error",
+                                    "error": argument_error,
+                                    "executed": False,
+                                },
+                                [],
+                            )
+                            continue
+                        if not tool_is_allowed(tool_name):
+                            await remember_tool_result(
+                                tool_call,
+                                {
+                                    "tool": tool_name,
+                                    "status": "denied",
+                                    "error": (
+                                        (
+                                            "后台权限快照不允许该副作用工具；"
+                                            "操作已在调用前拒绝。"
+                                        )
+                                        if background_job_id
+                                        else (
                                             "当前 Plan Step 为只读 Worker/Verifier；"
                                             "副作用操作只能由 Synthesizer 在独立授权后执行。"
-                                        ),
-                                    },
-                                    [],
-                                )
-                                continue
-                            if approval_policy(tool_name, arguments) is not None:
-                                self.run_service.update_tool_call_status(
-                                    call_record["id"],
-                                    "waiting_approval",
-                                )
-                        approved = await self._authorize_model_tool(queue, name, tool_name, arguments)
+                                        )
+                                    ),
+                                },
+                                [],
+                            )
+                            continue
+                        if (
+                            agent_run_id
+                            and approval_policy(tool_name, arguments) is not None
+                        ):
+                            self.run_service.update_tool_call_status(
+                                call_record["id"],
+                                "waiting_approval",
+                            )
+                        background_preapproved = (
+                            bool(background_job_id)
+                            and tool_name in background_allowed_tools
+                            and tool_is_allowed(tool_name)
+                        )
+                        approval_feedback = ""
+                        if background_preapproved:
+                            approved = True
+                        else:
+                            approved, approval_feedback = await self._authorize_model_tool(
+                                queue,
+                                name,
+                                tool_name,
+                                arguments,
+                            )
                         if not approved:
                             started_at = datetime.now(UTC).isoformat()
                             error = "用户拒绝了本次工具操作。"
+                            if approval_feedback:
+                                error = f"{error} 用户要求：{approval_feedback}"
+                            if tool_name == forced_tool_name:
+                                required_comfyui_failed = True
                             run = tool_registry.record_run(
                                 tool_id=None,
                                 tool_name=tool_name or "unknown",
@@ -870,6 +1262,10 @@ class SessionOrchestrator:
                                     plugin_result = await plugin_registry.invoke_tool(
                                         tool_name, self.session_id, f"model:{name}", arguments
                                     )
+                                plugin_result = await self._complete_desktop_action(
+                                    tool_name,
+                                    plugin_result,
+                                )
                                 safe_result, images = self._sanitize_tool_result(plugin_result)
                                 run = tool_registry.record_run(
                                     tool_id=None,
@@ -888,7 +1284,11 @@ class SessionOrchestrator:
                                     images,
                                     tool_run_id=run.get("id"),
                                 )
+                                if tool_name == forced_tool_name:
+                                    required_comfyui_index += 1
                             except Exception as exc:
+                                if tool_name == forced_tool_name:
+                                    required_comfyui_failed = True
                                 run = tool_registry.record_run(
                                     tool_id=None,
                                     tool_name=tool_name,
@@ -1038,6 +1438,45 @@ class SessionOrchestrator:
                             kind="tool_round",
                             plan_step_id=plan_step_id,
                         )
+                    if invalid_file_tool_calls >= MAX_INVALID_FILE_TOOL_CALLS:
+                        invalid_call_message = (
+                            f"{name} 连续 {invalid_file_tool_calls} 次返回不完整或无效的"
+                            "文件写入参数，已停止继续尝试，避免反复覆盖或产生空文件。"
+                        )
+                        await queue.put({
+                            "type": "error",
+                            "code": "invalid_file_tool_arguments",
+                            "model": name,
+                            "message": invalid_call_message,
+                        })
+                        full_parts = [
+                            invalid_call_message
+                            + " 本轮无效调用均未执行；请重试，系统将要求模型使用分块工件后再一次性导出。"
+                        ]
+                        completed = True
+                        break
+                    if required_comfyui_tools:
+                        if (
+                            not required_comfyui_failed
+                            and required_comfyui_index >= len(required_comfyui_tools)
+                        ):
+                            full_parts = [
+                                self._comfyui_completion_content(generated_files)
+                            ]
+                            completed = True
+                            break
+                        if required_comfyui_failed:
+                            failure_detail = ""
+                            for _tool_call, payload, _images in reversed(tool_results):
+                                failure_detail = str(payload.get("error") or "").strip()
+                                if failure_detail:
+                                    break
+                            full_parts = [
+                                "ComfyUI 生成未完成"
+                                + (f"：{failure_detail}" if failure_detail else "，请检查工具日志后重试。")
+                            ]
+                            completed = True
+                            break
 
                 else:
                     await queue.put({
@@ -1051,6 +1490,10 @@ class SessionOrchestrator:
                 if not final_content and completed:
                     final_content = "操作已完成。"
                 if final_content and completed:
+                    await record_reasoning(
+                        "final",
+                        "已核对模型输出与工具结果，正在整理最终答复。",
+                    )
                     await queue.put({
                         "type": "provider_status",
                         "model": name,
@@ -1089,6 +1532,7 @@ class SessionOrchestrator:
                             tokens_out=total_completion_tokens,
                             cost_usd=round(total_cost, 6),
                             generated_files=generated_files,
+                            reasoning_summary=reasoning_summary,
                             created_at=datetime.now(UTC),
                         )
                         self.conversation_history.append(
@@ -1121,6 +1565,10 @@ class SessionOrchestrator:
             finally:
                 final_content = "\n\n".join(full_parts).strip()
                 if final_content and not message_emitted:
+                    await record_reasoning(
+                        "final",
+                        "本轮提前结束；正在保留已经生成的部分答复。",
+                    )
                     if publish_message:
                         message = Message(
                             id=uuid4(),
@@ -1132,6 +1580,7 @@ class SessionOrchestrator:
                             tokens_out=total_completion_tokens,
                             cost_usd=round(total_cost, 6),
                             generated_files=generated_files,
+                            reasoning_summary=reasoning_summary,
                             created_at=datetime.now(UTC),
                         )
                         self.conversation_history.append(
@@ -1189,6 +1638,7 @@ class SessionOrchestrator:
                 "provider_error", "budget_exceeded", "tool_loop_limit",
                 "model_turn_limit", "tool_result_uncertain",
                 "unknown_pseudo_tool", "tool_call_format",
+                "required_tool_not_called",
             }
             done = 0
             while done < len(tasks):
@@ -1887,10 +2337,10 @@ class SessionOrchestrator:
         model: str,
         tool_name: str,
         arguments: dict,
-    ) -> bool:
+    ) -> tuple[bool, str]:
         policy = approval_policy(tool_name, arguments)
         if policy is None:
-            return True
+            return True, ""
         safe_arguments = dict(self._sanitize_tool_arguments(tool_name, arguments))
         for key in ("content", "api_key", "token", "password", "secret"):
             if key in safe_arguments:
@@ -1903,15 +2353,84 @@ class SessionOrchestrator:
             **policy,
         )
         if pending is None:
-            return True
+            return True, ""
         await queue.put({"type": "approval_required", "approval": pending.public()})
         decision = await approval_service.wait(pending.id)
         await queue.put({
             "type": "approval_resolved",
             "approval_id": pending.id,
             "decision": decision,
+            "feedback": pending.feedback,
         })
-        return decision in {"allow_once", "allow_session"}
+        return decision in {"allow_once", "allow_session"}, pending.feedback
+
+    @staticmethod
+    def _comfyui_completion_content(generated_files: list[dict]) -> str:
+        if not generated_files:
+            return (
+                "ComfyUI 已完成生成，但没有返回可关联的输出文件。"
+                "请在协作日志中查看本次工具结果。"
+            )
+        lines = []
+        for item in generated_files[:8]:
+            name = str(item.get("name") or "generated-file").strip()
+            location = str(item.get("path") or item.get("url") or "").strip()
+            if location:
+                lines.append(f"- {name}：`{location}`")
+            else:
+                lines.append(f"- {name}")
+        return (
+            "ComfyUI 已完成生成。文件已附在本条消息中，可直接预览或打开。\n\n"
+            "文件位置：\n"
+            + "\n".join(lines)
+        )
+
+    @staticmethod
+    def _required_comfyui_tools(
+        content: str,
+        execution: dict | None = None,
+    ) -> list[str]:
+        """Return the mandatory ComfyUI sequence for explicit generation requests.
+
+        Merely mentioning an existing image (for example “图片呢”) must not
+        silently start a new GPU job. A creation verb plus a visual deliverable
+        is required before the orchestrator constrains tool selection.
+        """
+
+        execution = execution or {}
+        text = " ".join((
+            str(content or ""),
+            str(execution.get("instruction") or ""),
+        )).casefold()
+        creation_terms = (
+            "生成", "重新生成", "画图", "画一", "画张", "绘制", "制作", "创作",
+            "渲染", "出一张", "做一张", "generate", "regenerate",
+            "create", "draw", "render", "make",
+        )
+        if not any(term in text for term in creation_terms):
+            return []
+
+        if any(term in text for term in ("工作流", "workflow")) and any(
+            term in text for term in ("运行", "执行", "run", "execute")
+        ):
+            action_tool = COMFYUI_WORKFLOW_TOOL
+        elif any(term in text for term in ("视频", "动画", "video", "movie", "clip")):
+            action_tool = COMFYUI_VIDEO_TOOL
+        elif (
+            any(term in text for term in (
+                "图片", "图像", "生成图", "画图", "照片", "摄影", "艺术照", "肖像",
+                "插图", "海报", "封面", "画面", "image", "picture", "photo",
+                "photograph", "photography", "illustration", "poster", "cover",
+            ))
+            or re.search(
+                r"(?:生成|重新生成|画|绘制|制作|创作|渲染)(?:一|这|那)?(?:张)?图",
+                text,
+            )
+        ):
+            action_tool = COMFYUI_IMAGE_TOOL
+        else:
+            return []
+        return [action_tool]
 
     @staticmethod
     def _route_tools(
@@ -1992,6 +2511,21 @@ class SessionOrchestrator:
             selected.add("summarize_cn")
         if contains("所有工具", "全部工具", "工具清单", "插件清单"):
             selected.update(definition.name for definition in definitions)
+        if contains("mcp", "model context protocol"):
+            selected.update(
+                definition.name
+                for definition in definitions
+                if definition.name.startswith("mcp__")
+            )
+        if contains(
+            "执行凭证", "运行证据", "真实操作", "操作记录", "工具调用记录",
+            "执行审计",
+        ):
+            selected.update(
+                definition.name
+                for definition in definitions
+                if definition.name.startswith("mcp__aetherchat_local_audit__")
+            )
 
         return [
             definition for definition in definitions
@@ -2030,6 +2564,18 @@ class SessionOrchestrator:
             min(provider_limit, max(4096, active_limit)) - tool_tokens,
         )
         return message_limit, output_reserve, tool_tokens
+
+    @staticmethod
+    def _history_message_limit(provider: LLMProvider) -> int | None:
+        if provider.config.type != "local":
+            return None
+        try:
+            configured = int(
+                os.getenv("AETHERCHAT_LOCAL_MAX_HISTORY_MESSAGES", "8")
+            )
+        except ValueError:
+            configured = 8
+        return max(4, min(64, configured))
 
     @staticmethod
     def _generated_files_from_tool_result(
@@ -2197,7 +2743,15 @@ class SessionOrchestrator:
                 arguments = raw_call.get("arguments") or {}
             tool_name = tool_name or "unknown_tool"
             if not isinstance(arguments, dict):
-                arguments = {"_raw": arguments}
+                parsed_arguments = None
+                if isinstance(arguments, str):
+                    with suppress(json.JSONDecodeError):
+                        parsed_arguments = json.loads(arguments)
+                arguments = (
+                    parsed_arguments
+                    if isinstance(parsed_arguments, dict)
+                    else {"_raw": arguments}
+                )
             if not call_id or call_id in seen_ids:
                 call_id = f"call_{uuid4().hex}"
             seen_ids.add(call_id)
@@ -2205,10 +2759,71 @@ class SessionOrchestrator:
         return normalized
 
     @staticmethod
+    def _tool_argument_error(
+        tool_name: str,
+        arguments: dict[str, Any],
+        definition: ToolDefinition | None,
+    ) -> str | None:
+        if "_raw" in arguments:
+            guidance = ""
+            if tool_name in FILE_WRITE_TOOLS:
+                guidance = (
+                    " 不要原样重试同一份长内容；请用 write_artifact 分块，"
+                    "每块不超过 1200 个汉字，首块 overwrite/sequence=0，"
+                    "后续 append/sequence 递增，最后只导出一次。"
+                )
+            return (
+                "工具参数 JSON 在模型输出结束前被截断或格式无效，工具未执行。"
+                + guidance
+            )
+
+        if definition is not None:
+            try:
+                tool_registry.validate_arguments(
+                    definition.parameters,
+                    arguments,
+                )
+            except ValueError as exc:
+                suffix = (
+                    "；文件写入未执行，请补齐参数且不要重复发送完整长文"
+                    if tool_name in FILE_WRITE_TOOLS
+                    else ""
+                )
+                return f"{exc}{suffix}"
+
+        if tool_name == DESKTOP_WRITE_DOCUMENT_TOOL:
+            path_value = str(arguments.get("path") or "").strip()
+            if path_value and not Path(path_value).expanduser().is_absolute():
+                return (
+                    "desktop_control.write_document 的 path 必须是本机绝对路径；"
+                    "工作区相对路径请先用 write_artifact，再用 documents.export_to_local。"
+                )
+        if tool_name == "plugin__documents__export_to_local":
+            destination = str(arguments.get("destination_path") or "").strip()
+            if destination and not Path(destination).expanduser().is_absolute():
+                return "documents.export_to_local 的 destination_path 必须是本机绝对路径"
+        if tool_name == "write_artifact":
+            mode = str(arguments.get("mode") or "overwrite")
+            try:
+                sequence = int(arguments.get("sequence", 0))
+            except (TypeError, ValueError):
+                return "write_artifact 的 sequence 必须是整数"
+            if mode == "overwrite" and sequence != 0:
+                return "write_artifact overwrite 模式要求 sequence=0"
+            if mode == "append" and sequence < 1:
+                return "write_artifact append 模式要求 sequence>=1"
+        return None
+
+    @staticmethod
     def _sanitize_tool_arguments(tool_name: str, arguments: dict) -> dict:
-        if not tool_name.startswith("plugin__desktop_control__"):
-            return arguments
         safe = dict(arguments)
+        if "_raw" in safe:
+            safe["_raw"] = (
+                "[malformed tool arguments omitted "
+                f"chars={len(str(safe['_raw']))}]"
+            )
+        if not tool_name.startswith("plugin__desktop_control__"):
+            return safe
         for key in ("text", "value"):
             if key in safe:
                 safe[key] = f"[redacted {len(str(safe[key]))} characters]"

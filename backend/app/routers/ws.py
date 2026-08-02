@@ -1,6 +1,7 @@
 # backend/app/routers/ws.py
 import asyncio
 import json
+from uuid import uuid4
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
@@ -11,6 +12,7 @@ from ..services.orchestrator import SessionOrchestrator
 from ..services.tool_registry import ToolCreate, ToolInvoke, tool_registry
 
 router = APIRouter()
+DESKTOP_ACTION_TIMEOUT_SECONDS = 30.0
 
 @router.websocket("/sessions/{session_id}")
 async def ws_endpoint(
@@ -23,8 +25,11 @@ async def ws_endpoint(
         return
     await websocket.accept(subprotocol=selected_protocol)
     tenant_id = "demo-tenant"
-    orchestrator = SessionOrchestrator(session_id, tenant_id=tenant_id, mode="project")  # default to project for collab features
     send_lock = asyncio.Lock()
+    pending_desktop_actions: dict[
+        str,
+        tuple[asyncio.Future[dict], dict],
+    ] = {}
     active_run_task: asyncio.Task | None = None
     active_run_id: str | None = None
     active_run: dict | None = None
@@ -38,6 +43,80 @@ async def ws_endpoint(
     async def send_payload(payload: dict):
         async with send_lock:
             await websocket.send_text(json.dumps(payload, ensure_ascii=False))
+
+    async def request_desktop_action(payload: dict) -> dict:
+        action_id = str(uuid4())
+        future: asyncio.Future[dict] = asyncio.get_running_loop().create_future()
+        pending_desktop_actions[action_id] = (future, dict(payload))
+        await send_payload({
+            "type": "desktop_action_required",
+            "action_id": action_id,
+            "desktop_action": payload,
+        })
+        try:
+            result = await asyncio.wait_for(
+                future,
+                timeout=DESKTOP_ACTION_TIMEOUT_SECONDS,
+            )
+        except TimeoutError as exc:
+            raise RuntimeError(
+                "外部导航未执行：桌面客户端在 30 秒内没有返回启动确认"
+            ) from exc
+        finally:
+            pending_desktop_actions.pop(action_id, None)
+        if result.get("success") is not True:
+            raise RuntimeError(
+                str(result.get("error") or "桌面客户端未能打开外部链接")
+            )
+        return result
+
+    def resolve_desktop_action(action: dict) -> None:
+        action_id = str(action.get("action_id") or "")
+        pending = pending_desktop_actions.get(action_id)
+        if pending is None:
+            raise ValueError("未知或已过期的桌面动作")
+        future, expected = pending
+        if future.done():
+            raise ValueError("桌面动作已经完成")
+        if action.get("success") is not True:
+            future.set_result({
+                "success": False,
+                "error": str(action.get("error") or "桌面客户端执行失败")[:1000],
+            })
+            return
+        receipt = action.get("receipt")
+        expected_browser = str(expected.get("browser") or "default")
+        expected_launcher = (
+            "firefox" if expected_browser == "firefox" else "system_default"
+        )
+        if (
+            not isinstance(receipt, dict)
+            or receipt.get("success") is not True
+            or receipt.get("verification") != "launcher_accepted"
+            or receipt.get("launcher") != expected_launcher
+            or receipt.get("browser") != expected_browser
+        ):
+            future.set_result({
+                "success": False,
+                "error": "桌面客户端返回了无效或不匹配的启动凭证",
+            })
+            return
+        future.set_result({
+            "success": True,
+            "kind": "external_navigation",
+            "url": str(expected.get("url") or "")[:4000],
+            "browser": expected_browser,
+            "launcher": expected_launcher,
+            "verification": "launcher_accepted",
+            "accepted_at": str(receipt.get("accepted_at") or "")[:100],
+        })
+
+    orchestrator = SessionOrchestrator(
+        session_id,
+        tenant_id=tenant_id,
+        mode="project",
+        desktop_action_handler=request_desktop_action,
+    )  # default to project for collab features
 
     async def execute_agent_run(action: dict, run: dict):
         action["_agent_run_id"] = run["id"]
@@ -190,7 +269,9 @@ async def ws_endpoint(
                 if not isinstance(action, dict):
                     raise ValueError("WebSocket action must be a JSON object")
 
-                if action.get("type") == "post_message":
+                if action.get("type") == "desktop_action_result":
+                    resolve_desktop_action(action)
+                elif action.get("type") == "post_message":
                     if active_run_task is not None and not active_run_task.done():
                         await steer_agent_run(action)
                     else:
@@ -344,6 +425,13 @@ async def ws_endpoint(
     except WebSocketDisconnect:
         pass
     finally:
+        for future, _expected in pending_desktop_actions.values():
+            if not future.done():
+                future.set_result({
+                    "success": False,
+                    "error": "桌面客户端连接已断开",
+                })
+        pending_desktop_actions.clear()
         if active_run_task is not None and not active_run_task.done():
             orchestrator.interrupt("all")
             active_run_task.cancel()

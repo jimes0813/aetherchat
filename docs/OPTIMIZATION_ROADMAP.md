@@ -264,6 +264,34 @@
 - [x] Agent Run 2.3：可信 repo 接入、Worker 独立 worktree、确定性 diff/test 证据与原生确认后的安全 apply。
 - [ ] x64/ARM64/Windows CI、签名更新、SBOM、无障碍和完整 i18n。
 
+## 已完成：第十六批 P1（Claude Desktop 入口与交付闭环对标）
+
+- [x] 为每个参与模型生成 `analysis / tool / result / final` 安全处理摘要，只记录可观察的编排事实，不持久化供应商隐藏推理。
+- [x] 在助手消息中新增“实际执行与交付”收据，汇总处理摘要、工具请求、结果核对和已保存文件，并明确模型文字不是执行凭证。
+- [x] 生成文件显示 MIME、大小与真实本机保存位置；图片、视频和音频可按需在聊天中预览。
+- [x] 支持从交付收据一键进入 Agent Run 审计，并保留工件面板、系统默认应用和文件管理器三个查看入口。
+- [x] Electron 新增全局快速输入；注册成功时才在状态栏显示快捷键，失败时仍保留菜单入口。
+- [x] 新增 `aetherchat://chat` 与 `aetherchat://new` 深链、单实例转交、模式白名单、NUL 清理和 8,000 字符上限。
+- [x] 快速输入与深链只聚焦/填入草稿，不自动发送，不改变既有工具和副作用授权边界。
+- [x] 桌面快捷文件新增快速输入动作；electron-builder 注册 `aetherchat` protocol。
+- [x] 本批验收：后端 98 passed / 1 skipped、Electron 10 passed、前端生产构建通过、Chromium E2E 38 passed、Playwright 视觉检查通过。
+- [x] 下一步第一部分：durable background jobs、定时任务与 Review Inbox（见第十七批）。
+- [ ] 下一步：受限文件变更触发器、Skills/Rules/`AGENTS.md` 分层指令和 OpenTelemetry。
+
+## 已完成：第十七批 P0（持久后台 Job、定时任务与 Review Inbox）
+
+- [x] SQLite 新增 `automation_schedules` 与 `background_jobs`，保存触发计划、不可变 Action、权限快照、预算、租约、尝试次数、执行摘要和复核状态。
+- [x] 支持单次、循环和手动立即运行；同一 Schedule/计划时间唯一，离线跨周期只生成一个追赶 Job，避免恢复任务洪峰。
+- [x] 新增本机调度循环、SQLite 原子租约、心跳、过期接管、最多三次恢复和正常退出回队。
+- [x] 后台 Job 复用 Agent Run/Checkpoint/Tool Call 状态机；已完成 Run 不重复执行，可恢复 Run 只重试未完成步骤。
+- [x] 无人值守策略默认为只读，创建时固化且不继承普通聊天的临时授权；未授权副作用同时在工具暴露层和执行层拒绝。
+- [x] 每个 Job 使用独立预算上限并持久化实际消耗；完成、失败和取消结果进入 Review Inbox。
+- [x] 活动栏新增“自动化”面板，可创建、暂停、启用、删除、立即运行、取消、查看审计和标记已复核。
+- [x] Electron 关闭窗口后驻留系统托盘；完全退出才停止本机后端，未完成 Job 安全回队；后台结果通过本机通知和渲染器刷新事件送达。
+- [x] 详细设计与边界见 `docs/BACKGROUND_AUTOMATION_2026-08-01.md`。
+- [x] 本批验收：后端 101 passed / 1 skipped、Electron 10 passed、Chromium E2E 39 passed、前端生产构建、Ruff 与 Mypy 全部通过。
+- [ ] 下一步：受限 Git 文件变更触发器、工具级预授权模板、Review Inbox 分类筛选、Skills/Rules/`AGENTS.md` 和 OpenTelemetry。
+
 每一批必须同时满足：代码实现、拒绝路径测试、生产构建、E2E 回归和文档更新。
 
 ## 工程规范：后端静态检查接入（ruff + mypy）

@@ -13,6 +13,11 @@ from .git_workspace_service import (
 
 RETRYABLE_STATUSES = {"failed", "interrupted", "recoverable"}
 TERMINAL_STEP_STATUSES = {"completed", "failed", "interrupted"}
+IDEMPOTENT_FILE_WRITE_TOOLS = {
+    "write_artifact",
+    "plugin__documents__export_to_local",
+    "plugin__desktop_control__write_document",
+}
 
 
 class AgentRunService:
@@ -59,6 +64,12 @@ class AgentRunService:
         if isinstance(value, list):
             return [cls._sanitize_persisted_value(child, key=key) for child in value[:200]]
         if isinstance(value, str):
+            if lowered == "_raw":
+                digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+                return (
+                    "[malformed tool arguments omitted "
+                    f"chars={len(value)} sha256={digest}]"
+                )
             if value.startswith("data:image/") and ";base64," in value:
                 return f"[image omitted sha256={hashlib.sha256(value.encode('utf-8')).hexdigest()}]"
             if len(value) > 50_000:
@@ -850,6 +861,13 @@ class AgentRunService:
             ):
                 if key in event:
                     payload[key] = event[key]
+        elif event_type == "reasoning_step":
+            step = event.get("step") or {}
+            payload.update({
+                "phase": str(step.get("phase") or "")[:40],
+                "detail": str(step.get("detail") or "")[:240],
+                "reset": bool(event.get("reset")),
+            })
         elif event_type in {"tool_call", "tool_result", "tool_result_replayed"}:
             for key in (
                 "tool_call_id", "tool_name", "round_index", "call_index",
@@ -877,15 +895,25 @@ class AgentRunService:
         round_index: int,
         call_index: int,
         plan_step_id: str | None = None,
+        dedupe_across_rounds: bool | None = None,
     ) -> dict[str, Any]:
         step = self.database.update_agent_step(run_id, model, "running")
-        identity = {
-            "round_index": int(round_index),
-            "call_index": int(call_index),
+        identity: dict[str, Any] = {
             "plan_step_id": str(plan_step_id or ""),
             "tool_name": str(tool_name),
             "arguments": arguments,
         }
+        stable_file_write = (
+            str(tool_name) in IDEMPOTENT_FILE_WRITE_TOOLS
+            and "_raw" not in arguments
+        )
+        if dedupe_across_rounds is not None:
+            stable_file_write = bool(dedupe_across_rounds)
+        if not stable_file_write:
+            identity.update({
+                "round_index": int(round_index),
+                "call_index": int(call_index),
+            })
         return self.database.begin_agent_tool_call(
             run_id=run_id,
             step_id=step.get("id") if step else None,

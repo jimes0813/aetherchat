@@ -1,7 +1,7 @@
 // frontend/src/stores/sessionStore.ts
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { Artifact, Conversation, MergeProposal, Message, ModelConfig, Provider, Task, ToolItem, ToolRun, WorkspaceSettings } from '../types';
+import { Artifact, Conversation, MergeProposal, Message, ModelConfig, Provider, ReasoningStep, Task, ToolItem, ToolRun, WorkspaceSettings } from '../types';
 
 const providerColors: Record<string, string> = {
   claude: 'violet',
@@ -26,10 +26,11 @@ const providerFromModel = (model: ModelConfig, current?: Provider): Provider => 
 interface SessionState {
   sessionId: string;
   conversations: Conversation[];
-  activePanel: '记忆' | '资料' | '任务' | '工件' | '合并' | '工具' | '插件' | '连接' | '电脑' | '模型' | '运行' | '设置' | null;
+  activePanel: '记忆' | '资料' | '任务' | '自动化' | '工件' | '合并' | '工具' | '插件' | '连接' | '电脑' | '模型' | '运行' | '设置' | null;
   selectedArtifactPath: string;
   messages: Message[];
   streams: Record<string, string>;
+  reasoningStreams: Record<string, ReasoningStep[]>;
   tasks: Task[];
   artifacts: Artifact[];
   mergeProposals: MergeProposal[];
@@ -62,6 +63,7 @@ interface SessionState {
   removeModelConfig: (name: string) => void;
   updateSettings: (settings: Partial<WorkspaceSettings>) => void;
   addDelta: (model: string, delta: string) => void;
+  addReasoningStep: (model: string, step: ReasoningStep, reset?: boolean) => void;
   resetStream: (model: string) => void;
   finishStream: (model: string) => void;
   setBudget: (remaining: number) => void;
@@ -75,6 +77,7 @@ export const useSessionStore = create<SessionState>()(persist((set) => ({
   selectedArtifactPath: 'README.md',
   messages: [],
   streams: {},
+  reasoningStreams: {},
   tasks: [],
   artifacts: [],
   mergeProposals: [],
@@ -86,6 +89,7 @@ export const useSessionStore = create<SessionState>()(persist((set) => ({
     sandbox: 'Docker 严格沙箱',
     language: '中文优先',
     uiLocale: 'zh-CN',
+    reasoningDisplay: '显示',
   },
   providers: [],
   modelConfigs: [],
@@ -95,6 +99,7 @@ export const useSessionStore = create<SessionState>()(persist((set) => ({
     sessionId,
     messages: [],
     streams: {},
+    reasoningStreams: {},
     tasks: [],
     artifacts: [],
     mergeProposals: [],
@@ -113,6 +118,7 @@ export const useSessionStore = create<SessionState>()(persist((set) => ({
       conversations: [conversation, ...state.conversations],
       messages: [],
       streams: {},
+      reasoningStreams: {},
       tasks: [],
       artifacts: [],
       mergeProposals: [],
@@ -121,7 +127,18 @@ export const useSessionStore = create<SessionState>()(persist((set) => ({
     return id;
   },
   setConversations: (conversations) => set({ conversations }),
-  setMessages: (messages) => set({ messages, streams: {} }),
+  setMessages: (messages) => set((state) => {
+    // A history request and the live WebSocket are started together. Preserve
+    // messages that arrived after the request began so a slower history
+    // response cannot erase a just-completed assistant turn.
+    const fetchedIds = new Set(messages.map((message) => message.id));
+    const liveMessages = state.messages.filter((message) => !fetchedIds.has(message.id));
+    return {
+      messages: [...messages, ...liveMessages],
+      streams: {},
+      reasoningStreams: {},
+    };
+  }),
   setActivePanel: (activePanel) => set({ activePanel }),
   setSelectedArtifactPath: (selectedArtifactPath) => set({ selectedArtifactPath }),
   addMessage: (msg) => set((state) => ({
@@ -182,6 +199,16 @@ export const useSessionStore = create<SessionState>()(persist((set) => ({
       provider.name === model ? { ...provider, status: 'thinking' } : provider
     )),
   })),
+  addReasoningStep: (model, step, reset = false) => set((state) => {
+    const current = reset ? [] : state.reasoningStreams[model] ?? [];
+    const last = current[current.length - 1];
+    const steps = last?.phase === step.phase && last.detail === step.detail
+      ? current
+      : [...current, step].slice(-32);
+    return {
+      reasoningStreams: { ...state.reasoningStreams, [model]: steps },
+    };
+  }),
   resetStream: (model) => set((state) => {
     const streams = { ...state.streams };
     delete streams[model];
@@ -189,9 +216,12 @@ export const useSessionStore = create<SessionState>()(persist((set) => ({
   }),
   finishStream: (model) => set((state) => {
     const nextStreams = { ...state.streams };
+    const nextReasoningStreams = { ...state.reasoningStreams };
     delete nextStreams[model];
+    delete nextReasoningStreams[model];
     return {
       streams: nextStreams,
+      reasoningStreams: nextReasoningStreams,
       providers: state.providers.map((provider) => (
         provider.name === model ? { ...provider, status: 'done' } : provider
       )),

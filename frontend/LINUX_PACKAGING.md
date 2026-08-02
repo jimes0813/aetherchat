@@ -29,6 +29,9 @@ Deb 构建会强制记录 `chrome-sandbox` 为 root 所有、模式 4755；CI �
 - 本地数据由 Electron 放在用户应用数据目录；独立后端默认使用 `$XDG_DATA_HOME/aetherchat` 或 `~/.local/share/aetherchat`。
 - Windows UI Automation、Win32 键鼠注入和启动 `.exe` 在 Linux 上关闭，能力状态接口会如实返回 `false`。
 - 模型密钥通过 Secret Service 系统密钥环保存；`vault.json` 只保留引用。首次启动会把旧版明文条目迁移到密钥环。若桌面环境没有可用的 Secret Service，应用会拒绝持久化新密钥，而不是回退为明文。
+- 安装包注册 `aetherchat://` 协议，并在桌面菜单提供“快速输入”操作。可用 `xdg-open 'aetherchat://chat?prompt=检查报告&mode=project'` 聚焦并填入当前会话，或使用 `aetherchat://new` 新建会话；深链不会自动发送。
+- 点击窗口关闭按钮后，安装版会隐藏到系统托盘，让本机后端、单次/循环定时任务和 Review Inbox 继续工作。托盘菜单提供重新打开、快速输入和“退出 AetherChat”；只有明确退出才会停止后端，未完成 Job 会回队并在下次启动恢复。若桌面环境不支持托盘图标，应用保持传统的关闭即退出回退行为。
+- 后台自动化使用 SQLite 租约和只读权限快照，不依赖 Redis；完整设计见 `docs/BACKGROUND_AUTOMATION_2026-08-01.md`。
 
 ## 验证
 
