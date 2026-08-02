@@ -5,6 +5,7 @@ import base64
 import json
 import os
 import random
+import re
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,6 +18,14 @@ import httpx
 from .comfyui_runtime import ComfyUIRuntimeError, comfyui_runtime
 
 DEFAULT_IMAGE_MODEL = "RealVisXL_V5.0_Lightning_fp16.safetensors"
+BIGASP_V2_MODEL = "bigaspv2.safetensors"
+WAN_I2V_MODEL = "wan2.1_i2v_480p_14B_fp8_scaled.safetensors"
+WAN_TEXT_ENCODER = "umt5_xxl_fp8_e4m3fn_scaled.safetensors"
+WAN_VAE = "wan_2.1_vae.safetensors"
+WAN_CLIP_VISION = "clip_vision_h.safetensors"
+LTX_CHECKPOINT = "ltx-2.3-22b-dev.safetensors"
+LTX_TEXT_ENCODER = "gemma-3-12b-it/model-00001-of-00005.safetensors"
+LTX_MIN_FREE_MEMORY = 96 * 1024**3
 
 
 class ComfyUIError(RuntimeError):
@@ -90,6 +99,11 @@ class ComfyUIService:
             include_workflow_details=False,
             _ensure_runtime=False,
         )
+        catalog = await self.model_catalog(
+            _ensure_runtime=False,
+            _inventory=inventory,
+            _stats=stats,
+        )
         return {
             "ready": True,
             "url": self.base_url,
@@ -97,6 +111,13 @@ class ComfyUIService:
             "system": stats.get("system", {}),
             "devices": stats.get("devices", []),
             "inventory": inventory,
+            # This compact, policy-aware view is authoritative for generation
+            # availability. Raw GPU memory is shared on GB10 and cannot prove
+            # that a high-memory video pipeline is safe to run.
+            "generation": {
+                "image_models": catalog["image_models"],
+                "video_pipelines": catalog["video_pipelines"],
+            },
         }
 
     async def inventory(
@@ -165,6 +186,17 @@ class ComfyUIService:
             "text_encoders": choices("CLIPLoader", "clip_name"),
             "clip_vision": choices("CLIPVisionLoader", "clip_name"),
             "upscalers": choices("UpscaleModelLoader", "model_name"),
+            "capabilities": {
+                name: name in info
+                for name in (
+                    "WanImageToVideo",
+                    "SaveWEBM",
+                    "LTXVGemmaCLIPModelLoader",
+                    "LTXVAudioVAELoader",
+                    "LTXVConditioning",
+                    "SaveVideo",
+                )
+            },
             "workflows": workflows,
             "counts": {
                 "checkpoints": len(checkpoints),
@@ -172,6 +204,130 @@ class ComfyUIService:
                 "loras": len(loras),
                 "workflows": len(workflows),
             },
+        }
+
+    async def model_catalog(
+        self,
+        *,
+        _ensure_runtime: bool = True,
+        _inventory: dict[str, Any] | None = None,
+        _stats: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        inventory = _inventory
+        if inventory is None:
+            inventory = await self.inventory(
+                include_workflow_details=False,
+                _ensure_runtime=_ensure_runtime,
+            )
+        stats = _stats if _stats is not None else await self._get_json(
+            "/system_stats", 5
+        )
+        checkpoints = [str(item) for item in inventory.get("checkpoints", [])]
+        diffusion_models = [
+            str(item) for item in inventory.get("diffusion_models", [])
+        ]
+        image_models: list[dict[str, Any]] = []
+        for name in checkpoints:
+            lowered = name.casefold()
+            if (
+                "/" in name
+                or "\\" in name
+                or "ltx" in lowered
+                or "echo" in lowered
+            ):
+                continue
+            image_models.append({
+                "name": name,
+                "kind": "checkpoint",
+                "recommended": lowered == DEFAULT_IMAGE_MODEL.casefold(),
+            })
+        for name in diffusion_models:
+            if "qwen_image" not in name.casefold():
+                continue
+            image_models.append({
+                "name": name,
+                "kind": "diffusion_model",
+                "recommended": not image_models,
+            })
+
+        capabilities = inventory.get("capabilities") or {}
+
+        def missing_assets(requirements: list[tuple[str, str]]) -> list[str]:
+            missing: list[str] = []
+            for group, name in requirements:
+                if group == "capabilities":
+                    if not capabilities.get(name):
+                        missing.append(f"节点 {name}")
+                elif name not in inventory.get(group, []):
+                    missing.append(name)
+            return missing
+
+        wan_missing = missing_assets([
+            ("diffusion_models", WAN_I2V_MODEL),
+            ("text_encoders", WAN_TEXT_ENCODER),
+            ("vae", WAN_VAE),
+            ("clip_vision", WAN_CLIP_VISION),
+            ("capabilities", "WanImageToVideo"),
+            ("capabilities", "SaveWEBM"),
+        ])
+        ltx_missing = missing_assets([
+            ("checkpoints", LTX_CHECKPOINT),
+            ("text_encoders", LTX_TEXT_ENCODER),
+            ("capabilities", "LTXVGemmaCLIPModelLoader"),
+            ("capabilities", "LTXVAudioVAELoader"),
+            ("capabilities", "LTXVConditioning"),
+            ("capabilities", "SaveVideo"),
+        ])
+        raw_system = stats.get("system")
+        system: dict[str, Any] = raw_system if isinstance(raw_system, dict) else {}
+        free_memory = int(system.get("ram_free") or 0)
+        ltx_memory_ready = free_memory >= LTX_MIN_FREE_MEMORY
+        ltx_installed = not ltx_missing
+        ltx_warning = (
+            "LTX 2.3 22B 会占用大量统一内存；当前可用内存低于 96 GiB。"
+            "请先停止本地大语言模型，否则 ComfyUI 可能被 OOM killer 终止。"
+            if ltx_installed and not ltx_memory_ready
+            else "LTX 2.3 22B 属于高内存管线，生成前请确认没有大型本地模型并行占用内存。"
+        )
+        return {
+            "image_models": image_models,
+            "video_pipelines": [
+                {
+                    "id": "wan-i2v",
+                    "label": "Wan 2.1 I2V 14B（图生视频）",
+                    "installed": not wan_missing,
+                    "available": not wan_missing,
+                    "missing": wan_missing,
+                    "requires_input_image": True,
+                    "warning": "需要一张本机输入图片。",
+                },
+                {
+                    "id": "ltx-t2v",
+                    "label": "LTX 2.3 22B（文生视频）",
+                    "installed": ltx_installed,
+                    "available": ltx_installed and ltx_memory_ready,
+                    "missing": ltx_missing,
+                    "requires_input_image": False,
+                    "minimum_free_memory_bytes": LTX_MIN_FREE_MEMORY,
+                    "current_free_memory_bytes": free_memory,
+                    "warning": ltx_warning,
+                },
+            ],
+            "assets": {
+                key: inventory.get(key, [])
+                for key in (
+                    "checkpoints",
+                    "diffusion_models",
+                    "loras",
+                    "vae",
+                    "text_encoders",
+                    "clip_vision",
+                    "upscalers",
+                    "workflows",
+                )
+            },
+            "system": system,
+            "devices": stats.get("devices", []),
         }
 
     @staticmethod
@@ -188,8 +344,8 @@ class ComfyUIService:
         negative_prompt: str = "blurry, low quality, distorted, watermark, text, bad anatomy",
         width: int = 768,
         height: int = 768,
-        steps: int = 6,
-        cfg: float = 2.0,
+        steps: int | None = None,
+        cfg: float | None = None,
         seed: int | None = None,
         lora: str | None = None,
         lora_strength: float = 1.0,
@@ -241,14 +397,40 @@ class ComfyUIService:
                     "No supported image checkpoint or Qwen-Image model is installed"
                 )
         else:
-            model = requested_model
+            requested_key = re.sub(r"\s*模型$", "", requested_model).casefold()
+            requested_stem = Path(requested_key).stem
+            available_models = [
+                str(item)
+                for group in ("checkpoints", "diffusion_models")
+                for item in inventory.get(group, [])
+                if str(item).strip()
+            ]
+            model = next(
+                (
+                    candidate
+                    for candidate in available_models
+                    if candidate.casefold() == requested_key
+                    or Path(candidate).stem.casefold() == requested_stem
+                ),
+                requested_model,
+            )
+        is_bigasp_v2 = Path(model).name.casefold() == BIGASP_V2_MODEL.casefold()
+        resolved_steps = steps if steps is not None else (40 if is_bigasp_v2 else 6)
+        resolved_cfg = cfg if cfg is not None else (3.4 if is_bigasp_v2 else 2.0)
+        if lora and lora not in inventory.get("loras", []):
+            available_loras = ", ".join(inventory.get("loras", [])) or "(none)"
+            raise ComfyUIError(
+                f"Unsupported LoRA: {lora}. Available LoRAs: {available_loras}"
+            )
         if model in inventory["checkpoints"]:
             graph = self._checkpoint_image_graph(
-                prompt, negative_prompt, model, width, height, steps, cfg, seed, lora, lora_strength
+                prompt, negative_prompt, model, width, height, resolved_steps,
+                resolved_cfg, seed, lora, lora_strength,
             )
         elif model in inventory["diffusion_models"] and "qwen_image" in model.lower():
             graph = self._qwen_image_graph(
-                prompt, negative_prompt, model, width, height, steps, cfg, seed, lora, lora_strength
+                prompt, negative_prompt, model, width, height, resolved_steps,
+                resolved_cfg, seed, lora, lora_strength,
             )
         else:
             raise ComfyUIError(f"Unsupported image model: {model}")
@@ -264,8 +446,8 @@ class ComfyUIService:
                     "model": model,
                     "width": width,
                     "height": height,
-                    "steps": max(1, min(100, steps)),
-                    "cfg": max(0.1, min(30.0, cfg)),
+                    "steps": max(1, min(100, resolved_steps)),
+                    "cfg": max(0.1, min(30.0, resolved_cfg)),
                     "seed": resolved_seed,
                     "lora": lora,
                     "lora_strength": lora_strength if lora else None,
@@ -377,6 +559,24 @@ class ComfyUIService:
         seed: int | None = None,
     ) -> dict[str, Any]:
         await self.ensure_ready()
+        catalog = await self.model_catalog(_ensure_runtime=False)
+        pipeline_option = next(
+            (
+                item
+                for item in catalog["video_pipelines"]
+                if item["id"] == pipeline
+            ),
+            None,
+        )
+        if pipeline_option is None:
+            raise ComfyUIError("pipeline must be wan-i2v or ltx-t2v")
+        if not pipeline_option["installed"]:
+            raise ComfyUIError(
+                f"ComfyUI pipeline {pipeline} is missing required models or nodes: "
+                + ", ".join(pipeline_option["missing"])
+            )
+        if not pipeline_option["available"]:
+            raise ComfyUIError(str(pipeline_option["warning"]))
         width, height = self._dimensions(width, height)
         frames = max(1, min(161, frames))
         if pipeline == "wan-i2v":
@@ -387,8 +587,6 @@ class ComfyUIService:
         elif pipeline == "ltx-t2v":
             width, height = width - width % 32, height - height % 32
             graph = self._ltx_t2v_graph(prompt, width, height, frames, fps, steps, cfg, seed)
-        else:
-            raise ComfyUIError("pipeline must be wan-i2v or ltx-t2v")
         return await self._submit_and_wait(
             graph,
             timeout=3600,
@@ -434,13 +632,13 @@ class ComfyUIService:
         negative = "blurry, low quality, distorted, static, frozen, watermark, text, bad anatomy"
         return {
             "1": {"class_type": "UNETLoader", "inputs": {
-                "unet_name": "wan2.1_i2v_480p_14B_fp8_scaled.safetensors", "weight_dtype": "fp8_e4m3fn",
+                "unet_name": WAN_I2V_MODEL, "weight_dtype": "fp8_e4m3fn",
             }},
             "2": {"class_type": "CLIPLoader", "inputs": {
-                "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors", "type": "wan",
+                "clip_name": WAN_TEXT_ENCODER, "type": "wan",
             }},
-            "3": {"class_type": "VAELoader", "inputs": {"vae_name": "wan_2.1_vae.safetensors"}},
-            "4": {"class_type": "CLIPVisionLoader", "inputs": {"clip_name": "clip_vision_h.safetensors"}},
+            "3": {"class_type": "VAELoader", "inputs": {"vae_name": WAN_VAE}},
+            "4": {"class_type": "CLIPVisionLoader", "inputs": {"clip_name": WAN_CLIP_VISION}},
             "5": {"class_type": "LoadImage", "inputs": {"image": image_name}},
             "6": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["2", 0]}},
             "7": {"class_type": "CLIPTextEncode", "inputs": {"text": negative, "clip": ["2", 0]}},
@@ -472,12 +670,12 @@ class ComfyUIService:
     ) -> dict[str, Any]:
         negative = "worst quality, blurry, distorted, jittery, flickering"
         return {
-            "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "ltx-2.3-22b-dev.safetensors"}},
+            "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": LTX_CHECKPOINT}},
             "2": {"class_type": "LTXVGemmaCLIPModelLoader", "inputs": {
-                "gemma_path": "gemma-3-12b-it/model-00001-of-00005.safetensors",
-                "ltxv_path": "ltx-2.3-22b-dev.safetensors", "max_length": 1024,
+                "gemma_path": LTX_TEXT_ENCODER,
+                "ltxv_path": LTX_CHECKPOINT, "max_length": 1024,
             }},
-            "3": {"class_type": "LTXVAudioVAELoader", "inputs": {"ckpt_name": "ltx-2.3-22b-dev.safetensors"}},
+            "3": {"class_type": "LTXVAudioVAELoader", "inputs": {"ckpt_name": LTX_CHECKPOINT}},
             "4": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["2", 0], "text": prompt}},
             "5": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["2", 0], "text": negative}},
             "6": {"class_type": "LTXVConditioning", "inputs": {

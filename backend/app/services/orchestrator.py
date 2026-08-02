@@ -466,8 +466,12 @@ class SessionOrchestrator:
                     "你可以与本机 ComfyUI 图像/视频模型协作。用户要求生成视觉内容时，"
                     "直接选择 generate_image、generate_video 或 run_workflow；generate_image 的 model "
                     "可省略以自动选择默认模型。只有用户询问环境状态或确实需要盘点资源时才调用 "
-                    "comfyui.status；复杂工作流可先调用 workflow_schema 获取节点映射、"
+                    "comfyui.status；同一次请求中 status 成功后不得重复调用。"
+                    "复杂工作流可先调用 workflow_schema 获取节点映射、"
                     "依赖与可覆盖输入，不要猜节点 ID。不要声称已经生成而不调用工具。"
+                    "如果用户明确要求不要生成，只能调用 status，绝不能调用 generate_image、"
+                    "generate_video 或 run_workflow。LTX 是否可运行必须严格读取 status 返回的 "
+                    "generation.video_pipelines[].available 与 warning，不得根据 GPU/显存自行推断。"
                     "你负责把用户意图整理为包含主体、环境、构图、光线、风格及动作的完整提示词，"
                     "ComfyUI 负责生成。工具返回文件后必须明确报告实际 filename 或 URL，"
                     "并引用 metadata_artifact；该 JSON 已保存 prompt、模型、seed、尺寸和工作流来源。"
@@ -1009,6 +1013,12 @@ class SessionOrchestrator:
                         if result_status == "success":
                             if tool_call.name in FILE_WRITE_TOOLS:
                                 invalid_file_tool_calls = 0
+                            if tool_call.name == COMFYUI_STATUS_TOOL:
+                                # One successful inventory snapshot is enough
+                                # for this turn. Removing the schema prevents
+                                # local models from repeating the same large
+                                # result until their context overflows.
+                                disabled_tool_names.add(tool_call.name)
                             result_detail = "执行成功，正在依据真实结果继续处理。"
                             if tool_call.name == BROWSER_OPEN_TOOL:
                                 receipt = self._browser_execution_receipt(payload)
@@ -1069,6 +1079,18 @@ class SessionOrchestrator:
                     for call_index, tool_call in enumerate(canonical_tool_calls):
                         tool_name = tool_call.name
                         arguments = tool_call.arguments
+                        if tool_name == COMFYUI_IMAGE_TOOL:
+                            user_requested_model = self._requested_comfyui_image_model(
+                                content,
+                            )
+                            if user_requested_model:
+                                # Keep the checkpoint named by the user
+                                # authoritative even when a local model omits or
+                                # rewrites the optional `model` tool argument.
+                                arguments = {
+                                    **arguments,
+                                    "_user_requested_model": user_requested_model,
+                                }
                         if tool_name == BROWSER_OPEN_TOOL:
                             arguments = {
                                 **arguments,
@@ -2386,6 +2408,51 @@ class SessionOrchestrator:
         )
 
     @staticmethod
+    def _comfyui_intent_text(
+        content: str,
+        execution: dict | None = None,
+    ) -> str:
+        """Normalize ComfyUI intent while removing explicitly negated actions."""
+        execution = execution or {}
+        text = " ".join((
+            str(content or ""),
+            str(execution.get("instruction") or ""),
+        )).casefold()
+        text = re.sub(
+            r"(?:不要|请勿|无需|不需要|禁止|别)\s*(?:再\s*)?"
+            r"(?:重新生成|生成|绘制|制作|创作|渲染|画|运行|执行)"
+            r"[^,，。！？；;\n]*",
+            " ",
+            text,
+        )
+        text = re.sub(
+            r"(?:do\s+not|don't|dont|no\s+need\s+to|without)\s+"
+            r"(?:generate|regenerate|create|draw|render|make|run|execute)"
+            r"[^,，。！？；;\n]*",
+            " ",
+            text,
+        )
+        return text
+
+    @staticmethod
+    def _requested_comfyui_image_model(content: str) -> str | None:
+        """Extract a checkpoint explicitly named by the user, if present."""
+        text = str(content or "")
+        exact = re.search(
+            r"([a-z0-9_.-]+\.safetensors)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if exact:
+            return exact.group(1)
+        alias = re.search(
+            r"(?:使用|用)\s*([a-z0-9_.-]{3,})\s*模型",
+            text,
+            flags=re.IGNORECASE,
+        )
+        return alias.group(1) if alias else None
+
+    @staticmethod
     def _required_comfyui_tools(
         content: str,
         execution: dict | None = None,
@@ -2393,21 +2460,51 @@ class SessionOrchestrator:
         """Return the mandatory ComfyUI sequence for explicit generation requests.
 
         Merely mentioning an existing image (for example “图片呢”) must not
-        silently start a new GPU job. A creation verb plus a visual deliverable
-        is required before the orchestrator constrains tool selection.
+        silently start a new GPU job. Chinese requests may put the deliverable
+        before the verb ("图片生成") or name a checkpoint before describing the
+        action ("使用 xxx 模型……进行图片").
         """
 
-        execution = execution or {}
-        text = " ".join((
-            str(content or ""),
-            str(execution.get("instruction") or ""),
-        )).casefold()
-        creation_terms = (
-            "生成", "重新生成", "画图", "画一", "画张", "绘制", "制作", "创作",
-            "渲染", "出一张", "做一张", "generate", "regenerate",
-            "create", "draw", "render", "make",
+        # A mandatory side effect must come from the user's own request. Plan
+        # step titles such as “生成单一最终交付” are orchestration language and
+        # must never be reinterpreted as a request to generate visual media.
+        text = SessionOrchestrator._comfyui_intent_text(content)
+        visual_target = (
+            r"(?:图片|图像|照片|摄影图|艺术照|肖像|插图|海报|封面|画面|"
+            r"视频|动画|影片|短片|图)"
         )
-        if not any(term in text for term in creation_terms):
+        chinese_creation = re.search(
+            rf"(?:重新生成|生成|绘制|制作|创作|渲染|画|出|做)"
+            rf"[^,，。！？；;\n]{{0,32}}{visual_target}",
+            text,
+        )
+        chinese_target_first_creation = re.search(
+            rf"{visual_target}\s*(?:重新)?生成"
+            rf"(?!\s*(?:的\s*)?(?:模型|能力|服务|资源|列表|清单|状态|数量|"
+            rf"有哪些|都有什么))",
+            text,
+        )
+        chinese_named_model_creation = re.search(
+            rf"(?:使用|用)[^,，。！？；;\n]{{0,48}}"
+            rf"(?:[a-z0-9_.-]+\.safetensors|[a-z0-9_.-]{{3,}}\s*模型)"
+            rf"[^,，。！？；;\n]{{0,96}}"
+            rf"(?:来\s*)?(?:进行|生成|制作|创作|渲染|出图|画)"
+            rf"[^,，。！？；;\n]{{0,48}}{visual_target}",
+            text,
+        )
+        english_creation = re.search(
+            r"(?:generate|regenerate|create|draw|render|make)"
+            r"[^,，。！？；;\n]{0,48}"
+            r"(?:image|picture|photo|photograph|illustration|poster|cover|"
+            r"video|movie|clip)",
+            text,
+        )
+        if not any((
+            chinese_creation,
+            chinese_target_first_creation,
+            chinese_named_model_creation,
+            english_creation,
+        )):
             return []
 
         if any(term in text for term in ("工作流", "workflow")) and any(
@@ -2485,11 +2582,31 @@ class SessionOrchestrator:
             "comfyui", "comfy", "图片", "图像", "生成图", "画图",
             "视频", "工作流", "seed", "提示词",
         ):
-            selected.update(
-                definition.name
-                for definition in definitions
-                if definition.name.startswith("plugin__comfyui__")
+            required_comfyui = SessionOrchestrator._required_comfyui_tools(
+                content,
+                execution,
             )
+            positive_comfyui_text = SessionOrchestrator._comfyui_intent_text(
+                content,
+            )
+            workflow_run = (
+                any(term in positive_comfyui_text for term in ("工作流", "workflow"))
+                and any(
+                    term in positive_comfyui_text
+                    for term in ("运行", "执行", "run", "execute")
+                )
+            )
+            if required_comfyui:
+                selected.update(required_comfyui)
+            elif workflow_run:
+                selected.add(COMFYUI_WORKFLOW_TOOL)
+            else:
+                # Resource questions and negated generation requests are
+                # read-only. Do not expose generation tools for the model to
+                # call accidentally.
+                selected.add(COMFYUI_STATUS_TOOL)
+            if contains("工作流", "workflow"):
+                selected.add("plugin__comfyui__workflow_schema")
         if contains(
             "电脑", "桌面", "窗口", "鼠标", "键盘", "点击", "粘贴",
             "启动应用", "打开应用", "computer use", "截图",

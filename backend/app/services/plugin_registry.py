@@ -310,7 +310,11 @@ BUILTIN_PLUGINS = [
             _action(
                 "status",
                 "检查 ComfyUI",
-                "检查本机 ComfyUI、GPU、模型和工作流摘要；具体节点映射与输入请调用 workflow_schema。",
+                (
+                    "只读检查本机 ComfyUI、可生成图像模型、视频管线安全状态和工作流摘要；"
+                    "视频可用性必须以 generation.video_pipelines[].available 为准，"
+                    "不要根据 GPU/显存自行推断。具体节点映射与输入请调用 workflow_schema。"
+                ),
                 "comfyui_status",
             ),
             _action(
@@ -326,7 +330,10 @@ BUILTIN_PLUGINS = [
             _action(
                 "generate_image",
                 "生成图像",
-                "用本地 SDXL checkpoint 或 Qwen-Image 生成图像；model 可省略并自动选择可用默认模型。",
+                (
+                    "用本地 SDXL checkpoint 或 Qwen-Image 生成图像；model 可省略并自动选择"
+                    "可用默认模型。BigASP v2 未显式给出采样参数时自动使用 steps=40、cfg=3.4。"
+                ),
                 "comfyui_generate_image",
                 properties={
                     "prompt": {"type": "string", "description": "完整画面提示词"},
@@ -349,7 +356,7 @@ BUILTIN_PLUGINS = [
             _action(
                 "generate_video",
                 "生成视频",
-                "使用 wan-i2v 把本机图片转为视频，或使用 ltx-t2v 文生视频；耗时可能较长。",
+                "使用 wan-i2v 把本机图片转为视频，或使用 ltx-t2v 文生视频；用户在插件中心保存的管线选择优先。",
                 "comfyui_generate_video",
                 properties={
                     "prompt": {"type": "string", "description": "主体动作、镜头运动与画面描述"},
@@ -364,7 +371,7 @@ BUILTIN_PLUGINS = [
                     "seed": {"type": "integer"},
                     "task_id": {"type": "string", "description": "可选关联任务 ID"},
                 },
-                required=["prompt", "pipeline"],
+                required=["prompt"],
             ),
             _action(
                 "run_workflow",
@@ -835,22 +842,41 @@ class PluginRegistry:
         if handler.startswith("comfyui_"):
             from .comfyui_service import comfyui_service
 
+            plugin = self.get("comfyui") or {}
+            raw_config = plugin.get("config")
+            config: dict[str, Any] = (
+                raw_config if isinstance(raw_config, dict) else {}
+            )
+            selection = {
+                "image_model": str(config.get("image_model") or "").strip() or None,
+                "video_pipeline": str(config.get("video_pipeline") or "").strip() or None,
+            }
+
             if handler == "comfyui_status":
-                return await comfyui_service.status()
+                result = await comfyui_service.status()
+                result["selection"] = selection
+                return result
             if handler == "comfyui_workflow_schema":
                 return await comfyui_service.workflow_schema(arguments["name"])
             if handler == "comfyui_generate_image":
+                user_requested_model = str(
+                    arguments.get("_user_requested_model") or ""
+                ).strip() or None
                 return await comfyui_service.generate_image(
                     arguments["prompt"],
-                    model=arguments.get("model"),
+                    model=(
+                        user_requested_model
+                        or selection["image_model"]
+                        or arguments.get("model")
+                    ),
                     negative_prompt=arguments.get(
                         "negative_prompt",
                         "blurry, low quality, distorted, watermark, text, bad anatomy",
                     ),
                     width=arguments.get("width", 768),
                     height=arguments.get("height", 768),
-                    steps=arguments.get("steps", 6),
-                    cfg=arguments.get("cfg", 2.0),
+                    steps=arguments.get("steps"),
+                    cfg=arguments.get("cfg"),
                     seed=arguments.get("seed"),
                     lora=arguments.get("lora"),
                     lora_strength=arguments.get("lora_strength", 1.0),
@@ -858,7 +884,10 @@ class PluginRegistry:
             if handler == "comfyui_generate_video":
                 return await comfyui_service.generate_video(
                     arguments["prompt"],
-                    pipeline=arguments["pipeline"],
+                    pipeline=selection["video_pipeline"] or arguments.get(
+                        "pipeline",
+                        "wan-i2v",
+                    ),
                     input_image=arguments.get("input_image"),
                     width=arguments.get("width", 480),
                     height=arguments.get("height", 832),

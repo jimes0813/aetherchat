@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import shlex
@@ -28,6 +29,20 @@ class ComfyUIRuntimeService:
         self._managed_unit: str | None = None
         self._started_at: str | None = None
         self._command_label: str | None = None
+
+    @staticmethod
+    def _docker_container() -> str | None:
+        if not sys.platform.startswith("linux") or shutil.which("docker") is None:
+            return None
+        container = os.getenv(
+            "AETHERCHAT_COMFYUI_DOCKER_CONTAINER",
+            "comfy-spark",
+        ).strip()
+        if not container:
+            return None
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", container):
+            raise ComfyUIRuntimeError("ComfyUI Docker 容器名称无效")
+        return container
 
     @staticmethod
     def _endpoint(base_url: str) -> tuple[str, int]:
@@ -160,18 +175,124 @@ class ComfyUIRuntimeService:
             errors="replace",
         ).strip()
 
+    @staticmethod
+    async def _command_output(
+        *command: str,
+        timeout: float = 10,
+    ) -> tuple[int, str]:
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            output, _ = await asyncio.wait_for(process.communicate(), timeout=timeout)
+        except (OSError, TimeoutError):
+            return 127, f"{command[0]} 不可用或超时"
+        return process.returncode or 0, output.decode(
+            "utf-8",
+            errors="replace",
+        ).strip()
+
+    async def _docker_diagnostics(self, base_url: str) -> dict[str, Any] | None:
+        container = self._docker_container()
+        if container is None:
+            return None
+        returncode, output = await self._command_output(
+            "docker",
+            "inspect",
+            "--format",
+            "{{json .State}}|{{.HostConfig.Memory}}",
+            container,
+        )
+        if returncode != 0:
+            return None
+        state_json, _, memory_text = output.rpartition("|")
+        try:
+            state = json.loads(state_json)
+        except (TypeError, ValueError):
+            state = {}
+        try:
+            memory_limit = int(memory_text or 0)
+        except ValueError:
+            memory_limit = 0
+        _, port = self._endpoint(base_url)
+        process_running = False
+        if str(state.get("Status") or "").lower() == "running":
+            process_running = (
+                await self._command_output(
+                    "docker",
+                    "exec",
+                    container,
+                    "pgrep",
+                    "-f",
+                    rf"^python(3)? main.py .*--port {port}([[:space:]]|$)",
+                )
+            )[0] == 0
+        return {
+            "container": container,
+            "status": str(state.get("Status") or "unknown"),
+            "oom_killed": bool(state.get("OOMKilled")),
+            "exit_code": state.get("ExitCode"),
+            "memory_limit_bytes": memory_limit or None,
+            "comfyui_process_running": process_running,
+        }
+
+    async def diagnostics(self, base_url: str) -> dict[str, Any]:
+        self._endpoint(base_url)
+        ready = await self._probe(base_url)
+        unit = self._systemd_unit()
+        unit_active = await self._unit_active(unit) if unit is not None else False
+        docker = (
+            await self._docker_diagnostics(base_url)
+            if unit is not None
+            or bool(os.getenv("AETHERCHAT_COMFYUI_DOCKER_CONTAINER", "").strip())
+            else None
+        )
+        reason = "ready" if ready else "endpoint_unreachable"
+        message = "ComfyUI HTTP 接口已就绪。" if ready else "ComfyUI HTTP 接口当前不可访问。"
+        if not ready and docker is not None:
+            process_running = bool(docker.get("comfyui_process_running"))
+            if not process_running and docker.get("oom_killed"):
+                reason = "process_oom_killed"
+                message = (
+                    "Docker 容器仍在运行，但 ComfyUI Python 进程已因内存不足退出；"
+                    "请改用较小模型，或先停止占用统一内存的本地大模型后重启 ComfyUI。"
+                )
+            elif not process_running:
+                reason = "process_missing"
+                message = (
+                    "Docker 容器和 systemd 单元可能仍显示运行，但容器内没有 ComfyUI Python 进程。"
+                )
+            else:
+                reason = "process_starting"
+                message = "ComfyUI Python 进程存在，但 HTTP 接口仍在启动。"
+        elif not ready and unit_active:
+            reason = "unit_active_endpoint_unreachable"
+            message = "ComfyUI systemd 单元显示 active，但 HTTP 接口不可访问。"
+        return {
+            "ready": ready,
+            "reason": reason,
+            "message": message,
+            "unit": unit,
+            "unit_active": unit_active,
+            "docker": docker,
+        }
+
     async def _unit_active(self, unit: str) -> bool:
         return (await self._systemctl("is-active", "--quiet", unit))[0] == 0
 
     async def _start_unit(self, unit: str) -> tuple[bool, bool, str]:
         already_active = await self._unit_active(unit)
-        returncode, output = await self._systemctl("start", unit)
+        action = "restart" if already_active else "start"
+        returncode, output = await self._systemctl(action, unit)
         if returncode != 0:
             return False, already_active, output
         if not already_active:
             self._managed_unit = unit
             self._started_at = datetime.now(UTC).isoformat()
-            self._command_label = f"systemctl --user start {unit}"
+            self._command_label = f"systemctl --user {action} {unit}"
         return True, already_active, output
 
     async def _stop_unit(self, unit: str) -> tuple[bool, str]:
@@ -266,6 +387,7 @@ class ComfyUIRuntimeService:
                 min(float(os.getenv("AETHERCHAT_COMFYUI_STARTUP_TIMEOUT", "180")), 900.0),
             )
             deadline = asyncio.get_running_loop().time() + timeout
+            next_process_check = asyncio.get_running_loop().time() + 3
             while asyncio.get_running_loop().time() < deadline:
                 if await self._probe(base_url):
                     return await self.status(base_url)
@@ -285,6 +407,17 @@ class ComfyUIRuntimeService:
                     raise ComfyUIRuntimeError(
                         f"ComfyUI systemd user unit 已停止：{unit_for_wait}"
                     )
+                if (
+                    unit_for_wait is not None
+                    and asyncio.get_running_loop().time() >= next_process_check
+                ):
+                    diagnostic = await self.diagnostics(base_url)
+                    if diagnostic["reason"] in {
+                        "process_oom_killed",
+                        "process_missing",
+                    }:
+                        raise ComfyUIRuntimeError(str(diagnostic["message"]))
+                    next_process_check = asyncio.get_running_loop().time() + 2
                 await asyncio.sleep(0.5)
             if process is not None:
                 await self._stop_process(process)
@@ -294,13 +427,14 @@ class ComfyUIRuntimeService:
                 self._managed_unit = None
             self._started_at = None
             self._command_label = None
+            diagnostic = await self.diagnostics(base_url)
             detail = (
                 f"；systemd 回退原因：{systemd_error}"
                 if systemd_error
                 else ""
             )
             raise ComfyUIRuntimeError(
-                f"ComfyUI 在 {int(timeout)} 秒内未就绪{detail}"
+                f"ComfyUI 在 {int(timeout)} 秒内未就绪：{diagnostic['message']}{detail}"
             )
 
     async def status(self, base_url: str) -> dict[str, Any]:
@@ -317,8 +451,9 @@ class ComfyUIRuntimeService:
             else False
         )
         managed = managed_process is not None or unit_active
+        diagnostic = await self.diagnostics(base_url)
         return {
-            "ready": await self._probe(base_url),
+            "ready": diagnostic["ready"],
             "managed": managed,
             "started_by_aetherchat": managed,
             "pid": managed_process.pid if managed_process is not None else None,
@@ -331,6 +466,7 @@ class ComfyUIRuntimeService:
             "started_at": self._started_at if managed else None,
             "command": self._command_label if managed else None,
             "autostart_enabled": self._enabled(),
+            "diagnostics": diagnostic,
         }
 
     async def shutdown(self) -> dict[str, Any]:

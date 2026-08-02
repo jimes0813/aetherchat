@@ -32,6 +32,20 @@ const modelFixtures = [
     created_at: '2026-01-01T00:00:00.000Z',
     updated_at: '2026-01-01T00:00:00.000Z',
   },
+  {
+    name: 'claude',
+    type: 'anthropic',
+    model: 'claude-3-5-sonnet',
+    base_url: '',
+    api_key_ref: 'ANTHROPIC_API_KEY',
+    has_api_key: false,
+    max_tokens: 8192,
+    participation_policy: 'always',
+    persona: '架构评审',
+    token_limit: 128000,
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2026-01-01T00:00:00.000Z',
+  },
 ];
 
 const taskFixtures = [
@@ -1676,6 +1690,24 @@ test.describe('AetherChat Frontend E2E', () => {
     expect(verificationRequests).toBe(0);
   });
 
+  test('reports and verifies only models with usable credentials', async ({ page }) => {
+    const verificationPaths: string[] = [];
+    page.on('request', (request) => {
+      const pathname = new URL(request.url()).pathname;
+      if (/\/models\/[^/]+\/verify$/.test(pathname)) verificationPaths.push(pathname);
+    });
+
+    await page.getByTitle('运行').click();
+    const panel = page.getByRole('dialog', { name: '运行 panel' });
+    await panel.getByRole('button', { name: '基础检查' }).click();
+    await expect(panel.getByText('已配置 2/3 个模型，其中 1 个始终参与；基础检查不会调用模型 API')).toBeVisible();
+
+    page.once('dialog', (confirmation) => void confirmation.accept());
+    await panel.getByRole('button', { name: '验证模型（可能计费）' }).click();
+    await expect(panel.getByText('已验证 1 个启用模型，通过 1 个')).toBeVisible();
+    expect(verificationPaths).toEqual(['/models/deepseek/verify']);
+  });
+
   test('selects a trusted Git repository and includes its verifier commands in a planned run', async ({ page }) => {
     await page.getByTitle('运行').click();
     await page.getByRole('button', { name: '选择 Git 仓库' }).click();
@@ -1883,6 +1915,15 @@ test.describe('AetherChat Frontend E2E', () => {
   test('sends an interrupt action for the selected target', async ({ page }) => {
     const targetSelect = page.locator('select').first();
     await targetSelect.selectOption('GLM');
+    await expect(page.getByRole('button', { name: /中断/ })).toHaveCount(0);
+    await page.evaluate(() => (
+      window as typeof window & { __emitAetherWs?: (payload: unknown) => void }
+    ).__emitAetherWs?.({
+      type: 'provider_status',
+      model: 'GLM',
+      phase: 'requesting',
+      detail: '正在等待模型响应',
+    }));
     await page.getByRole('button', { name: '中断 @GLM' }).click();
 
     await expect.poll(() => page.evaluate(() => (

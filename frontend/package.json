@@ -79,6 +79,7 @@
     },
     "linux": {
       "syncDesktopName": true,
+      "icon": "icon.svg",
       "target": [
         "AppImage"
       ],

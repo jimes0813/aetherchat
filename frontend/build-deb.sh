@@ -34,9 +34,9 @@ cp -a "$UNPACKED_DIR/." "$STAGING_DIR/opt/AetherChat/"
 # requires this exact mode in the installed package.
 chmod 4755 "$STAGING_DIR/opt/AetherChat/chrome-sandbox"
 
-install -d "$STAGING_DIR/usr/share/applications" "$STAGING_DIR/usr/share/icons/hicolor/256x256/apps"
-install -m 0644 "$SCRIPT_DIR/node_modules/app-builder-lib/templates/icons/electron-linux/256x256.png" \
-  "$STAGING_DIR/usr/share/icons/hicolor/256x256/apps/aetherchat.png"
+install -d "$STAGING_DIR/usr/share/applications" "$STAGING_DIR/usr/share/icons/hicolor/scalable/apps"
+install -m 0644 "$SCRIPT_DIR/build/icon.svg" \
+  "$STAGING_DIR/usr/share/icons/hicolor/scalable/apps/aetherchat.svg"
 
 cat > "$STAGING_DIR/usr/share/applications/aetherchat.desktop" <<'EOF'
 [Desktop Entry]
@@ -50,7 +50,7 @@ Categories=Utility;
 Keywords=AI;Agent;Chat;MCP;
 MimeType=x-scheme-handler/aetherchat;
 Actions=QuickEntry;
-StartupWMClass=AetherChat
+StartupWMClass=aetherchat
 
 [Desktop Action QuickEntry]
 Name=Quick Entry

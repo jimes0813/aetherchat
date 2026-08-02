@@ -745,7 +745,13 @@ class ArtifactService:
 
     def _mime_for(self, path: str) -> str:
         overrides = {
-            ".md": "text/markdown", ".markdown": "text/markdown", ".svg": "image/svg+xml",
+            ".md": "text/markdown",
+            ".markdown": "text/markdown",
+            ".svg": "image/svg+xml",
+            # Several Linux mime databases reserve .ts for Qt Linguist files.
+            # AetherChat artifacts use .ts/.tsx for TypeScript source code.
+            ".ts": "text/typescript",
+            ".tsx": "text/typescript",
             ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",

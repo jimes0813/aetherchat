@@ -2375,6 +2375,30 @@ def test_orchestrator_routes_tools_and_caps_local_active_context(monkeypatch):
 
     plain = orchestrator._route_tools("请解释这段概念", definitions)
     comfy = orchestrator._route_tools("请用 ComfyUI 生成一张图片", definitions)
+    bigasp = orchestrator._route_tools(
+        "现在使用comfyui 用bigaspv2.safetensors模型来进行图片生成",
+        definitions,
+    )
+    status_only = orchestrator._route_tools(
+        "请检查 ComfyUI 模型和 LTX 状态，不要生成任何图片或视频",
+        definitions,
+    )
+    planned_status_only = orchestrator._route_tools(
+        "请检查 ComfyUI 模型和 LTX 状态，不要生成任何图片或视频",
+        definitions,
+        {
+            "plan_step_id": "synthesizer",
+            "instruction": "生成单一最终交付，并核验图像模型数量",
+        },
+    )
+    workflow = orchestrator._route_tools(
+        "请运行 ComfyUI 工作流 demo",
+        definitions,
+    )
+    negated_workflow = orchestrator._route_tools(
+        "不要运行 ComfyUI 工作流，只检查状态",
+        definitions,
+    )
     all_tools = orchestrator._route_tools("列出全部工具", definitions)
     assert plain == []
     assert comfy
@@ -2382,6 +2406,23 @@ def test_orchestrator_routes_tools_and_caps_local_active_context(monkeypatch):
         tool.name.startswith("plugin__comfyui__")
         for tool in comfy
     )
+    assert [tool.name for tool in bigasp] == [
+        "plugin__comfyui__generate_image"
+    ]
+    assert [tool.name for tool in status_only] == [
+        "plugin__comfyui__status"
+    ]
+    assert not {
+        "plugin__comfyui__generate_image",
+        "plugin__comfyui__generate_video",
+        "plugin__comfyui__run_workflow",
+    } & {tool.name for tool in planned_status_only}
+    assert "plugin__comfyui__run_workflow" in {
+        tool.name for tool in workflow
+    }
+    assert "plugin__comfyui__run_workflow" not in {
+        tool.name for tool in negated_workflow
+    }
     assert len(comfy) < len(all_tools) == len(definitions)
 
     monkeypatch.setenv("AETHERCHAT_LOCAL_ACTIVE_CONTEXT_TOKENS", "8192")
@@ -2528,6 +2569,99 @@ async def test_orchestrator_requires_real_comfyui_generation_without_status_roun
     assert SessionOrchestrator._required_comfyui_tools(
         "请用 ComfyUI 生成一张蓝色陶瓷杯的产品摄影图"
     ) == ["plugin__comfyui__generate_image"]
+    assert SessionOrchestrator._required_comfyui_tools(
+        "现在使用comfyui 用bigaspv2.safetensors模型来进行图片生成"
+    ) == ["plugin__comfyui__generate_image"]
+    assert SessionOrchestrator._required_comfyui_tools(
+        "使用 bigaspv2模型对这个文章所描述的场景来进行多张连贯的图片。"
+    ) == ["plugin__comfyui__generate_image"]
+    assert SessionOrchestrator._required_comfyui_tools(
+        "只检查 ComfyUI 状态；不要生成任何图片或视频"
+    ) == []
+    assert SessionOrchestrator._required_comfyui_tools(
+        "Check ComfyUI status; do not generate images or videos"
+    ) == []
+    assert SessionOrchestrator._required_comfyui_tools(
+        "只报告可用于图像生成的模型数量"
+    ) == []
+    assert SessionOrchestrator._required_comfyui_tools(
+        "检测本地图片生成模型都有什么"
+    ) == []
+    assert SessionOrchestrator._requested_comfyui_image_model(
+        "使用 bigaspv2.safetensors 来生成图片"
+    ) == "bigaspv2.safetensors"
+    assert SessionOrchestrator._requested_comfyui_image_model(
+        "使用 bigaspv2模型来进行多张连贯的图片"
+    ) == "bigaspv2"
+    assert SessionOrchestrator._required_comfyui_tools(
+        "只检查 ComfyUI 图像模型状态；不要生成任何图片或视频",
+        {"instruction": "生成单一最终交付，并核验图像模型数量"},
+    ) == []
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_exposes_comfyui_status_only_once_after_success(monkeypatch):
+    class StatusOnceProvider(_FakeProvider):
+        def __init__(self):
+            super().__init__("status-once")
+            self.requested_tools = []
+
+        async def stream_chat(self, messages, tools=None, **kwargs):
+            self.requested_tools.append([tool.name for tool in (tools or [])])
+            if len(self.requested_tools) == 1:
+                yield {
+                    "delta": "",
+                    "usage": None,
+                    "tool_calls": [{
+                        "id": "comfy-status",
+                        "name": "plugin__comfyui__status",
+                        "arguments": {},
+                    }],
+                }
+            else:
+                yield {"delta": "ComfyUI 已就绪。", "usage": None}
+            yield {
+                "delta": "",
+                "usage": {"prompt_tokens": 10, "completion_tokens": 4},
+            }
+
+    async def fake_plugin_invoke(tool_name, _session_id, _caller, _arguments):
+        assert tool_name == "plugin__comfyui__status"
+        return {
+            "ready": True,
+            "generation": {"image_models": [{"name": "bigaspv2.safetensors"}]},
+        }
+
+    provider = StatusOnceProvider()
+    orchestrator = _orchestrator_with([provider])
+    monkeypatch.setattr(
+        orchestrator_module.plugin_registry,
+        "invoke_tool",
+        fake_plugin_invoke,
+    )
+
+    async def allow_tool(_queue, _model, _tool_name, _arguments):
+        return True, ""
+
+    orchestrator._authorize_model_tool = allow_tool
+    events = [
+        event
+        async for event in orchestrator.stream_user_message({
+            "content": "检测本地图片生成模型都有什么",
+            "targets": ["status-once"],
+            "mode": "casual",
+        })
+    ]
+
+    assert provider.requested_tools == [
+        ["plugin__comfyui__status"],
+        [],
+    ]
+    assert sum(
+        event["type"] == "tool_run"
+        and event["run"]["tool_name"] == "plugin__comfyui__status"
+        for event in events
+    ) == 1
 
 
 @pytest.mark.asyncio
@@ -4725,7 +4859,9 @@ def test_workspace_artifact_merge_tool_and_export_flow(client):
 
     seeded = client.get("/artifacts/", params={"session_id": session_id})
     assert seeded.status_code == 200
-    assert {item["path"] for item in seeded.json()} >= {"README.md", "docs/PRD.md", "src/demo.ts"}
+    seeded_artifacts = {item["path"]: item for item in seeded.json()}
+    assert set(seeded_artifacts) >= {"README.md", "docs/PRD.md", "src/demo.ts"}
+    assert seeded_artifacts["src/demo.ts"]["mime_type"] == "text/typescript"
 
     for content in ("version one", "version two"):
         written = client.post("/artifacts/write", json={
@@ -5186,6 +5322,44 @@ async def test_comfyui_generate_image_auto_selects_available_default(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_comfyui_generate_image_uses_bigasp_v2_sampling_defaults(monkeypatch):
+    from app.services.comfyui_service import ComfyUIService
+
+    service = ComfyUIService()
+    captured = {}
+
+    async def fake_inventory(**_kwargs):
+        return {
+            "checkpoints": ["bigaspv2.safetensors"],
+            "diffusion_models": [],
+            "loras": [],
+        }
+
+    async def fake_submit(graph, timeout, metadata):
+        captured["graph"] = graph
+        captured["timeout"] = timeout
+        captured["metadata"] = metadata
+        return {"completed": True, "files": []}
+
+    monkeypatch.setattr(service, "inventory", fake_inventory)
+    monkeypatch.setattr(service, "_submit_and_wait", fake_submit)
+
+    result = await service.generate_image(
+        "cinematic rainy street",
+        model="bigaspv2",
+        width=512,
+        height=512,
+    )
+
+    sampler = captured["graph"]["6"]["inputs"]
+    assert result["completed"] is True
+    assert sampler["steps"] == 40
+    assert sampler["cfg"] == 3.4
+    assert captured["metadata"]["parameters"]["steps"] == 40
+    assert captured["metadata"]["parameters"]["cfg"] == 3.4
+
+
+@pytest.mark.asyncio
 async def test_comfyui_status_keeps_workflow_inventory_compact(monkeypatch):
     from app.services.comfyui_service import ComfyUIService
 
@@ -5209,10 +5383,227 @@ async def test_comfyui_status_keeps_workflow_inventory_compact(monkeypatch):
     result = await service.status()
 
     assert result["ready"] is True
+    assert result["generation"]["video_pipelines"][1]["available"] is False
     assert captured == {
         "include_workflow_details": False,
         "_ensure_runtime": False,
     }
+
+
+@pytest.mark.asyncio
+async def test_comfyui_model_catalog_lists_supported_models_and_blocks_ltx_when_memory_is_low(
+    monkeypatch,
+):
+    from app.services.comfyui_service import (
+        LTX_MIN_FREE_MEMORY,
+        ComfyUIService,
+    )
+
+    service = ComfyUIService()
+
+    async def fake_inventory(**_kwargs):
+        return {
+            "checkpoints": [
+                "RealVisXL_V5.0_Lightning_fp16.safetensors",
+                "JoyAI-Echo-release.safetensors",
+                "ltx-2.3-22b-dev.safetensors",
+                "nested/model.safetensors",
+            ],
+            "diffusion_models": [
+                "qwen_image_2512_fp8_e4m3fn.safetensors",
+                "wan2.1_i2v_480p_14B_fp8_scaled.safetensors",
+            ],
+            "loras": [],
+            "vae": ["wan_2.1_vae.safetensors"],
+            "text_encoders": [
+                "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+                "gemma-3-12b-it/model-00001-of-00005.safetensors",
+            ],
+            "clip_vision": ["clip_vision_h.safetensors"],
+            "upscalers": [],
+            "workflows": [],
+            "capabilities": {
+                "WanImageToVideo": True,
+                "SaveWEBM": True,
+                "LTXVGemmaCLIPModelLoader": True,
+                "LTXVAudioVAELoader": True,
+                "LTXVConditioning": True,
+                "SaveVideo": True,
+            },
+        }
+
+    async def fake_get_json(_path, _timeout):
+        return {
+            "system": {
+                "ram_total": 128 * 1024**3,
+                "ram_free": LTX_MIN_FREE_MEMORY - 1,
+            },
+            "devices": [],
+        }
+
+    monkeypatch.setattr(service, "inventory", fake_inventory)
+    monkeypatch.setattr(service, "_get_json", fake_get_json)
+
+    catalog = await service.model_catalog()
+
+    assert [item["name"] for item in catalog["image_models"]] == [
+        "RealVisXL_V5.0_Lightning_fp16.safetensors",
+        "qwen_image_2512_fp8_e4m3fn.safetensors",
+    ]
+    assert catalog["image_models"][0]["recommended"] is True
+    wan, ltx = catalog["video_pipelines"]
+    assert wan["installed"] is True
+    assert wan["available"] is True
+    assert ltx["installed"] is True
+    assert ltx["available"] is False
+    assert ltx["minimum_free_memory_bytes"] == LTX_MIN_FREE_MEMORY
+    assert "停止本地大语言模型" in ltx["warning"]
+
+
+@pytest.mark.asyncio
+async def test_comfyui_generate_video_rejects_unsafe_ltx_before_submitting(monkeypatch):
+    from app.services.comfyui_service import ComfyUIError, ComfyUIService
+
+    service = ComfyUIService()
+    submitted = False
+
+    async def fake_ready():
+        return {"ready": True}
+
+    async def fake_catalog(**_kwargs):
+        return {
+            "video_pipelines": [{
+                "id": "ltx-t2v",
+                "installed": True,
+                "available": False,
+                "missing": [],
+                "warning": "请先停止本地大语言模型再运行 LTX。",
+            }],
+        }
+
+    async def fake_submit(*_args, **_kwargs):
+        nonlocal submitted
+        submitted = True
+        return {}
+
+    monkeypatch.setattr(service, "ensure_ready", fake_ready)
+    monkeypatch.setattr(service, "model_catalog", fake_catalog)
+    monkeypatch.setattr(service, "_submit_and_wait", fake_submit)
+
+    with pytest.raises(ComfyUIError, match="停止本地大语言模型"):
+        await service.generate_video("cinematic clouds", pipeline="ltx-t2v")
+    assert submitted is False
+
+
+@pytest.mark.asyncio
+async def test_comfyui_saved_selection_overrides_automatic_tool_arguments(monkeypatch):
+    from app.services.comfyui_service import comfyui_service
+
+    captured = {}
+
+    async def fake_generate_image(prompt, **kwargs):
+        captured["image"] = {"prompt": prompt, **kwargs}
+        return {"completed": True}
+
+    async def fake_generate_video(prompt, **kwargs):
+        captured["video"] = {"prompt": prompt, **kwargs}
+        return {"completed": True}
+
+    monkeypatch.setattr(
+        plugin_registry,
+        "get",
+        lambda _plugin_id: {
+            "config": {
+                "image_model": "selected-image.safetensors",
+                "video_pipeline": "ltx-t2v",
+            },
+        },
+    )
+    monkeypatch.setattr(comfyui_service, "generate_image", fake_generate_image)
+    monkeypatch.setattr(comfyui_service, "generate_video", fake_generate_video)
+
+    await plugin_registry._dispatch(
+        {"handler": "comfyui_generate_image"},
+        "session",
+        {"prompt": "a mug", "model": "automatic.safetensors"},
+    )
+    await plugin_registry._dispatch(
+        {"handler": "comfyui_generate_video"},
+        "session",
+        {"prompt": "moving clouds", "pipeline": "wan-i2v"},
+    )
+
+    assert captured["image"]["model"] == "selected-image.safetensors"
+    assert captured["video"]["pipeline"] == "ltx-t2v"
+
+    await plugin_registry._dispatch(
+        {"handler": "comfyui_generate_image"},
+        "session",
+        {
+            "prompt": "a rainy street",
+            "model": "automatic.safetensors",
+            "_user_requested_model": "bigaspv2.safetensors",
+        },
+    )
+    assert captured["image"]["model"] == "bigaspv2.safetensors"
+
+
+@pytest.mark.asyncio
+async def test_comfyui_runtime_restarts_stale_active_systemd_unit(monkeypatch):
+    from app.services.comfyui_runtime import ComfyUIRuntimeService
+
+    runtime = ComfyUIRuntimeService()
+    calls = []
+
+    async def active(_unit):
+        return True
+
+    async def systemctl(*arguments, timeout=45):
+        calls.append((arguments, timeout))
+        return 0, ""
+
+    monkeypatch.setattr(runtime, "_unit_active", active)
+    monkeypatch.setattr(runtime, "_systemctl", systemctl)
+
+    started, already_active, output = await runtime._start_unit(
+        "aetherchat-comfyui.service"
+    )
+
+    assert (started, already_active, output) == (True, True, "")
+    assert calls == [(('restart', 'aetherchat-comfyui.service'), 45)]
+    assert runtime._managed_unit is None
+
+
+@pytest.mark.asyncio
+async def test_comfyui_runtime_diagnoses_missing_process_after_oom(monkeypatch):
+    from app.services.comfyui_runtime import ComfyUIRuntimeService
+
+    runtime = ComfyUIRuntimeService()
+
+    async def probe(_base_url):
+        return False
+
+    async def active(_unit):
+        return True
+
+    async def docker_diagnostics(_base_url):
+        return {
+            "container": "comfy-spark",
+            "status": "running",
+            "oom_killed": True,
+            "comfyui_process_running": False,
+        }
+
+    monkeypatch.setattr(runtime, "_probe", probe)
+    monkeypatch.setattr(runtime, "_systemd_unit", lambda: "aetherchat-comfyui.service")
+    monkeypatch.setattr(runtime, "_unit_active", active)
+    monkeypatch.setattr(runtime, "_docker_diagnostics", docker_diagnostics)
+
+    diagnostic = await runtime.diagnostics("http://127.0.0.1:8188")
+
+    assert diagnostic["reason"] == "process_oom_killed"
+    assert "内存不足" in diagnostic["message"]
+    assert diagnostic["unit_active"] is True
 
 
 @pytest.mark.asyncio
@@ -5295,6 +5686,7 @@ async def test_comfyui_runtime_starts_and_stops_only_its_managed_process(
         return True
 
     monkeypatch.setattr(external, "_probe", external_probe)
+    monkeypatch.setattr(external, "_systemd_unit", lambda: None)
     status = await external.ensure_ready(
         "http://127.0.0.1:9199",
         [tmp_path],

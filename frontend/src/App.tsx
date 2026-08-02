@@ -15,6 +15,7 @@ import {
   GitBranch,
   GitMerge,
   LayoutList,
+  Images,
   Laptop,
   ListTodo,
   Maximize2,
@@ -69,6 +70,8 @@ const MODE_TO_SETTING: Record<'casual' | 'roundtable' | 'project', WorkspaceSett
   roundtable: '圆桌评审',
   project: '项目协作',
 };
+
+const isConfiguredModel = (model: ModelConfig) => model.type === 'local' || model.has_api_key;
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, withApiAuth(init));
@@ -985,7 +988,7 @@ function App() {
   const sendMessage = (content: string, targets: string[], attachmentIds: string[]) => {
     const resolvedTargets = targets.includes('all')
       ? modelConfigs
-          .filter((model) => model.type === 'local' || model.has_api_key)
+          .filter(isConfiguredModel)
           .map((model) => model.name)
       : targets;
     const sent = wsClient.current?.sendAction({
@@ -1384,6 +1387,9 @@ function App() {
 
   const sessionApprovals = approvals.filter((item) => item.session_id === sessionId);
   const pendingApprovals = sessionApprovals.filter((item) => !item.decision);
+  const canInterrupt = Object.keys(agentActivity).length > 0 || agentRuns.some((run) => (
+    ['queued', 'running', 'waiting_approval'].includes(run.status)
+  ));
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-[#e9e1d6] text-[#2f2a24]">
@@ -1406,7 +1412,7 @@ function App() {
           <CommandHeader
             connection={connection}
             providerCount={providers.length}
-            activeProviderCount={modelConfigs.filter((model) => model.type === 'local' || model.has_api_key).length}
+            activeProviderCount={modelConfigs.filter(isConfiguredModel).length}
             budgetRemaining={budget.remaining}
             spendPct={spendPct}
             mode={workspaceSettings.mode}
@@ -1460,8 +1466,10 @@ function App() {
             <Composer
               onSend={sendMessage}
               onUpload={uploadAttachments}
-              providers={providers.map((provider) => provider.name)}
-              onInterrupt={(scope) => wsClient.current?.sendAction({ type: 'interrupt', scope })}
+              providers={modelConfigs.filter(isConfiguredModel).map((model) => model.name)}
+              onInterrupt={canInterrupt
+                ? (scope) => wsClient.current?.sendAction({ type: 'interrupt', scope })
+                : undefined}
               draft={composerDraft}
               approval={pendingApprovals[0]}
               queuedApprovalCount={Math.max(0, pendingApprovals.length - 1)}
@@ -3578,6 +3586,59 @@ function DesktopControlPanel() {
   );
 }
 
+type ComfyUIImageModel = {
+  name: string;
+  kind: 'checkpoint' | 'diffusion_model';
+  recommended: boolean;
+};
+
+type ComfyUIVideoPipeline = {
+  id: 'wan-i2v' | 'ltx-t2v';
+  label: string;
+  installed: boolean;
+  available: boolean;
+  missing: string[];
+  requires_input_image: boolean;
+  warning: string;
+  minimum_free_memory_bytes?: number;
+  current_free_memory_bytes?: number;
+};
+
+type ComfyUIOverview = {
+  ready: boolean;
+  runtime: {
+    runtime?: string;
+    autostart_enabled?: boolean;
+    diagnostics?: ComfyUIOverview['diagnostics'];
+  };
+  diagnostics: {
+    reason?: string;
+    message?: string;
+    unit_active?: boolean;
+    docker?: {
+      container?: string;
+      status?: string;
+      oom_killed?: boolean;
+      memory_limit_bytes?: number | null;
+      comfyui_process_running?: boolean;
+    } | null;
+  };
+  selection: {
+    image_model?: string | null;
+    video_pipeline?: 'wan-i2v' | 'ltx-t2v' | null;
+  };
+  catalog: {
+    image_models: ComfyUIImageModel[];
+    video_pipelines: ComfyUIVideoPipeline[];
+    assets: Record<string, Array<string | { name?: string }>>;
+    system: { ram_free?: number; ram_total?: number };
+  } | null;
+};
+
+const formatGiB = (value?: number | null) => (
+  value ? `${(value / 1024 ** 3).toFixed(1)} GiB` : '未知'
+);
+
 function PluginCenter({ apiBase, sessionId }: { apiBase: string; sessionId: string }) {
   const { ui } = useI18n();
   const [plugins, setPlugins] = useState<PluginItem[]>([]);
@@ -3587,6 +3648,70 @@ function PluginCenter({ apiBase, sessionId }: { apiBase: string; sessionId: stri
   const [lastResult, setLastResult] = useState<PluginInvokeResult | null>(null);
   const [status, setStatus] = useState('');
   const [manifestText, setManifestText] = useState('');
+  const [comfyOverview, setComfyOverview] = useState<ComfyUIOverview | null>(null);
+  const [comfyBusy, setComfyBusy] = useState<'status' | 'start' | 'save' | ''>('');
+  const [comfyStatus, setComfyStatus] = useState('');
+  const [comfyImageModel, setComfyImageModel] = useState('');
+  const [comfyVideoPipeline, setComfyVideoPipeline] = useState<'wan-i2v' | 'ltx-t2v'>('wan-i2v');
+
+  const applyComfyOverview = (overview: ComfyUIOverview) => {
+    setComfyOverview(overview);
+    const recommendedImage = overview.catalog?.image_models.find((item) => item.recommended)
+      || overview.catalog?.image_models[0];
+    const selectedImage = overview.catalog?.image_models.find(
+      (item) => item.name === overview.selection.image_model,
+    );
+    setComfyImageModel(selectedImage?.name || recommendedImage?.name || '');
+    const installedPipeline = overview.catalog?.video_pipelines.find((item) => item.installed);
+    const selectedPipeline = overview.catalog?.video_pipelines.find(
+      (item) => item.installed && item.id === overview.selection.video_pipeline,
+    );
+    setComfyVideoPipeline(
+      selectedPipeline?.id || installedPipeline?.id || 'wan-i2v',
+    );
+  };
+
+  const refreshComfyUI = async (start: boolean) => {
+    setComfyBusy(start ? 'start' : 'status');
+    try {
+      const overview = await fetchJson<ComfyUIOverview>(
+        `${apiBase}/plugins/comfyui/runtime/${start ? 'start' : 'status'}`,
+        start ? { method: 'POST' } : undefined,
+      );
+      applyComfyOverview(overview);
+      setComfyStatus(start ? 'ComfyUI 已启动并完成模型扫描' : '');
+    } catch (error) {
+      setComfyStatus(`${start ? '启动' : '状态检查'}失败：${String(error)}`);
+      try {
+        const overview = await fetchJson<ComfyUIOverview>(`${apiBase}/plugins/comfyui/runtime/status`);
+        applyComfyOverview(overview);
+      } catch {
+        // Keep the actionable start error when even the diagnostic endpoint is unavailable.
+      }
+    } finally {
+      setComfyBusy('');
+    }
+  };
+
+  const saveComfySelection = async () => {
+    setComfyBusy('save');
+    try {
+      const overview = await fetchJson<ComfyUIOverview>(`${apiBase}/plugins/comfyui/selection`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          image_model: comfyImageModel || null,
+          video_pipeline: comfyVideoPipeline || null,
+        }),
+      });
+      applyComfyOverview(overview);
+      setComfyStatus('模型选择已保存；后续模型调用将优先使用该配置');
+    } catch (error) {
+      setComfyStatus(`保存模型选择失败：${String(error)}`);
+    } finally {
+      setComfyBusy('');
+    }
+  };
 
   const load = async () => {
     setLoading(true);
@@ -3602,6 +3727,7 @@ function PluginCenter({ apiBase, sessionId }: { apiBase: string; sessionId: stri
 
   useEffect(() => {
     load();
+    void refreshComfyUI(false);
   }, [apiBase]);
 
   const toggle = async (plugin: PluginItem) => {
@@ -3705,6 +3831,107 @@ function PluginCenter({ apiBase, sessionId }: { apiBase: string; sessionId: stri
       </div>
 
       {status && <div className="mb-3 rounded-lg border border-[#d8cfc3] bg-[#fffdf9] px-3 py-2 text-xs text-[#6d6258]">{status}</div>}
+
+      <section className="mb-4 rounded-xl border border-[#cdbda9] bg-[#fffaf3] p-4" aria-label="ComfyUI 模型选择">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              <Images size={16} />ComfyUI 运行与模型选择
+              <span className={`rounded px-2 py-0.5 text-[10px] ${comfyOverview?.ready ? 'bg-[#dcebd7] text-[#326022]' : 'bg-[#ead5d1] text-[#8a3b31]'}`}>
+                {comfyOverview?.ready ? '已就绪' : '未就绪'}
+              </span>
+            </div>
+            <div className="mt-1 text-xs leading-5 text-[#7a7065]">
+              启动后读取 ComfyUI 实际安装的模型；保存的选择优先于模型自动选择。
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={() => refreshComfyUI(false)} disabled={Boolean(comfyBusy)} className="rounded-md border border-[#d6cbbd] px-3 py-1.5 text-xs disabled:opacity-40">
+              {comfyBusy === 'status' ? '检查中' : '检查状态'}
+            </button>
+            <button onClick={() => refreshComfyUI(true)} disabled={Boolean(comfyBusy)} className="rounded-md bg-[#2f2a24] px-3 py-1.5 text-xs text-white disabled:opacity-40">
+              {comfyBusy === 'start' ? '启动与扫描中' : '启动并扫描模型'}
+            </button>
+          </div>
+        </div>
+
+        {(comfyStatus || comfyOverview?.diagnostics?.message) && (
+          <div role="status" className="mt-3 rounded-md border border-[#dfd2c2] bg-white px-3 py-2 text-xs leading-5 text-[#6d6258]">
+            {comfyStatus || comfyOverview?.diagnostics?.message}
+          </div>
+        )}
+        {comfyOverview?.diagnostics?.docker?.oom_killed && (
+          <div className="mt-2 rounded-md border border-[#d7a98b] bg-[#fff0e5] px-3 py-2 text-xs leading-5 text-[#8a3b31]">
+            检测到 ComfyUI 容器曾发生 OOM：视频大模型可能与本地语言模型争用统一内存。
+            LTX 22B 只有在可用内存达到安全阈值时才允许执行。
+          </div>
+        )}
+
+        {comfyOverview?.catalog && (
+          <div className="mt-4 grid gap-4 lg:grid-cols-2">
+            <label className="text-xs font-semibold text-[#62584e]">
+              图像生成模型
+              <select aria-label="ComfyUI 图像生成模型" value={comfyImageModel} onChange={(event) => setComfyImageModel(event.target.value)} className="mt-2 h-9 w-full rounded-md border border-[#d6cbbd] bg-white px-2 text-xs font-normal">
+                {comfyOverview.catalog.image_models.map((model) => (
+                  <option key={model.name} value={model.name}>
+                    {model.name}{model.recommended ? '（推荐）' : ''}
+                  </option>
+                ))}
+              </select>
+              <span className="mt-1 block font-normal text-[#8b8176]">Checkpoint 与 Qwen-Image 均来自当前 ComfyUI 实际清单。</span>
+            </label>
+
+            <label className="text-xs font-semibold text-[#62584e]">
+              视频生成管线
+              <select aria-label="ComfyUI 视频生成管线" value={comfyVideoPipeline} onChange={(event) => setComfyVideoPipeline(event.target.value as 'wan-i2v' | 'ltx-t2v')} className="mt-2 h-9 w-full rounded-md border border-[#d6cbbd] bg-white px-2 text-xs font-normal">
+                {comfyOverview.catalog.video_pipelines.filter((pipeline) => pipeline.installed).map((pipeline) => (
+                  <option key={pipeline.id} value={pipeline.id}>
+                    {pipeline.label}{pipeline.available ? '' : '（当前资源不足）'}
+                  </option>
+                ))}
+              </select>
+              <span className="mt-1 block font-normal text-[#8b8176]">
+                当前系统可用内存：{formatGiB(comfyOverview.catalog.system.ram_free)}
+              </span>
+            </label>
+
+            <div className="space-y-2 lg:col-span-2">
+              {comfyOverview.catalog.video_pipelines.map((pipeline) => (
+                <div key={pipeline.id} data-comfy-pipeline={pipeline.id} className={`rounded-md border px-3 py-2 text-xs leading-5 ${pipeline.available ? 'border-[#c6d8c3] bg-[#f2f8ef] text-[#4d6848]' : 'border-[#dfb69d] bg-[#fff2e8] text-[#8a4a32]'}`}>
+                  <span className="font-semibold">{pipeline.label}</span>
+                  <span className="ml-2">{pipeline.installed ? pipeline.available ? '可运行' : '已安装但资源不足' : '缺少依赖'}</span>
+                  <div>{pipeline.warning}</div>
+                  {pipeline.missing.length > 0 && <div>缺少：{pipeline.missing.join('、')}</div>}
+                  {pipeline.minimum_free_memory_bytes && <div>安全阈值：{formatGiB(pipeline.minimum_free_memory_bytes)}；当前：{formatGiB(pipeline.current_free_memory_bytes)}</div>}
+                </div>
+              ))}
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 lg:col-span-2">
+              <button onClick={saveComfySelection} disabled={Boolean(comfyBusy) || !comfyImageModel} className="rounded-md bg-[#8d5f35] px-3 py-1.5 text-xs text-white disabled:opacity-40">
+                {comfyBusy === 'save' ? '保存中' : '保存模型选择'}
+              </button>
+              <span className="text-[11px] text-[#8b8176]">
+                已发现 {comfyOverview.catalog.image_models.length} 个可用图像模型、{comfyOverview.catalog.video_pipelines.filter((item) => item.installed).length} 条已安装视频管线
+              </span>
+            </div>
+
+            <details className="rounded-md border border-[#ded6ca] bg-white p-3 text-xs lg:col-span-2">
+              <summary className="cursor-pointer font-semibold">查看全部已安装模型资源</summary>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                {Object.entries(comfyOverview.catalog.assets).map(([group, values]) => (
+                  <div key={group}>
+                    <div className="font-semibold text-[#62584e]">{group} · {values.length}</div>
+                    <div className="mt-1 max-h-28 overflow-auto whitespace-pre-line break-all text-[11px] leading-5 text-[#7a7065]">
+                      {values.map((value) => typeof value === 'string' ? value : value.name || 'unnamed').join('\n') || '无'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </details>
+          </div>
+        )}
+      </section>
 
       <div className="space-y-3">
         {plugins.map((plugin) => (
@@ -3976,12 +4203,15 @@ function RunPanel({
 
     try {
       const models = await fetchJson<ModelConfig[]>(`${API_BASE}/models/`);
-      const enabled = models.filter((model) => model.participation_policy === 'always').length;
+      const configured = models.filter(isConfiguredModel);
+      const alwaysParticipating = configured.filter(
+        (model) => model.participation_policy === 'always',
+      ).length;
       nextRows.push({
         name: '模型配置',
-        detail: `已配置 ${models.length} 个模型，其中 ${enabled} 个已启用；基础检查不会调用模型 API`,
-        status: models.length ? '已加载' : '未配置',
-        tone: models.length ? 'ok' : 'warn',
+        detail: `已配置 ${configured.length}/${models.length} 个模型，其中 ${alwaysParticipating} 个始终参与；基础检查不会调用模型 API`,
+        status: configured.length ? '已加载' : '未配置',
+        tone: configured.length ? 'ok' : 'warn',
       });
     } catch (error) {
       nextRows.push({ name: '模型配置', detail: String(error), status: '不可用', tone: 'bad' });
@@ -4039,7 +4269,9 @@ function RunPanel({
     setVerifyingModels(true);
     try {
       const models = await fetchJson<ModelConfig[]>(`${API_BASE}/models/`);
-      const enabled = models.filter((model) => model.participation_policy === 'always');
+      const enabled = models.filter((model) => (
+        isConfiguredModel(model) && model.participation_policy === 'always'
+      ));
       let passed = 0;
       const failures: string[] = [];
       for (const model of enabled) {

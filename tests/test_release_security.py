@@ -18,6 +18,18 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(release_security)
 
 
+def test_linux_desktop_entry_and_icon_match_electron_package():
+    build_script = (PROJECT_ROOT / "frontend" / "build-deb.sh").read_text()
+    assert "StartupWMClass=aetherchat" in build_script
+    assert "StartupWMClass=AetherChat" not in build_script
+    assert '"$SCRIPT_DIR/build/icon.svg"' in build_script
+    assert "electron-linux/256x256.png" not in build_script
+
+    package = json.loads((PROJECT_ROOT / "frontend" / "package.json").read_text())
+    assert package["build"]["linux"]["icon"] == "icon.svg"
+    assert (PROJECT_ROOT / "frontend" / "build" / "icon.svg").is_file()
+
+
 def _encoded_keys():
     private = Ed25519PrivateKey.generate()
     private_pem = private.private_bytes(

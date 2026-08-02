@@ -1,4 +1,7 @@
+from typing import Any, Literal
+
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
 
 from ..services.comfyui_runtime import comfyui_runtime
 from ..services.comfyui_service import ComfyUIError, ComfyUIService
@@ -10,6 +13,42 @@ from ..services.plugin_registry import (
 )
 
 router = APIRouter()
+
+
+class ComfyUISelection(BaseModel):
+    image_model: str | None = Field(default=None, max_length=500)
+    video_pipeline: Literal["wan-i2v", "ltx-t2v"] | None = None
+
+
+def _comfyui_selection() -> dict[str, str | None]:
+    plugin = plugin_registry.get("comfyui") or {}
+    raw_config = plugin.get("config")
+    config: dict[str, Any] = raw_config if isinstance(raw_config, dict) else {}
+    return {
+        "image_model": str(config.get("image_model") or "").strip() or None,
+        "video_pipeline": str(config.get("video_pipeline") or "").strip() or None,
+    }
+
+
+async def _comfyui_overview(*, start: bool) -> dict:
+    service = ComfyUIService()
+    runtime = (
+        await service.ensure_ready()
+        if start
+        else await comfyui_runtime.status(service.base_url)
+    )
+    catalog = (
+        await service.model_catalog(_ensure_runtime=False)
+        if runtime["ready"]
+        else None
+    )
+    return {
+        "ready": runtime["ready"],
+        "runtime": runtime,
+        "diagnostics": runtime.get("diagnostics", {}),
+        "selection": _comfyui_selection(),
+        "catalog": catalog,
+    }
 
 
 @router.get("/")
@@ -49,8 +88,52 @@ async def uninstall_plugin(plugin_id: str):
 
 @router.get("/comfyui/runtime/status")
 async def comfyui_runtime_status():
+    try:
+        return await _comfyui_overview(start=False)
+    except ComfyUIError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/comfyui/runtime/start")
+async def start_comfyui_runtime():
+    try:
+        return await _comfyui_overview(start=True)
+    except ComfyUIError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.put("/comfyui/selection")
+async def update_comfyui_selection(payload: ComfyUISelection):
     service = ComfyUIService()
-    return await comfyui_runtime.status(service.base_url)
+    try:
+        catalog = await service.model_catalog()
+    except ComfyUIError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    image_models = {
+        str(item.get("name") or "")
+        for item in catalog["image_models"]
+    }
+    if payload.image_model and payload.image_model not in image_models:
+        raise HTTPException(status_code=422, detail="所选图像模型当前不可用")
+    pipeline = next(
+        (
+            item
+            for item in catalog["video_pipelines"]
+            if item["id"] == payload.video_pipeline
+        ),
+        None,
+    )
+    if payload.video_pipeline and (
+        pipeline is None or not pipeline["installed"]
+    ):
+        raise HTTPException(status_code=422, detail="所选视频管线缺少必要模型或节点")
+    updated = plugin_registry.update(
+        "comfyui",
+        PluginUpdate(config=payload.model_dump()),
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="ComfyUI plugin not found")
+    return await _comfyui_overview(start=False)
 
 
 @router.post("/comfyui/runtime/stop")
