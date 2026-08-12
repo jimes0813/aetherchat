@@ -202,6 +202,8 @@ export function ActivityRail({ activePanel, setActivePanel }: ActivityRailProps)
 interface WorkspaceSidebarProps {
   conversations: ReturnType<typeof useSessionStore.getState>['conversations'];
   currentSessionId: string;
+  /** Map of governance project id → display name. */
+  projectNames?: Record<string, string>;
   onNewConversation: () => void;
   onOpenSearch: () => void;
   onSelectConversation: (id: string) => void;
@@ -246,11 +248,18 @@ export function MainViewTabs({ value, onChange }: MainViewTabsProps) {
 interface ConversationHistoryProps {
   conversations: Conversation[];
   currentSessionId: string;
+  projectNames?: Record<string, string>;
   onContinue: (id: string) => void;
   onDelete: (id: string) => void;
 }
 
-export function ConversationHistory({ conversations, currentSessionId, onContinue, onDelete }: ConversationHistoryProps) {
+export function ConversationHistory({
+  conversations,
+  currentSessionId,
+  projectNames,
+  onContinue,
+  onDelete,
+}: ConversationHistoryProps) {
   const { ui } = useI18n();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SessionSearchHit[]>([]);
@@ -339,6 +348,11 @@ export function ConversationHistory({ conversations, currentSessionId, onContinu
                   <div className="flex items-center gap-2">
                     <span className="truncate text-sm font-medium">{conversation.title}</span>
                     {conversation.id === currentSessionId && <span className="shrink-0 rounded bg-[#e7d8c8] px-1.5 py-0.5 text-[10px] text-[#6d4828]">{ui('当前')}</span>}
+                    {conversation.projectId && (
+                      <span className="shrink-0 rounded bg-[#ebe4da] px-1.5 py-0.5 text-[10px] text-[#5d4a3a]">
+                        {projectNames?.[conversation.projectId] || conversation.projectId}
+                      </span>
+                    )}
                   </div>
                   <p className="mt-1 line-clamp-2 text-xs leading-5 text-[#6f655b]">{conversation.summary}</p>
                   <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-[#93887d]">
@@ -433,7 +447,15 @@ export function TaskHistory({ tasks, events }: TaskHistoryProps) {
   );
 }
 
-export function WorkspaceSidebar({ conversations, currentSessionId, onNewConversation, onOpenSearch, onSelectConversation, onDeleteConversation }: WorkspaceSidebarProps) {
+export function WorkspaceSidebar({
+  conversations,
+  currentSessionId,
+  projectNames,
+  onNewConversation,
+  onOpenSearch,
+  onSelectConversation,
+  onDeleteConversation,
+}: WorkspaceSidebarProps) {
   const { ui } = useI18n();
   return (
     <aside className="flex min-h-0 flex-col bg-[#eee7de]">
@@ -480,7 +502,14 @@ export function WorkspaceSidebar({ conversations, currentSessionId, onNewConvers
                 <ChevronRight size={14} className="text-[#9a9084]" />
               </div>
               <div className="mt-1 line-clamp-2 text-xs leading-5 text-[#7a7065]">{conversation.summary}</div>
-              <div className="mt-2 text-[11px] text-[#9a9084]">{conversation.updatedAt}</div>
+              <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[#9a9084]">
+                <span>{conversation.updatedAt}</span>
+                {conversation.projectId && (
+                  <span className="rounded bg-[#e7d8c8] px-1 py-0.5 text-[10px] text-[#6d4828]">
+                    {projectNames?.[conversation.projectId] || conversation.projectId}
+                  </span>
+                )}
+              </div>
             </button>
             <button
               type="button"

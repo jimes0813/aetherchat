@@ -56,8 +56,18 @@
 | Gate | `resolve_project_id`；tool/plugin/MCP/orchestrator 透传 session/project |
 | 测试 | `tests/test_session_project_binding.py` |
 
-## 下一步建议（Batch 47+）
+## Batch 47（前端会话绑定治理项目）
 
-1. 前端创建/切换会话时选择治理项目
-2. 客户触发时再做 SSO 与团队空间
-3. Windows CSC 配齐后签公共 RC
+| 项 | 内容 |
+|---|---|
+| 新建会话 | 携带 `preferredProjectId` → `project_id` |
+| 工具栏 | `SessionProjectSelect`：当前会话绑定 + 新建默认 |
+| 列表 | 侧栏/历史会话展示项目徽章 |
+| 设置 | `WorkspaceSettings.preferredProjectId` 持久化 |
+| 测试 | governance helpers + conversationFromSession |
+
+## 下一步建议（Batch 48+）
+
+1. 客户触发时再做 SSO 与团队空间
+2. Windows CSC 配齐后签公共 RC
+3. 可选：推送未 push 的 Phase 3 提交

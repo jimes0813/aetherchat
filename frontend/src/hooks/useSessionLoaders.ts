@@ -11,6 +11,7 @@ export type StoredSession = {
   title: string;
   summary: string;
   mode: 'casual' | 'roundtable' | 'project';
+  project_id?: string | null;
   created_at: string;
   updated_at: string;
   last_message_at?: string | null;
@@ -26,6 +27,7 @@ export const conversationFromSession = (session: StoredSession): Conversation =>
   updatedAt: formatDateTime(session.last_message_at || session.updated_at),
   createdAt: session.created_at,
   mode: session.mode,
+  projectId: session.project_id ?? null,
   messageCount: session.message_count,
   taskCount: session.task_count,
   openTaskCount: session.open_task_count,
@@ -34,6 +36,8 @@ export const conversationFromSession = (session: StoredSession): Conversation =>
 export type UseSessionLoadersParams = {
   sessionId: string;
   currentMode: 'casual' | 'roundtable' | 'project';
+  /** Governance project for auto-created active session rows. */
+  preferredProjectId?: string | null;
   setTasks: SessionStoreState['setTasks'];
   setConversations: SessionStoreState['setConversations'];
   setMessages: SessionStoreState['setMessages'];
@@ -66,6 +70,7 @@ export type SessionLoaders = {
 export function useSessionLoaders({
   sessionId,
   currentMode,
+  preferredProjectId,
   setTasks,
   setConversations,
   setMessages,
@@ -89,10 +94,18 @@ export function useSessionLoaders({
       const activeSessionId = useSessionStore.getState().sessionId;
       let rows = await fetchJson<StoredSession[]>(`${API_BASE}/sessions/`);
       if (!rows.some((session) => session.id === activeSessionId)) {
+        const body: Record<string, unknown> = {
+          id: activeSessionId,
+          title: '新会话',
+          mode: currentMode,
+        };
+        if (preferredProjectId) {
+          body.project_id = preferredProjectId;
+        }
         await fetchJson<StoredSession>(`${API_BASE}/sessions/`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: activeSessionId, title: '新会话', mode: currentMode }),
+          body: JSON.stringify(body),
         });
         rows = await fetchJson<StoredSession[]>(`${API_BASE}/sessions/`);
       }

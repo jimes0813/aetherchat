@@ -23,6 +23,14 @@ import {
 } from './components/chrome';
 import { API_BASE, formatDateTime, isConfiguredModel } from './components/shared';
 import type { DesktopDocumentSaveResult, DesktopMouseResult, DesktopScreenshotSaveResult, ExternalNavigationReceipt, SelectedDesktopDocument } from './components/shared';
+import {
+  loadDefaultGovernanceProjectId,
+  loadGovernanceProjects,
+  projectLabel,
+  resolvePreferredProjectId,
+  type GovernanceProject,
+} from './components/governanceProject';
+import { SessionProjectSelect } from './components/SessionProjectSelect';
 import { fetchJson, setApiAuthToken, withApiAuth } from './api/client';
 import { useI18n } from './i18n';
 import { useSessionStore } from './stores/sessionStore';
@@ -223,6 +231,18 @@ function App() {
   }, [notice]);
 
   const currentMode = SETTING_TO_MODE[workspaceSettings.mode] ?? 'project';
+  const [governanceProjects, setGovernanceProjects] = useState<GovernanceProject[]>([]);
+  const [defaultGovernanceProjectId, setDefaultGovernanceProjectId] = useState<string | null>(null);
+  const preferredProjectId = resolvePreferredProjectId(
+    workspaceSettings.preferredProjectId,
+    governanceProjects,
+    defaultGovernanceProjectId,
+  );
+  const activeConversation = useMemo(
+    () => conversations.find((item) => item.id === sessionId) || null,
+    [conversations, sessionId],
+  );
+  const activeProjectId = activeConversation?.projectId ?? preferredProjectId ?? null;
 
   const {
     loadTasks,
@@ -238,6 +258,7 @@ function App() {
   } = useSessionLoaders({
     sessionId,
     currentMode,
+    preferredProjectId,
     setTasks,
     setConversations,
     setMessages,
@@ -256,6 +277,26 @@ function App() {
   useEffect(() => {
     if (!authReady || !authToken) return;
     void loadConversations();
+  }, [authReady, authToken]);
+
+  useEffect(() => {
+    if (!authReady || !authToken) return;
+    let cancelled = false;
+    void (async () => {
+      const [projects, defaultId] = await Promise.all([
+        loadGovernanceProjects(),
+        loadDefaultGovernanceProjectId(),
+      ]);
+      if (cancelled) return;
+      setGovernanceProjects(projects);
+      setDefaultGovernanceProjectId(defaultId);
+      if (!workspaceSettings.preferredProjectId && defaultId) {
+        updateSettings({ preferredProjectId: defaultId });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [authReady, authToken]);
 
   useEffect(() => {
@@ -285,10 +326,17 @@ function App() {
   ) => {
     try {
       const requestedMode = modeOverride || currentMode;
+      const body: Record<string, unknown> = {
+        title: '新协作会话',
+        mode: requestedMode,
+      };
+      if (preferredProjectId) {
+        body.project_id = preferredProjectId;
+      }
       const session = await fetchJson<StoredSession>(`${API_BASE}/sessions/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: '新协作会话', mode: requestedMode }),
+        body: JSON.stringify(body),
       });
       selectConversation(session.id);
       setMainView('chat');
@@ -297,6 +345,30 @@ function App() {
     } catch (error) {
       setNotice(`新建会话失败：${String(error)}`);
       return null;
+    }
+  };
+
+  const bindSessionProject = async (projectId: string) => {
+    try {
+      const updated = await fetchJson<StoredSession>(
+        `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/project`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ project_id: projectId }),
+        },
+      );
+      setConversations(
+        conversations.map((item) =>
+          item.id === sessionId
+            ? { ...item, projectId: updated.project_id ?? projectId }
+            : item,
+        ),
+      );
+      const label = projectLabel(projectId, governanceProjects) || projectId;
+      setNotice(`会话已绑定治理项目：${label}`);
+    } catch (error) {
+      setNotice(`绑定治理项目失败：${String(error)}`);
     }
   };
 
@@ -598,6 +670,9 @@ function App() {
         <WorkspaceSidebar
           conversations={conversations}
           currentSessionId={sessionId}
+          projectNames={Object.fromEntries(
+            governanceProjects.map((item) => [item.id, item.name]),
+          )}
           onNewConversation={() => void createPersistentConversation()}
           onOpenSearch={() => setCommandOpen(true)}
           onSelectConversation={selectConversation}
@@ -620,7 +695,7 @@ function App() {
             mergeRule={workspaceSettings.mergeRule}
             onOpenSearch={() => setCommandOpen(true)}
           />
-          <div className="flex items-center gap-2 border-b bg-[#f5efe7] p-2 text-xs">
+          <div className="flex flex-wrap items-center gap-2 border-b bg-[#f5efe7] p-2 text-xs">
             <span className="font-medium">模式:</span>
             {(['casual', 'roundtable', 'project'] as const).map(m => (
               <button 
@@ -638,6 +713,14 @@ function App() {
                 {ui('项目模式会增加模型调用：并行执行、独立核验、最终综合。')}
               </span>
             )}
+            <div className="mx-1 h-4 w-px bg-[#d8cdbf]" aria-hidden />
+            <SessionProjectSelect
+              projects={governanceProjects}
+              value={activeProjectId}
+              preferredProjectId={preferredProjectId}
+              onChangeSessionProject={(projectId) => void bindSessionProject(projectId)}
+              onChangePreferred={(projectId) => updateSettings({ preferredProjectId: projectId })}
+            />
             <span className="ml-auto text-[#8b8176]">当前: {currentMode}</span>
           </div>
           <MainViewTabs value={mainView} onChange={setMainView} />
@@ -665,6 +748,9 @@ function App() {
             <ConversationHistory
               conversations={conversations}
               currentSessionId={sessionId}
+              projectNames={Object.fromEntries(
+                governanceProjects.map((item) => [item.id, item.name]),
+              )}
               onContinue={(id) => {
                 selectConversation(id);
                 setMainView('chat');
