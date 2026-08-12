@@ -6,7 +6,7 @@ export type UiLocale = 'zh-CN' | 'en-US';
 const resources = {
   'zh-CN': {
     chat: '对话', memory: '记忆', knowledge: '资料', tasks: '任务', artifacts: '文件', changes: '变更',
-    tools: '工具', plugins: '插件', connections: '连接', computer: '电脑', models: '模型', runs: '运行', automations: '自动化', settings: '设置', instructions: '规范',
+    tools: '工具', plugins: '插件', connections: '连接', computer: '电脑', models: '模型', runs: '运行', automations: '自动化', settings: '设置', instructions: '规范', governance: '治理',
     feedTitle: '统一对话流', feedDescription: '这里只显示你的请求与模型最终答复；运行细节保留在审计记录中。', live: '实时协作',
     emptyTitle: '发送第一条中文协作请求', emptyDescription: '可让模型拆分任务、评审方案、写入工件或发起合并。', you: '你',
     allModels: '@全部模型', addAttachment: '添加附件', composerPlaceholder: '输入指令，或拖入图片 / PDF / Office / 代码资料',
@@ -23,7 +23,7 @@ const resources = {
   },
   'en-US': {
     chat: 'Chat', memory: 'Memory', knowledge: 'Knowledge', tasks: 'Tasks', artifacts: 'Artifacts', changes: 'Changes',
-    tools: 'Tools', plugins: 'Plugins', connections: 'Connections', computer: 'Computer', models: 'Models', runs: 'Runs', automations: 'Automations', settings: 'Settings', instructions: 'Rules',
+    tools: 'Tools', plugins: 'Plugins', connections: 'Connections', computer: 'Computer', models: 'Models', runs: 'Runs', automations: 'Automations', settings: 'Settings', instructions: 'Rules', governance: 'Governance',
     feedTitle: 'Unified conversation', feedDescription: 'Only your requests and final model responses appear here; run details stay in the audit log.', live: 'Live collaboration',
     emptyTitle: 'Send your first collaboration request', emptyDescription: 'Ask models to split tasks, review a plan, edit artifacts, or propose a merge.', you: 'You',
     allModels: '@All models', addAttachment: 'Add attachment', composerPlaceholder: 'Enter an instruction or drop images, PDF, Office, or code files',
@@ -196,6 +196,7 @@ const englishUi: Record<string, string> = {
   '首次执行': 'First run', '间隔分钟': 'Interval in minutes', '预算上限（美元）': 'Budget limit (USD)',
   '更多面板': 'More panels', '收起高级面板': 'Collapse advanced panels',
   '规范': 'Rules',
+  '治理': 'Governance',
 
   '单次预算上限（美元）': 'Per-run budget limit (USD)', '创建中...': 'Creating…',
   '创建只读定时任务': 'Create read-only schedule', '定时任务': 'Schedules',

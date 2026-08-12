@@ -27,6 +27,7 @@ from .routers import (
     mcp,
     memory,
     models,
+    platform,
     plugins,
     sessions,
     tasks,
@@ -157,6 +158,7 @@ app.include_router(memory.router, prefix="/memory", tags=["memory"], dependencie
 app.include_router(instructions.router, prefix="/instructions", tags=["instructions"], dependencies=protected)
 # Token-authenticated workflow webhooks (no session JWT; token is the secret).
 app.include_router(instructions.webhook_router, prefix="/instructions", tags=["instructions-webhooks"])
+app.include_router(platform.router, prefix="/platform", tags=["platform"], dependencies=protected)
 app.include_router(agent_runs.router, prefix="/agent-runs", tags=["agent-runs"], dependencies=protected)
 app.include_router(automations.router, prefix="/automations", tags=["automations"], dependencies=protected)
 app.include_router(workspaces.router, prefix="/workspaces", tags=["workspaces"], dependencies=protected)

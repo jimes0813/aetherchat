@@ -148,7 +148,7 @@ function App() {
   const activePanelLabel = activePanel ? ({
     记忆: t('memory'), 资料: t('knowledge'), 任务: t('tasks'), 自动化: t('automations'), 工件: t('artifacts'), 合并: t('changes'),
     工具: t('tools'), 插件: t('plugins'), 连接: t('connections'), 电脑: t('computer'), 模型: t('models'),
-    运行: t('runs'), 设置: t('settings'), 规范: t('instructions'),
+    运行: t('runs'), 设置: t('settings'), 规范: t('instructions'), 治理: t('governance'),
   } as Record<string, string>)[activePanel] : ui('检查器');
   const approvalActivity = useRef<Record<string, { model: string; toolName: string }>>({});
   const [authToken, setAuthToken] = useState('');
@@ -457,7 +457,7 @@ function App() {
   }, [setActivePanel]);
 
   const commandItems = useMemo<CommandItem[]>(() => {
-    const panels = (['记忆', '资料', '任务', '自动化', '工件', '合并', '工具', '插件', '连接', '电脑', '模型', '运行', '设置', '规范'] as const).map((panel) => ({
+    const panels = (['记忆', '资料', '任务', '自动化', '工件', '合并', '工具', '插件', '连接', '电脑', '模型', '运行', '设置', '规范', '治理'] as const).map((panel) => ({
       id: `panel-${panel}`,
       label: `打开${panel}面板`,
       hint: '命令',

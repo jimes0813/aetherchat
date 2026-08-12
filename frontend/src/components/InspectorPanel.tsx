@@ -28,6 +28,7 @@ import { TaskBoard } from './TaskBoard';
 import { SafeMarkdown } from './SafeMarkdown';
 import { RunPanel } from './RunPanel';
 import { LocalModelQuickPath } from './LocalModelQuickPath';
+import { PlatformGovernancePanel } from './PlatformGovernancePanel';
 import { SkillsRulesPanel } from './SkillsRulesPanel';
 import {
   formatAskWithSources,
@@ -172,7 +173,7 @@ export function InspectorPanel(props: InspectorProps) {
   const activePanelLabel = activePanel ? ({
     记忆: t('memory'), 资料: t('knowledge'), 任务: t('tasks'), 自动化: t('automations'), 工件: t('artifacts'), 合并: t('changes'),
     工具: t('tools'), 插件: t('plugins'), 连接: t('connections'), 电脑: t('computer'), 模型: t('models'),
-    运行: t('runs'), 设置: t('settings'), 规范: t('instructions'),
+    运行: t('runs'), 设置: t('settings'), 规范: t('instructions'), 治理: t('governance'),
   } as Record<string, string>)[activePanel] : ui('检查器');
   const [artifactContent, setArtifactContent] = useState('');
   const [artifactPreview, setArtifactPreview] = useState<ArtifactPreview | null>(null);
@@ -763,7 +764,8 @@ export function InspectorPanel(props: InspectorProps) {
             {([
               ['记忆', t('memory')], ['资料', t('knowledge')], ['任务', t('tasks')], ['自动化', t('automations')], ['工件', t('artifacts')],
               ['合并', t('changes')], ['工具', t('tools')], ['插件', t('plugins')], ['连接', t('connections')],
-              ['电脑', t('computer')], ['模型', t('models')], ['运行', t('runs')], ['设置', t('settings')], ['规范', t('instructions')],
+              ['电脑', t('computer')], ['模型', t('models')], ['运行', t('runs')], ['设置', t('settings')],
+              ['规范', t('instructions')], ['治理', t('governance')],
             ] as const).map(([panel, label]) => (
               <button
                 key={panel}
@@ -1559,6 +1561,10 @@ export function InspectorPanel(props: InspectorProps) {
 
       {activePanel === '规范' && (
         <SkillsRulesPanel apiBase={props.apiBase} sessionId={props.sessionId} />
+      )}
+
+      {activePanel === '治理' && (
+        <PlatformGovernancePanel apiBase={props.apiBase} />
       )}
     </aside>
   );

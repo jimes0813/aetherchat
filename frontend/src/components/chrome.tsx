@@ -4,6 +4,7 @@ import {
   AlarmClock,
   Archive,
   BookMarked,
+  Building2,
   Bot,
   Brain,
   Cable,
@@ -141,6 +142,7 @@ export function ActivityRail({ activePanel, setActivePanel }: ActivityRailProps)
     { label: t('connections'), icon: Cable, panel: '连接', group: 'advanced' },
     { label: t('computer'), icon: Laptop, panel: '电脑', group: 'advanced' },
     { label: t('instructions'), icon: BookMarked, panel: '规范', group: 'advanced' },
+    { label: t('governance'), icon: Building2, panel: '治理', group: 'advanced' },
   ];
 
   const primary = items.filter((item) => item.group === 'primary');
