@@ -491,6 +491,9 @@ class MCPRegistry:
         match = self.resolve_tool_name(exposed_name)
         if match is None:
             raise KeyError(exposed_name)
+        from .platform_governance import platform_governance
+
+        platform_governance.require_tool_invoke(exposed_name)
         connection_id, remote_name = match
         connection = self._connection(connection_id)
         allowed = connection.get("allowed_tools")

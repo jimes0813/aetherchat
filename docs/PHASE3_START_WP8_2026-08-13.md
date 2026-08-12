@@ -21,12 +21,23 @@
 
 - 真实 OIDC/SAML/SCIM
 - 跨设备同步与中心化 secret 托管
-- 将 authorize 硬接入所有 tool_executor 路径（后续可挂 policy gate）
-- 审计导出与合规报表
+- ~~将 authorize 硬接入所有 tool_executor 路径~~ → **Batch 44 已接入**
+- ~~审计导出与合规报表~~ → **Batch 44 已做 JSON/JSONL 导出**
 
-## 下一步建议（Batch 44+）
+## Batch 44（运行时门禁）
 
-1. 在工具调用与模型选择路径上可选接入 `authorize`（feature flag）
-2. 审计导出（JSON/CSV）与保留策略
-3. 项目/工作区作用域（tenant → project）
-4. 客户触发时再做 SSO 与团队空间
+| 项 | 内容 |
+|---|---|
+| 开关 | `AETHERCHAT_PLATFORM_POLICY_GATE` 默认开启；设 `0`/`false` 跳过 |
+| 工具路径 | `tool_registry.invoke_async`、plugin/MCP `invoke_tool`；编排器捕获 `PermissionError` |
+| 模型路径 | `orchestrator` 在选中模型后 `filter_model_names` |
+| 行为 | 仅在 RBAC 拒绝或白名单强制开启时拦截；默认策略不挡日常使用 |
+| 审计 | 拒绝始终记入；运行时允许不记（避免刷屏）；API 试算仍记 allow |
+| 导出 | `GET /platform/audit/export?format=json|jsonl`；治理面板「导出 JSON」 |
+
+## 下一步建议（Batch 45+）
+
+1. 项目/工作区作用域（tenant → project）
+2. 审计保留策略与 CSV
+3. 客户触发时再做 SSO 与团队空间
+4. Windows CSC 配齐后签公共 RC

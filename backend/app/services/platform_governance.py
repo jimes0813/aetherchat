@@ -20,6 +20,18 @@ def _now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _truthy_env(name: str, default: str = "1") -> bool:
+    raw = os.environ.get(name, default).strip().lower()
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return raw in {"1", "true", "yes", "on", ""}
+
+
+def policy_gate_enabled() -> bool:
+    """Runtime tool/model policy gate (default on; set AETHERCHAT_PLATFORM_POLICY_GATE=0 to skip)."""
+    return _truthy_env("AETHERCHAT_PLATFORM_POLICY_GATE", default="1")
+
+
 def _data_root() -> Path:
     root = Path(
         os.environ.get(
@@ -170,6 +182,8 @@ class PlatformGovernanceService:
     def status(self) -> dict[str, Any]:
         tenant = self.get_tenant(self.state.get("default_tenant_id") or "local")
         principals = self.list_principals(tenant_id=tenant["id"] if tenant else None)
+        policy = (tenant or {}).get("policy") or {}
+        gate_on = policy_gate_enabled()
         return {
             "phase": "3-platformization",
             "phase_label": "第三阶段：平台化",
@@ -177,19 +191,30 @@ class PlatformGovernanceService:
             "default_tenant_id": self.state.get("default_tenant_id"),
             "tenant_count": len(self.state.get("tenants") or {}),
             "principal_count": len(principals),
-            "policy": (tenant or {}).get("policy"),
+            "policy": policy,
+            "runtime_gate": {
+                "enabled": gate_on,
+                "env": "AETHERCHAT_PLATFORM_POLICY_GATE",
+                "tool_path": gate_on,
+                "model_path": gate_on,
+                "enforce_tool_allowlist": bool(policy.get("enforce_tool_allowlist")),
+                "enforce_model_allowlist": bool(policy.get("enforce_model_allowlist")),
+            },
             "capabilities": {
                 "tenant_isolation": True,
                 "rbac": True,
                 "tool_allowlist": True,
                 "model_allowlist": True,
                 "audit_log": True,
+                "audit_export": True,
+                "runtime_policy_gate": gate_on,
                 "sso_oidc": False,
                 "scim": False,
                 "team_spaces": "scaffold",
             },
             "notes": [
                 "默认单租户本机模式；策略可强制工具/模型白名单。",
+                "运行时门禁已接入工具调用与模型选择（可用 AETHERCHAT_PLATFORM_POLICY_GATE=0 关闭）。",
                 "SSO/OIDC/SCIM 未启用，后续按客户需求接入。",
                 "WP-0 公共发布仍 No-Go，与平台化并行。",
             ],
@@ -317,7 +342,12 @@ class PlatformGovernanceService:
         item = (self.state.get("roles") or {}).get(role) or {}
         return {str(value) for value in (item.get("permissions") or [])}
 
-    def authorize(self, payload: AuthorizeRequest) -> dict[str, Any]:
+    def authorize(
+        self,
+        payload: AuthorizeRequest,
+        *,
+        record_allow: bool = True,
+    ) -> dict[str, Any]:
         tenant_id = self.state.get("default_tenant_id") or "local"
         principal = None
         if payload.principal_id:
@@ -334,20 +364,37 @@ class PlatformGovernanceService:
         policy = tenant.get("policy") or {}
         role = str((principal or {}).get("role") or "member")
         perms = self._role_permissions(role)
-        if "*" not in perms and payload.action == "invoke_tool" and "tool.invoke" not in perms:
-            decision = {
-                "allowed": False,
-                "reason": "rbac_denied",
-                "message": f"角色 {role} 无权调用工具",
-                "role": role,
-            }
-            self.append_audit(
-                action="authorize.deny",
-                actor_id=(principal or {}).get("id"),
-                tenant_id=str(tenant_id),
-                detail=decision,
-            )
-            return decision
+        action = (payload.action or "invoke_tool").strip() or "invoke_tool"
+
+        if "*" not in perms:
+            if action == "invoke_tool" and "tool.invoke" not in perms:
+                decision = {
+                    "allowed": False,
+                    "reason": "rbac_denied",
+                    "message": f"角色 {role} 无权调用工具",
+                    "role": role,
+                }
+                self.append_audit(
+                    action="authorize.deny",
+                    actor_id=(principal or {}).get("id"),
+                    tenant_id=str(tenant_id),
+                    detail=decision,
+                )
+                return decision
+            if action == "use_model" and "model.use" not in perms:
+                decision = {
+                    "allowed": False,
+                    "reason": "rbac_denied",
+                    "message": f"角色 {role} 无权使用模型",
+                    "role": role,
+                }
+                self.append_audit(
+                    action="authorize.deny",
+                    actor_id=(principal or {}).get("id"),
+                    tenant_id=str(tenant_id),
+                    detail=decision,
+                )
+                return decision
 
         tool_name = (payload.tool_name or "").strip()
         if tool_name and policy.get("enforce_tool_allowlist"):
@@ -393,7 +440,7 @@ class PlatformGovernanceService:
             "environment": policy.get("environment"),
             "require_approval_for_high_risk": bool(policy.get("require_approval_for_high_risk")),
         }
-        if policy.get("audit_enabled"):
+        if record_allow and policy.get("audit_enabled"):
             self.append_audit(
                 action="authorize.allow",
                 actor_id=(principal or {}).get("id"),
@@ -401,10 +448,81 @@ class PlatformGovernanceService:
                 detail={
                     "tool_name": tool_name or None,
                     "model_name": model_name or None,
-                    "action": payload.action,
+                    "action": action,
                 },
             )
         return decision
+
+    def require_tool_invoke(
+        self,
+        tool_name: str,
+        *,
+        principal_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Runtime gate for tool paths. Raises PermissionError when denied."""
+        if not policy_gate_enabled():
+            return {"allowed": True, "reason": "gate_disabled", "skipped": True}
+        clean = str(tool_name or "").strip()
+        if not clean:
+            raise PermissionError("工具名称为空，平台策略拒绝")
+        decision = self.authorize(
+            AuthorizeRequest(
+                principal_id=principal_id,
+                tool_name=clean,
+                action="invoke_tool",
+            ),
+            # Runtime allows are high-volume; denials still audited above.
+            record_allow=False,
+        )
+        if not decision.get("allowed"):
+            raise PermissionError(
+                str(decision.get("message") or f"平台策略拒绝：{decision.get('reason')}")
+            )
+        return decision
+
+    def require_model_use(
+        self,
+        model_name: str,
+        *,
+        principal_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Runtime gate for model selection. Raises PermissionError when denied."""
+        if not policy_gate_enabled():
+            return {"allowed": True, "reason": "gate_disabled", "skipped": True}
+        clean = str(model_name or "").strip()
+        if not clean:
+            raise PermissionError("模型名称为空，平台策略拒绝")
+        decision = self.authorize(
+            AuthorizeRequest(
+                principal_id=principal_id,
+                model_name=clean,
+                action="use_model",
+            ),
+            record_allow=False,
+        )
+        if not decision.get("allowed"):
+            raise PermissionError(
+                str(decision.get("message") or f"平台策略拒绝：{decision.get('reason')}")
+            )
+        return decision
+
+    def filter_model_names(
+        self,
+        names: list[str],
+        *,
+        principal_id: str | None = None,
+    ) -> list[str]:
+        """Keep models that pass the runtime gate (order preserved)."""
+        if not policy_gate_enabled():
+            return list(names)
+        allowed: list[str] = []
+        for name in names:
+            try:
+                self.require_model_use(str(name), principal_id=principal_id)
+            except PermissionError:
+                continue
+            allowed.append(str(name))
+        return allowed
 
     # --- Audit ---
 
@@ -447,6 +565,34 @@ class PlatformGovernanceService:
             if len(events) >= max(1, min(500, limit)):
                 break
         return events
+
+    def export_audit(
+        self,
+        *,
+        limit: int = 500,
+        tenant_id: str | None = None,
+        format: Literal["json", "jsonl"] = "json",
+    ) -> dict[str, Any]:
+        events = self.list_audit(limit=limit, tenant_id=tenant_id)
+        exported_at = _now()
+        if format == "jsonl":
+            body = "\n".join(json.dumps(item, ensure_ascii=False) for item in events)
+            if body:
+                body += "\n"
+            return {
+                "format": "jsonl",
+                "exported_at": exported_at,
+                "count": len(events),
+                "tenant_id": tenant_id,
+                "body": body,
+            }
+        return {
+            "format": "json",
+            "exported_at": exported_at,
+            "count": len(events),
+            "tenant_id": tenant_id,
+            "events": events,
+        }
 
 
 platform_governance = PlatformGovernanceService()

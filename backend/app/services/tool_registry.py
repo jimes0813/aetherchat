@@ -513,6 +513,10 @@ class ToolRegistry:
         )
         arguments.pop("session_id", None)
 
+        from .platform_governance import platform_governance
+
+        platform_governance.require_tool_invoke(str(tool.get("name") or tool_id))
+
         if tool.get("kind") == "internal":
             from .tool_executor import execute_tool
 

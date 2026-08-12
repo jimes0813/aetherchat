@@ -83,3 +83,17 @@ async def list_audit(
     tenant_id: str | None = None,
 ):
     return platform_governance.list_audit(limit=limit, tenant_id=tenant_id)
+
+
+@router.get("/audit/export")
+async def export_audit(
+    limit: int = Query(default=500, ge=1, le=5000),
+    tenant_id: str | None = None,
+    format: str = Query(default="json", pattern="^(json|jsonl)$"),
+):
+    """Export recent audit events as JSON object or JSONL body."""
+    return platform_governance.export_audit(
+        limit=limit,
+        tenant_id=tenant_id,
+        format=format,  # type: ignore[arg-type]
+    )

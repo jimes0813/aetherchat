@@ -18,6 +18,14 @@ export type PlatformStatus = {
     dlp_redact_secrets?: boolean;
     audit_enabled?: boolean;
   };
+  runtime_gate?: {
+    enabled?: boolean;
+    env?: string;
+    tool_path?: boolean;
+    model_path?: boolean;
+    enforce_tool_allowlist?: boolean;
+    enforce_model_allowlist?: boolean;
+  };
   capabilities?: Record<string, boolean | string>;
   notes?: string[];
 };
@@ -117,7 +125,32 @@ export function PlatformGovernancePanel({ apiBase }: PlatformGovernancePanelProp
     }
   };
 
+  const exportAudit = async () => {
+    setBusy(true);
+    try {
+      const payload = await fetchJson<{
+        format: string;
+        count: number;
+        exported_at: string;
+        events?: AuditEvent[];
+      }>(`${apiBase}/platform/audit/export?limit=500&format=json`);
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `aetherchat-audit-${payload.exported_at || 'export'}.json`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      setMessage(`已导出审计 ${payload.count} 条`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const policy = status?.policy;
+  const gate = status?.runtime_gate;
 
   return (
     <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto p-4">
@@ -152,6 +185,11 @@ export function PlatformGovernancePanel({ apiBase }: PlatformGovernancePanelProp
         <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-[#5d4a3a]">
           <Shield size={13} />
           当前策略（{status?.default_tenant_id || 'local'}）
+        </div>
+        <div className="mb-2 rounded-md bg-[#f4efe8] px-2 py-1.5 text-[11px] text-[#6e5d4b]">
+          运行时门禁：{gate?.enabled ? '已接入工具与模型路径' : '已关闭（AETHERCHAT_PLATFORM_POLICY_GATE）'}
+          {gate?.enforce_tool_allowlist ? ' · 工具白名单强制中' : ''}
+          {gate?.enforce_model_allowlist ? ' · 模型白名单强制中' : ''}
         </div>
         <div className="grid grid-cols-2 gap-2 text-[11px] text-[#5f554d]">
           <div>环境：{policy?.environment || 'dev'}</div>
@@ -208,7 +246,17 @@ export function PlatformGovernancePanel({ apiBase }: PlatformGovernancePanelProp
       </section>
 
       <section className="rounded-xl border border-[#ded6ca] bg-white p-3">
-        <div className="mb-2 text-xs font-semibold text-[#5d4a3a]">审计（最近）</div>
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="text-xs font-semibold text-[#5d4a3a]">审计（最近）</div>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void exportAudit()}
+            className="rounded-md border border-[#cfc4b7] px-2 py-1 text-[11px] text-[#5d4a3a] disabled:opacity-50"
+          >
+            导出 JSON
+          </button>
+        </div>
         <div className="max-h-48 space-y-1 overflow-auto">
           {audit.map((event) => (
             <div key={event.id} className="rounded border border-[#eee6db] px-2 py-1 font-mono text-[10px] text-[#6d6258]">

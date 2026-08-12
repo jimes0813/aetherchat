@@ -337,10 +337,14 @@ class SessionOrchestrator:
 
         queue: asyncio.Queue[dict] = asyncio.Queue()
         selected = [name for name in targets if self._should_participate(name, content, targets, explicit_targets)]
+        if selected:
+            from .platform_governance import platform_governance
+
+            selected = platform_governance.filter_model_names(selected)
         if not selected:
             yield {
                 "type": "error",
-                "message": "没有选中可用模型。请选择具体模型，或选择全部模型后重试。",
+                "message": "没有选中可用模型。请选择具体模型，或选择全部模型后重试。若已开启模型白名单，请在「治理」面板检查策略。",
             }
             return
         if self.budget_remaining <= 0:
@@ -1350,16 +1354,45 @@ class SessionOrchestrator:
                                 [],
                             )
                             continue
-                        run = await tool_registry.invoke_async(
-                            tool["id"],
-                            ToolInvoke(caller=f"model:{name}", session_id=self.session_id, arguments=arguments),
-                            session_id=self.session_id,
-                            execution_context={
-                                "run_id": agent_run_id or None,
-                                "plan_step_id": plan_step_id,
-                                "workspace_id": workspace_id,
-                            },
-                        )
+                        try:
+                            run = await tool_registry.invoke_async(
+                                tool["id"],
+                                ToolInvoke(caller=f"model:{name}", session_id=self.session_id, arguments=arguments),
+                                session_id=self.session_id,
+                                execution_context={
+                                    "run_id": agent_run_id or None,
+                                    "plan_step_id": plan_step_id,
+                                    "workspace_id": workspace_id,
+                                },
+                            )
+                        except PermissionError as exc:
+                            started_at = datetime.now(UTC).isoformat()
+                            run = tool_registry.record_run(
+                                tool_id=tool.get("id"),
+                                tool_name=tool_name,
+                                caller=f"model:{name}",
+                                session_id=self.session_id,
+                                arguments=self.tool_loop.sanitize_arguments(
+                                    tool_name,
+                                    arguments,
+                                ),
+                                status="error",
+                                output=None,
+                                error=str(exc),
+                                started_at=started_at,
+                            )
+                            await remember_tool_result(
+                                tool_call,
+                                {
+                                    "tool": tool_name,
+                                    "status": "denied",
+                                    "error": str(exc),
+                                },
+                                [],
+                                tool_run_id=run.get("id"),
+                            )
+                            await queue.put({"type": "tool_run", "run": run})
+                            continue
                         structured_output = (
                             run.get("result")
                             if "result" in run

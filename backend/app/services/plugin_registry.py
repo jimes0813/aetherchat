@@ -651,6 +651,9 @@ class PluginRegistry:
         match = self.resolve_tool_name(tool_name)
         if match is None:
             raise KeyError(tool_name)
+        from .platform_governance import platform_governance
+
+        platform_governance.require_tool_invoke(tool_name)
         plugin_id, action_id = match
         return await self.invoke(
             plugin_id,
