@@ -296,6 +296,35 @@ class KnowledgeService:
         mime = "image/jpeg" if extension in {".jpg", ".jpeg"} else f"image/{extension[1:]}"
         return data, mime
 
+    def image_path(self, session_id: str, attachment_id: str) -> str:
+        """Return the validated native path for a session-owned image.
+
+        Model providers only receive image pixels, never a trustworthy local
+        filename.  Server-side tools such as ComfyUI can use this resolver to
+        bridge an attachment without asking the model to invent a path.
+        """
+
+        item = self.get_attachment(session_id, attachment_id)
+        extension = item["extension"]
+        if extension not in IMAGE_EXTENSIONS:
+            raise KnowledgeError("附件不是可用的 PNG、JPEG 或 WebP 图片")
+        path = self._attachment_root(session_id, attachment_id) / f"source{extension}"
+        if not path.is_file() or path.is_symlink():
+            raise KnowledgeError("附件图片文件不存在或不安全")
+        return str(path.resolve(strict=True))
+
+    def image_paths(
+        self,
+        session_id: str,
+        attachment_ids: Iterable[str],
+    ) -> list[str]:
+        paths: list[str] = []
+        for reference in self.attachment_refs(session_id, attachment_ids):
+            item = self.get_attachment(session_id, reference["id"])
+            if item["extension"] in IMAGE_EXTENSIONS:
+                paths.append(self.image_path(session_id, reference["id"]))
+        return paths
+
     def attachment_refs(self, session_id: str, attachment_ids: Iterable[str]) -> list[dict[str, Any]]:
         refs = []
         seen: set[str] = set()
@@ -436,14 +465,69 @@ class KnowledgeService:
         results = []
         for score, candidate in ranked[:bounded]:
             row = candidate["row"]
+            content = str(row["content"])
+            lowered = content.casefold()
+            coverage = sum(1 for term in query_terms if term in lowered) / max(1, len(query_terms))
+            exact = 1.0 if lowered_query and lowered_query in lowered else 0.0
             results.append({
-                "attachment_id": row["attachment_id"], "source_name": row["source_name"],
-                "locator": row["locator"], "content": row["content"],
+                "attachment_id": row["attachment_id"],
+                "source_name": row["source_name"],
+                "locator": row["locator"],
+                "content": row["content"],
                 "citation": f"{row['source_name']} · {row['locator']}",
                 "score": round(max(0.0, min(1.0, score)), 4),
                 "match_types": sorted(candidate["match_types"]),
+                "rank": len(results) + 1,
+                "layers": {
+                    "lexical": round(float(candidate["lexical"]), 4),
+                    "vector": round(float(candidate["vector"]), 4),
+                    "coverage": round(float(coverage), 4),
+                    "exact": round(float(exact), 4),
+                },
             })
         return results
+
+    def session_stats(self, session_id: str) -> dict[str, Any]:
+        """Summarize the local knowledge index for a session (UI status strip)."""
+        safe_session = self._session_id(session_id)
+        with self._lock, self._connect() as connection:
+            attachments = connection.execute(
+                """SELECT extension, status, size_bytes, chunk_count
+                   FROM knowledge_attachments WHERE session_id = ?""",
+                (safe_session,),
+            ).fetchall()
+            chunk_count = connection.execute(
+                "SELECT COUNT(*) AS n FROM knowledge_chunks WHERE session_id = ?",
+                (safe_session,),
+            ).fetchone()["n"]
+            vector_count = connection.execute(
+                "SELECT COUNT(*) AS n FROM knowledge_vectors WHERE session_id = ?",
+                (safe_session,),
+            ).fetchone()["n"]
+        by_ext: dict[str, int] = {}
+        total_bytes = 0
+        ready = 0
+        for row in attachments:
+            ext = str(row["extension"] or "").lower() or "(none)"
+            by_ext[ext] = by_ext.get(ext, 0) + 1
+            total_bytes += int(row["size_bytes"] or 0)
+            if str(row["status"] or "") == "ready":
+                ready += 1
+        return {
+            "session_id": safe_session,
+            "attachment_count": len(attachments),
+            "ready_count": ready,
+            "chunk_count": int(chunk_count or 0),
+            "vector_count": int(vector_count or 0),
+            "total_bytes": total_bytes,
+            "extensions": by_ext,
+            "retrieval": {
+                "lexical": "fts5+bm25",
+                "vector": "local-hash-256d",
+                "hybrid": "lexical*0.5 + semantic*0.35 + coverage*0.1 + exact*0.05",
+                "offline": True,
+            },
+        }
 
     @staticmethod
     def _vector_features(text: str) -> list[str]:

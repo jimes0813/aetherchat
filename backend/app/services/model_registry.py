@@ -55,7 +55,14 @@ class ModelRegistry:
             ModelCreate(name="deepseek", type="openai_compat", model="deepseek-chat", base_url="https://api.deepseek.com", persona="Coder/Reasoner", api_key_ref="DEEPSEEK_API_KEY"),
             ModelCreate(name="grok", type="openai_compat", model="grok-2", persona="Creative", api_key_ref="XAI_API_KEY"),
             ModelCreate(name="qwen", type="openai_compat", model="qwen-plus", persona="Chinese/local + Critic", api_key_ref="QWEN_API_KEY"),
-            ModelCreate(name="kimi", type="openai_compat", model="kimi-k2", persona="Researcher", api_key_ref="KIMI_API_KEY"),
+            ModelCreate(
+                name="kimi",
+                type="openai_compat",
+                model="kimi-k3",
+                base_url="https://api.moonshot.cn/v1",
+                persona="Researcher",
+                api_key_ref="KIMI_API_KEY",
+            ),
             ModelCreate(name="gpt", type="openai_compat", model="gpt-4.1", persona="Implementer", api_key_ref="OPENAI_API_KEY"),
         ]
         for item in defaults:

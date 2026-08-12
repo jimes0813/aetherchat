@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import json
 import os
 import random
@@ -23,6 +24,14 @@ WAN_I2V_MODEL = "wan2.1_i2v_480p_14B_fp8_scaled.safetensors"
 WAN_TEXT_ENCODER = "umt5_xxl_fp8_e4m3fn_scaled.safetensors"
 WAN_VAE = "wan_2.1_vae.safetensors"
 WAN_CLIP_VISION = "clip_vision_h.safetensors"
+WAN22_REMIX_HIGH_MODEL = (
+    "Wan2.2_Remix_NSFW_i2v_14b_high_lighting_fp8_e4m3fn_v3.0.safetensors"
+)
+WAN22_REMIX_LOW_MODEL = (
+    "Wan2.2_Remix_NSFW_i2v_14b_low_lighting_fp8_e4m3fn_v3.0.safetensors"
+)
+WAN22_REMIX_TEXT_ENCODER = "nsfw_wan_umt5-xxl_fp8_scaled.safetensors"
+WAN22_REMIX_MODELS = frozenset({WAN22_REMIX_HIGH_MODEL, WAN22_REMIX_LOW_MODEL})
 LTX_CHECKPOINT = "ltx-2.3-22b-dev.safetensors"
 LTX_TEXT_ENCODER = "gemma-3-12b-it/model-00001-of-00005.safetensors"
 LTX_MIN_FREE_MEMORY = 96 * 1024**3
@@ -191,6 +200,9 @@ class ComfyUIService:
                 for name in (
                     "WanImageToVideo",
                     "SaveWEBM",
+                    "ModelSamplingSD3",
+                    "KSamplerAdvanced",
+                    "CreateVideo",
                     "LTXVGemmaCLIPModelLoader",
                     "LTXVAudioVAELoader",
                     "LTXVConditioning",
@@ -262,7 +274,7 @@ class ComfyUIService:
                     missing.append(name)
             return missing
 
-        wan_missing = missing_assets([
+        wan21_missing = missing_assets([
             ("diffusion_models", WAN_I2V_MODEL),
             ("text_encoders", WAN_TEXT_ENCODER),
             ("vae", WAN_VAE),
@@ -270,6 +282,36 @@ class ComfyUIService:
             ("capabilities", "WanImageToVideo"),
             ("capabilities", "SaveWEBM"),
         ])
+        wan22_remix_missing = missing_assets([
+            ("diffusion_models", WAN22_REMIX_HIGH_MODEL),
+            ("diffusion_models", WAN22_REMIX_LOW_MODEL),
+            ("text_encoders", WAN22_REMIX_TEXT_ENCODER),
+            ("vae", WAN_VAE),
+            ("capabilities", "WanImageToVideo"),
+            ("capabilities", "ModelSamplingSD3"),
+            ("capabilities", "KSamplerAdvanced"),
+            ("capabilities", "CreateVideo"),
+            ("capabilities", "SaveVideo"),
+        ])
+        wan_models = [
+            {
+                "name": WAN_I2V_MODEL,
+                "label": "Wan 2.1 I2V 14B",
+                "installed": not wan21_missing,
+                "missing": wan21_missing,
+                "recommended": not wan21_missing,
+            },
+            {
+                "name": WAN22_REMIX_HIGH_MODEL,
+                "label": "Wan 2.2 Remix I2V 14B（双阶段）",
+                "installed": not wan22_remix_missing,
+                "missing": wan22_remix_missing,
+                "companion_models": [WAN22_REMIX_LOW_MODEL],
+                "recommended": bool(wan21_missing) and not wan22_remix_missing,
+            },
+        ]
+        wan_installed = any(item["installed"] for item in wan_models)
+        wan_missing = list(dict.fromkeys(wan21_missing + wan22_remix_missing))
         ltx_missing = missing_assets([
             ("checkpoints", LTX_CHECKPOINT),
             ("text_encoders", LTX_TEXT_ENCODER),
@@ -294,12 +336,15 @@ class ComfyUIService:
             "video_pipelines": [
                 {
                     "id": "wan-i2v",
-                    "label": "Wan 2.1 I2V 14B（图生视频）",
-                    "installed": not wan_missing,
-                    "available": not wan_missing,
-                    "missing": wan_missing,
-                    "requires_input_image": True,
-                    "warning": "需要一张本机输入图片。",
+                    "label": "Wan I2V（图生视频）",
+                    "installed": wan_installed,
+                    "available": wan_installed,
+                    "missing": [] if wan_installed else wan_missing,
+                    "requires_input_image": False,
+                    "accepts_input_image": True,
+                    "auto_generates_input_image": True,
+                    "models": wan_models,
+                    "warning": "可使用本机图片；省略时自动生成起始图。",
                 },
                 {
                     "id": "ltx-t2v",
@@ -549,6 +594,7 @@ class ComfyUIService:
         prompt: str,
         *,
         pipeline: str = "wan-i2v",
+        model: str | None = None,
         input_image: str | None = None,
         width: int = 480,
         height: int = 832,
@@ -579,13 +625,103 @@ class ComfyUIService:
             raise ComfyUIError(str(pipeline_option["warning"]))
         width, height = self._dimensions(width, height)
         frames = max(1, min(161, frames))
+        resolved_model: str | None = None
+        starter_image_prompt_id: str | None = None
         if pipeline == "wan-i2v":
-            if not input_image:
-                raise ComfyUIError("wan-i2v requires input_image")
-            image_name = await self._upload_image(input_image)
-            graph = self._wan_i2v_graph(prompt, image_name, width, height, frames, fps, steps, cfg, seed)
+            model_options = [
+                item
+                for item in pipeline_option.get("models") or []
+                if isinstance(item, dict)
+            ]
+            model_by_name = {
+                str(item.get("name") or "").casefold(): item
+                for item in model_options
+                if str(item.get("name") or "").strip()
+            }
+            remix_option = model_by_name.get(WAN22_REMIX_HIGH_MODEL.casefold())
+            if remix_option is not None:
+                model_by_name[WAN22_REMIX_LOW_MODEL.casefold()] = remix_option
+            requested_model = str(model or "").strip()
+            if requested_model and requested_model.casefold() != "auto":
+                selected_model = model_by_name.get(requested_model.casefold())
+                if selected_model is None:
+                    available = ", ".join(
+                        str(item.get("name") or "")
+                        for item in model_options
+                        if item.get("installed")
+                    ) or WAN_I2V_MODEL
+                    raise ComfyUIError(
+                        f"Unsupported wan-i2v model: {requested_model}. "
+                        f"Available models: {available}"
+                    )
+            else:
+                selected_model = next(
+                    (
+                        item
+                        for item in model_options
+                        if item.get("installed") and item.get("recommended")
+                    ),
+                    None,
+                ) or next(
+                    (item for item in model_options if item.get("installed")),
+                    None,
+                )
+                # Compatibility with callers that mock the pre-model-catalog
+                # pipeline shape.
+                selected_model = selected_model or {
+                    "name": WAN_I2V_MODEL,
+                    "installed": pipeline_option["installed"],
+                    "missing": pipeline_option.get("missing") or [],
+                }
+            if not selected_model.get("installed"):
+                raise ComfyUIError(
+                    f"ComfyUI video model {selected_model.get('name')} is missing: "
+                    + ", ".join(selected_model.get("missing") or [])
+                )
+            resolved_model = str(selected_model["name"])
+
+            if input_image:
+                image_name = await self._upload_image(input_image)
+                input_image_source = "local-file"
+            else:
+                starter = await self.generate_image(
+                    prompt,
+                    width=width,
+                    height=height,
+                    seed=seed,
+                )
+                starter_image_prompt_id = str(starter.get("prompt_id") or "") or None
+                image_name = await self._upload_generated_image(starter)
+                input_image_source = "auto-generated"
+
+            if resolved_model in WAN22_REMIX_MODELS:
+                graph = self._wan22_remix_i2v_graph(
+                    prompt,
+                    image_name,
+                    width,
+                    height,
+                    frames,
+                    fps,
+                    steps,
+                    cfg,
+                    seed,
+                )
+            else:
+                graph = self._wan_i2v_graph(
+                    prompt,
+                    image_name,
+                    width,
+                    height,
+                    frames,
+                    fps,
+                    steps,
+                    cfg,
+                    seed,
+                )
         elif pipeline == "ltx-t2v":
             width, height = width - width % 32, height - height % 32
+            resolved_model = LTX_CHECKPOINT
+            input_image_source = None
             graph = self._ltx_t2v_graph(prompt, width, height, frames, fps, steps, cfg, seed)
         return await self._submit_and_wait(
             graph,
@@ -595,7 +731,10 @@ class ComfyUIService:
                 "parameters": {
                     "prompt": prompt,
                     "pipeline": pipeline,
+                    "model": resolved_model,
                     "input_image": input_image,
+                    "input_image_source": input_image_source,
+                    "starter_image_prompt_id": starter_image_prompt_id,
                     "width": width,
                     "height": height,
                     "frames": frames,
@@ -623,6 +762,43 @@ class ComfyUIService:
             response.raise_for_status()
             result = response.json()
         return f"{result.get('subfolder', '').strip('/')}/{result['name']}".lstrip("/")
+
+    async def _upload_generated_image(self, result: dict[str, Any]) -> str:
+        for raw_file in result.get("files") or []:
+            if not isinstance(raw_file, dict):
+                continue
+            filename = Path(str(raw_file.get("filename") or "starter.png")).name
+            suffix = Path(filename).suffix.lower()
+            if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+                continue
+            local_path = str(raw_file.get("_local_path") or "").strip()
+            if local_path:
+                return await self._upload_image(local_path)
+            data_url = str(raw_file.get("image_data_url") or "")
+            if not data_url.startswith("data:image/") or ";base64," not in data_url:
+                continue
+            header, encoded = data_url.split(",", 1)
+            try:
+                data = base64.b64decode(encoded, validate=True)
+            except (ValueError, TypeError, binascii.Error) as exc:
+                raise ComfyUIError("Generated starter image data is invalid") from exc
+            if not data or len(data) > 50 * 1024 * 1024:
+                raise ComfyUIError("Generated starter image is empty or exceeds 50 MB")
+            mime = header[5:].split(";", 1)[0]
+            async with self._client(120) as client:
+                response = await client.post(
+                    f"{self.base_url}/upload/image",
+                    files={"image": (filename, data, mime)},
+                    data={"overwrite": "true"},
+                )
+                response.raise_for_status()
+                uploaded = response.json()
+            return (
+                f"{uploaded.get('subfolder', '').strip('/')}/{uploaded['name']}"
+            ).lstrip("/")
+        raise ComfyUIError(
+            "Automatic starter image generation completed without a usable image output"
+        )
 
     @staticmethod
     def _wan_i2v_graph(
@@ -660,6 +836,114 @@ class ComfyUIService:
             "12": {"class_type": "SaveWEBM", "inputs": {
                 "images": ["11", 0], "filename_prefix": "AetherChat/wan_i2v",
                 "codec": "vp9", "fps": float(max(1, min(60, fps))), "crf": 28.0,
+            }},
+        }
+
+    @staticmethod
+    def _wan22_remix_i2v_graph(
+        prompt: str,
+        image_name: str,
+        width: int,
+        height: int,
+        frames: int,
+        fps: int,
+        steps: int,
+        cfg: float,
+        seed: int | None,
+    ) -> dict[str, Any]:
+        """Build the installed Wan 2.2 Remix high/low two-stage graph."""
+
+        negative = (
+            "static, blurry, worst quality, low quality, deformed, watermark, "
+            "text, logo, extra fingers, bad anatomy"
+        )
+        bounded_steps = max(2, min(100, steps))
+        switch_step = max(1, bounded_steps // 2)
+        noise_seed = seed if seed is not None else random.getrandbits(63)
+        bounded_cfg = max(0.1, min(30.0, cfg))
+        return {
+            "1": {"class_type": "UNETLoader", "inputs": {
+                "unet_name": WAN22_REMIX_HIGH_MODEL,
+                "weight_dtype": "fp8_e4m3fn",
+            }},
+            "2": {"class_type": "UNETLoader", "inputs": {
+                "unet_name": WAN22_REMIX_LOW_MODEL,
+                "weight_dtype": "fp8_e4m3fn",
+            }},
+            "3": {"class_type": "ModelSamplingSD3", "inputs": {
+                "model": ["1", 0], "shift": 8.0,
+            }},
+            "4": {"class_type": "ModelSamplingSD3", "inputs": {
+                "model": ["2", 0], "shift": 8.0,
+            }},
+            "5": {"class_type": "CLIPLoader", "inputs": {
+                "clip_name": WAN22_REMIX_TEXT_ENCODER,
+                "type": "wan",
+                "device": "default",
+            }},
+            "6": {"class_type": "CLIPTextEncode", "inputs": {
+                "text": prompt, "clip": ["5", 0],
+            }},
+            "7": {"class_type": "CLIPTextEncode", "inputs": {
+                "text": negative, "clip": ["5", 0],
+            }},
+            "8": {"class_type": "VAELoader", "inputs": {
+                "vae_name": WAN_VAE,
+            }},
+            "9": {"class_type": "LoadImage", "inputs": {
+                "image": image_name,
+            }},
+            "10": {"class_type": "WanImageToVideo", "inputs": {
+                "positive": ["6", 0],
+                "negative": ["7", 0],
+                "vae": ["8", 0],
+                "start_image": ["9", 0],
+                "width": width,
+                "height": height,
+                "length": frames,
+                "batch_size": 1,
+            }},
+            "11": {"class_type": "KSamplerAdvanced", "inputs": {
+                "model": ["3", 0],
+                "add_noise": "enable",
+                "noise_seed": noise_seed,
+                "steps": bounded_steps,
+                "cfg": bounded_cfg,
+                "sampler_name": "euler",
+                "scheduler": "simple",
+                "positive": ["10", 0],
+                "negative": ["10", 1],
+                "latent_image": ["10", 2],
+                "start_at_step": 0,
+                "end_at_step": switch_step,
+                "return_with_leftover_noise": "enable",
+            }},
+            "12": {"class_type": "KSamplerAdvanced", "inputs": {
+                "model": ["4", 0],
+                "add_noise": "disable",
+                "noise_seed": 0,
+                "steps": bounded_steps,
+                "cfg": bounded_cfg,
+                "sampler_name": "euler",
+                "scheduler": "simple",
+                "positive": ["10", 0],
+                "negative": ["10", 1],
+                "latent_image": ["11", 0],
+                "start_at_step": switch_step,
+                "end_at_step": 10_000,
+                "return_with_leftover_noise": "disable",
+            }},
+            "13": {"class_type": "VAEDecode", "inputs": {
+                "samples": ["12", 0], "vae": ["8", 0],
+            }},
+            "14": {"class_type": "CreateVideo", "inputs": {
+                "images": ["13", 0], "fps": float(max(1, min(60, fps))),
+            }},
+            "15": {"class_type": "SaveVideo", "inputs": {
+                "video": ["14", 0],
+                "filename_prefix": "AetherChat/wan22_remix_i2v",
+                "format": "auto",
+                "codec": "auto",
             }},
         }
 

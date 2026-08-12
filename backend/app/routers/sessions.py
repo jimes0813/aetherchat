@@ -3,6 +3,7 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from ..models.schemas import SessionDeleted, SessionSummary
 from ..services.artifact_service import ArtifactPathError, ArtifactService, MergeProposalStore
 from ..services.chat_database import chat_database
 from ..services.git_workspace_service import GitWorkspaceError, git_workspace_service
@@ -20,12 +21,12 @@ class SessionCreate(BaseModel):
     mode: str = Field(default="project", pattern="^(casual|roundtable|project)$")
 
 
-@router.get("/")
+@router.get("/", response_model=list[SessionSummary])
 async def list_sessions(limit: int = 100):
     return chat_database.list_sessions(limit)
 
 
-@router.post("/")
+@router.post("/", response_model=SessionSummary)
 async def create_session(payload: SessionCreate):
     session_id = str(payload.id or uuid4())
     return chat_database.create_session(session_id, payload.title, payload.mode)
@@ -49,7 +50,7 @@ async def list_task_events(session_id: UUID, limit: int = 300):
     return chat_database.list_task_events(str(session_id), limit)
 
 
-@router.delete("/{session_id}")
+@router.delete("/{session_id}", response_model=SessionDeleted)
 async def delete_session(session_id: UUID):
     session = chat_database.get_session(str(session_id))
     if session is None:

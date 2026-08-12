@@ -1,6 +1,6 @@
 # backend/app/models/schemas.py
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -108,9 +108,107 @@ class WSMessage(BaseModel):
     type: str
     model: str | None = None
     delta: str | None = None
+    coalesced_count: int | None = None
     seq: int | None = None
     ts: str | None = None
     message: Message | None = None
+
+
+# --- Public API response models (match runtime SQLite/registry payloads) ---
+
+
+class SessionSummary(BaseModel):
+    """Lightweight session row returned by list/create session endpoints."""
+
+    id: str
+    title: str
+    summary: str = ""
+    mode: str = "project"
+    created_at: str | None = None
+    updated_at: str | None = None
+    last_message_at: str | None = None
+    message_count: int = 0
+    task_count: int = 0
+    open_task_count: int = 0
+
+
+class ModelRecord(BaseModel):
+    """Model registry record returned by list/create/delete model endpoints."""
+
+    name: str
+    type: Literal["openai_compat", "anthropic", "xai", "local"]
+    model: str
+    base_url: str | None = None
+    api_key_ref: str
+    max_tokens: int = 8192
+    participation_policy: Literal["always", "mentioned", "project_autonomous"] = "always"
+    persona: str | None = None
+    cost_per_1k_input: float = 0.0
+    cost_per_1k_output: float = 0.0
+    token_limit: int = 128000
+    local_runtime: Literal["external", "llama_cpp"] | None = None
+    model_path: str | None = None
+    runtime_executable: str | None = None
+    runtime_args: list[str] = Field(default_factory=list)
+    startup_timeout: int | None = None
+    has_api_key: bool = False
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class ModelVerifyResult(BaseModel):
+    ok: bool
+    message: str
+    sample: str | None = None
+    model: str | None = None
+    base_url: str | None = None
+    runtime: dict[str, Any] | None = None
+
+
+class ModelRuntimeStatus(BaseModel):
+    ready: bool = False
+    managed: bool = False
+    started: bool = False
+    type: str | None = None
+    message: str | None = None
+    base_url: str | None = None
+    pid: int | None = None
+
+    model_config = {"extra": "allow"}
+
+
+class ModelDeleted(BaseModel):
+    deleted: bool
+    model: ModelRecord | dict[str, Any]
+
+
+class HealthStatus(BaseModel):
+    status: str
+    service: str
+    redis: bool = False
+    automation: dict[str, Any] = Field(default_factory=dict)
+    run_dispatcher: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"extra": "allow"}
+
+
+class ReadinessStatus(BaseModel):
+    status: str
+    ready: bool
+    service: str | None = None
+    request_id: str | None = None
+    checks: dict[str, Any] = Field(default_factory=dict)
+    optional_dependencies: dict[str, Any] = Field(default_factory=dict)
+    code: str | None = None
+    message: str | None = None
+
+    model_config = {"extra": "allow"}
+
+
+class SessionDeleted(BaseModel):
+    deleted: bool
+    session_id: str
+    cleanup: dict[str, Any] = Field(default_factory=dict)
     task: Task | None = None
     budget_remaining: float | None = None
     content: str | None = None
@@ -135,3 +233,21 @@ class ClientAction(BaseModel):
     task_id: str | None = None
     proposal_id: str | None = None
     attachment_ids: list[str] = Field(default_factory=list)
+
+
+class ProjectPostMessageActionV1(ClientAction):
+    type: Literal["post_message"]
+    mode: Literal["project"]
+    execution_strategy: Literal["direct", "planned"]
+
+
+class DirectPostMessageActionV1(ClientAction):
+    type: Literal["post_message"]
+    mode: Literal["casual", "roundtable"]
+    execution_strategy: Literal["direct"] = "direct"
+
+
+PostMessageActionV1 = Annotated[
+    ProjectPostMessageActionV1 | DirectPostMessageActionV1,
+    Field(discriminator="mode"),
+]

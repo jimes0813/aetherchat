@@ -1,8 +1,14 @@
 from fastapi import APIRouter, HTTPException
 
-from ..models.schemas import ProviderConfig
+from ..models.schemas import (
+    ModelDeleted,
+    ModelRecord,
+    ModelRuntimeStatus,
+    ModelVerifyResult,
+    ProviderConfig,
+)
 from ..providers.base import get_provider
-from ..services.local_model_runtime import local_model_runtime
+from ..services.local_model_runtime import LocalModelRuntimeError, local_model_runtime
 from ..services.model_registry import ModelCreate, model_registry
 
 router = APIRouter()
@@ -29,12 +35,12 @@ def _provider_config(item: dict) -> ProviderConfig:
     )
 
 
-@router.get("/")
+@router.get("/", response_model=list[ModelRecord])
 async def list_models():
     return model_registry.list()
 
 
-@router.post("/")
+@router.post("/", response_model=ModelRecord)
 async def create_model(payload: ModelCreate):
     try:
         return model_registry.create(payload)
@@ -42,7 +48,7 @@ async def create_model(payload: ModelCreate):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@router.post("/{name}/verify")
+@router.post("/{name}/verify", response_model=ModelVerifyResult)
 async def verify_model(name: str):
     item = model_registry.get(name)
     if not item:
@@ -56,7 +62,7 @@ async def verify_model(name: str):
         return {"ok": False, "message": f"真实对话检测失败：{exc}"}
 
 
-@router.get("/{name}/runtime")
+@router.get("/{name}/runtime", response_model=ModelRuntimeStatus)
 async def model_runtime_status(name: str):
     item = model_registry.get(name)
     if not item:
@@ -64,7 +70,7 @@ async def model_runtime_status(name: str):
     return await local_model_runtime.status(_provider_config(item))
 
 
-@router.post("/{name}/start")
+@router.post("/{name}/start", response_model=ModelRuntimeStatus)
 async def start_model(name: str):
     item = model_registry.get(name)
     if not item:
@@ -74,11 +80,13 @@ async def start_model(name: str):
         return {"ready": True, "managed": False, "started": False, "type": config.type}
     try:
         return await local_model_runtime.ensure_ready(config)
+    except LocalModelRuntimeError as exc:
+        raise HTTPException(status_code=503, detail=exc.as_detail()) from exc
     except Exception as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-@router.delete("/{name}")
+@router.delete("/{name}", response_model=ModelDeleted)
 async def delete_model(name: str):
     deleted = model_registry.delete(name)
     if not deleted:

@@ -12,6 +12,17 @@ from uuid import uuid4
 
 from ..models.schemas import Message, Task
 
+CURRENT_SCHEMA_VERSION = 3
+EVENT_STREAM_RETENTION_LIMIT = 4096
+READINESS_TABLES = (
+    "agent_runs",
+    "event_journal",
+    "event_streams",
+    "messages",
+    "sessions",
+    "tasks",
+)
+
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
@@ -34,7 +45,178 @@ class ChatDatabase:
         self.path = Path(path).expanduser().resolve() if path else _database_path()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = RLock()
-        self._initialize()
+        self.last_migration_backup: Path | None = None
+        existing_version = self._existing_schema_version()
+        if existing_version is not None and existing_version > CURRENT_SCHEMA_VERSION:
+            raise RuntimeError(
+                "数据库版本高于当前应用支持的版本: "
+                f"{existing_version} > {CURRENT_SCHEMA_VERSION}"
+            )
+        if existing_version is not None and existing_version < CURRENT_SCHEMA_VERSION:
+            self.last_migration_backup = self._create_migration_backup(
+                existing_version,
+                CURRENT_SCHEMA_VERSION,
+            )
+        try:
+            self._initialize()
+        except Exception:
+            if self.last_migration_backup is not None:
+                self._restore_migration_backup(self.last_migration_backup)
+            raise
+
+    def _existing_schema_version(self) -> int | None:
+        if not self.path.exists() or self.path.stat().st_size == 0:
+            return None
+        with sqlite3.connect(self.path, timeout=15) as connection:
+            row = connection.execute("PRAGMA user_version").fetchone()
+        return int(row[0]) if row else 0
+
+    def _create_migration_backup(self, from_version: int, to_version: int) -> Path:
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        backup_path = self.path.with_name(
+            f"{self.path.name}.pre-v{from_version}-to-v{to_version}-{timestamp}.bak"
+        )
+        with (
+            sqlite3.connect(self.path, timeout=15) as source,
+            sqlite3.connect(backup_path, timeout=15) as destination,
+        ):
+            source.backup(destination)
+        return backup_path
+
+    def _restore_migration_backup(self, backup_path: Path) -> None:
+        with (
+            sqlite3.connect(backup_path, timeout=15) as source,
+            sqlite3.connect(self.path, timeout=15) as destination,
+        ):
+            source.backup(destination)
+
+    @staticmethod
+    def _table_columns(
+        connection: sqlite3.Connection,
+        table: str,
+    ) -> set[str]:
+        return {
+            str(row["name"] if isinstance(row, sqlite3.Row) else row[1])
+            for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+
+    def _migration_1(self, connection: sqlite3.Connection) -> None:
+        additions = {
+            "messages": (
+                ("attachments_json", "TEXT NOT NULL DEFAULT '[]'"),
+                ("generated_files_json", "TEXT NOT NULL DEFAULT '[]'"),
+                ("reasoning_summary_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ),
+            "session_memory": (
+                ("project_note", "TEXT NOT NULL DEFAULT ''"),
+                ("entities_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ),
+            "tasks": (("depends_on_json", "TEXT NOT NULL DEFAULT '[]'"),),
+            "agent_tool_calls": (("plan_step_id", "TEXT"),),
+            "agent_checkpoints": (("plan_step_id", "TEXT"),),
+            "agent_runs": (
+                ("plan_status", "TEXT NOT NULL DEFAULT 'none'"),
+                ("plan_revision", "INTEGER NOT NULL DEFAULT 0"),
+                ("automatic_revision_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("plan_approval_required", "INTEGER NOT NULL DEFAULT 0"),
+                ("plan_approved_at", "TEXT"),
+            ),
+        }
+        for table, columns in additions.items():
+            existing = self._table_columns(connection, table)
+            for column, definition in columns:
+                if column not in existing:
+                    connection.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
+                    )
+
+    def _migration_2(self, connection: sqlite3.Connection) -> None:
+        existing = self._table_columns(connection, "agent_tool_calls")
+        for column, definition in (
+            ("verification_status", "TEXT NOT NULL DEFAULT 'unverified'"),
+            ("evidence_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("verified_at", "TEXT"),
+        ):
+            if column not in existing:
+                connection.execute(
+                    f"ALTER TABLE agent_tool_calls ADD COLUMN {column} {definition}"
+                )
+        connection.execute(
+            """UPDATE agent_tool_calls
+               SET verification_status = 'not_applicable'
+               WHERE side_effect = 0 AND verification_status = 'unverified'"""
+        )
+        connection.execute(
+            """UPDATE agent_tool_calls
+               SET verification_status = 'failed'
+               WHERE side_effect = 1 AND status IN ('failed', 'denied')
+                 AND verification_status = 'unverified'"""
+        )
+        connection.execute(
+            """UPDATE agent_tool_calls
+               SET verification_status = 'uncertain'
+               WHERE side_effect = 1 AND status = 'uncertain'
+                 AND verification_status = 'unverified'"""
+        )
+
+    def _migration_3(self, connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS event_streams (
+                session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                stream_id TEXT NOT NULL,
+                last_sequence INTEGER NOT NULL DEFAULT 0 CHECK(last_sequence >= 0),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(session_id, stream_id)
+            )
+            """
+        )
+        connection.execute(
+            """CREATE INDEX IF NOT EXISTS idx_event_streams_updated
+               ON event_streams(updated_at DESC)"""
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS event_journal (
+                event_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                stream_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL CHECK(sequence >= 1),
+                event_type TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                occurred_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(session_id, stream_id)
+                    REFERENCES event_streams(session_id, stream_id) ON DELETE CASCADE,
+                UNIQUE(session_id, stream_id, sequence)
+            )
+            """
+        )
+        connection.execute(
+            """CREATE INDEX IF NOT EXISTS idx_event_journal_replay
+               ON event_journal(session_id, stream_id, sequence)"""
+        )
+
+    def _run_migrations(self, connection: sqlite3.Connection) -> None:
+        row = connection.execute("PRAGMA user_version").fetchone()
+        version = int(row[0]) if row else 0
+        migrations = {
+            1: self._migration_1,
+            2: self._migration_2,
+            3: self._migration_3,
+        }
+        for target_version in range(version + 1, CURRENT_SCHEMA_VERSION + 1):
+            migration = migrations[target_version]
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                migration(connection)
+                connection.execute(f"PRAGMA user_version = {target_version}")
+            except Exception:
+                connection.rollback()
+                raise
+            else:
+                connection.commit()
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=15)
@@ -42,6 +224,189 @@ class ChatDatabase:
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 15000")
         return connection
+
+    def readiness_probe(self) -> dict[str, Any]:
+        """Run a read-only, low-cost probe for the core chat database."""
+        with self._lock, self._connect() as connection:
+            connection.execute("PRAGMA query_only = ON")
+            version_row = connection.execute("PRAGMA user_version").fetchone()
+            schema_version = int(version_row[0]) if version_row else 0
+            if schema_version != CURRENT_SCHEMA_VERSION:
+                return {
+                    "status": "schema_mismatch",
+                    "schema_version": schema_version,
+                    "expected_schema_version": CURRENT_SCHEMA_VERSION,
+                }
+
+            placeholders = ", ".join("?" for _ in READINESS_TABLES)
+            rows = connection.execute(
+                f"""SELECT name FROM sqlite_schema
+                    WHERE type = 'table' AND name IN ({placeholders})""",
+                READINESS_TABLES,
+            ).fetchall()
+            present = {str(row["name"]) for row in rows}
+            missing = sorted(set(READINESS_TABLES) - present)
+            if missing:
+                return {
+                    "status": "schema_mismatch",
+                    "schema_version": schema_version,
+                    "expected_schema_version": CURRENT_SCHEMA_VERSION,
+                    "missing_tables": missing,
+                }
+
+            connection.execute("SELECT id FROM sessions LIMIT 1").fetchone()
+        return {
+            "status": "ready",
+            "schema_version": schema_version,
+            "expected_schema_version": CURRENT_SCHEMA_VERSION,
+        }
+
+    def append_websocket_event(
+        self,
+        session_id: str,
+        stream_id: str,
+        event: dict[str, Any],
+        *,
+        retention_limit: int = EVENT_STREAM_RETENTION_LIMIT,
+    ) -> dict[str, Any]:
+        """Atomically allocate, persist, and return one stream event."""
+
+        normalized_session_id = str(session_id).strip()
+        normalized_stream_id = str(stream_id).strip()
+        if not normalized_session_id or not normalized_stream_id:
+            raise ValueError("session_id and stream_id are required")
+        bounded_retention = max(1, min(100_000, int(retention_limit)))
+        self.ensure_session(normalized_session_id)
+        now = _utc_now()
+        with self._lock, self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT INTO event_streams
+                    (session_id, stream_id, last_sequence, created_at, updated_at)
+                VALUES (?, ?, 1, ?, ?)
+                ON CONFLICT(session_id, stream_id) DO UPDATE SET
+                    last_sequence = event_streams.last_sequence + 1,
+                    updated_at = excluded.updated_at
+                """,
+                (normalized_session_id, normalized_stream_id, now, now),
+            )
+            row = connection.execute(
+                """SELECT last_sequence FROM event_streams
+                   WHERE session_id = ? AND stream_id = ?""",
+                (normalized_session_id, normalized_stream_id),
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("event stream sequence allocation failed")
+            sequence = int(row["last_sequence"])
+            persisted = {
+                **event,
+                "session_id": normalized_session_id,
+                "stream_id": normalized_stream_id,
+                "sequence": sequence,
+            }
+            event_id = str(persisted.get("event_id") or "").strip()
+            event_type = str(persisted.get("type") or "").strip()
+            occurred_at = str(persisted.get("occurred_at") or "").strip()
+            if not event_id or not event_type or not occurred_at:
+                raise ValueError(
+                    "persisted websocket events require event_id, type, and occurred_at"
+                )
+            connection.execute(
+                """
+                INSERT INTO event_journal
+                    (event_id, session_id, stream_id, sequence, event_type,
+                     payload_json, occurred_at, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_id,
+                    normalized_session_id,
+                    normalized_stream_id,
+                    sequence,
+                    event_type,
+                    json.dumps(persisted, ensure_ascii=False),
+                    occurred_at,
+                    now,
+                ),
+            )
+            prune_through = sequence - bounded_retention
+            if prune_through > 0:
+                connection.execute(
+                    """DELETE FROM event_journal
+                       WHERE session_id = ? AND stream_id = ? AND sequence <= ?""",
+                    (
+                        normalized_session_id,
+                        normalized_stream_id,
+                        prune_through,
+                    ),
+                )
+        return persisted
+
+    def websocket_stream_state(
+        self,
+        session_id: str,
+        stream_id: str,
+    ) -> dict[str, Any]:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT streams.last_sequence,
+                       MIN(events.sequence) AS first_available_sequence
+                FROM event_streams streams
+                LEFT JOIN event_journal events
+                  ON events.session_id = streams.session_id
+                 AND events.stream_id = streams.stream_id
+                WHERE streams.session_id = ? AND streams.stream_id = ?
+                GROUP BY streams.session_id, streams.stream_id
+                """,
+                (str(session_id), str(stream_id)),
+            ).fetchone()
+        if row is None:
+            return {
+                "exists": False,
+                "first_available_sequence": None,
+                "last_sequence": 0,
+            }
+        first = row["first_available_sequence"]
+        return {
+            "exists": True,
+            "first_available_sequence": int(first) if first is not None else None,
+            "last_sequence": int(row["last_sequence"]),
+        }
+
+    def list_websocket_events_after(
+        self,
+        session_id: str,
+        stream_id: str,
+        cursor: int,
+        *,
+        limit: int = 256,
+    ) -> list[dict[str, Any]]:
+        normalized_cursor = max(0, int(cursor))
+        bounded_limit = max(1, min(1000, int(limit)))
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT payload_json FROM event_journal
+                WHERE session_id = ? AND stream_id = ? AND sequence > ?
+                ORDER BY sequence ASC
+                LIMIT ?
+                """,
+                (
+                    str(session_id),
+                    str(stream_id),
+                    normalized_cursor,
+                    bounded_limit,
+                ),
+            ).fetchall()
+        events: list[dict[str, Any]] = []
+        for row in rows:
+            payload = json.loads(str(row["payload_json"]))
+            if not isinstance(payload, dict):
+                raise RuntimeError("event journal payload is not a JSON object")
+            events.append(payload)
+        return events
 
     def _initialize(self) -> None:
         with self._lock, self._connect() as connection:
@@ -259,6 +624,9 @@ class ChatDatabase:
                     tool_run_id TEXT,
                     result_json TEXT,
                     result_sha256 TEXT,
+                    verification_status TEXT NOT NULL DEFAULT 'unverified',
+                    evidence_json TEXT NOT NULL DEFAULT '[]',
+                    verified_at TEXT,
                     error TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -399,21 +767,7 @@ class ChatDatabase:
                     ON background_jobs(session_id, reviewed_at, completed_at DESC);
                 """
             )
-            message_columns = {
-                row["name"] for row in connection.execute("PRAGMA table_info(messages)").fetchall()
-            }
-            if "attachments_json" not in message_columns:
-                connection.execute(
-                    "ALTER TABLE messages ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]'"
-                )
-            if "generated_files_json" not in message_columns:
-                connection.execute(
-                    "ALTER TABLE messages ADD COLUMN generated_files_json TEXT NOT NULL DEFAULT '[]'"
-                )
-            if "reasoning_summary_json" not in message_columns:
-                connection.execute(
-                    "ALTER TABLE messages ADD COLUMN reasoning_summary_json TEXT NOT NULL DEFAULT '[]'"
-                )
+            self._run_migrations(connection)
             try:
                 connection.executescript(
                     """
@@ -464,58 +818,10 @@ class ChatDatabase:
                 # tokenizer. Chat persistence must still start; search falls
                 # back to an indexed-session/LIKE query below.
                 pass
-            memory_columns = {
-                row["name"] for row in connection.execute("PRAGMA table_info(session_memory)").fetchall()
-            }
-            if "project_note" not in memory_columns:
-                connection.execute(
-                    "ALTER TABLE session_memory ADD COLUMN project_note TEXT NOT NULL DEFAULT ''"
-                )
-            if "entities_json" not in memory_columns:
-                connection.execute(
-                    "ALTER TABLE session_memory ADD COLUMN entities_json TEXT NOT NULL DEFAULT '[]'"
-                )
-            task_columns = {
-                row["name"] for row in connection.execute("PRAGMA table_info(tasks)").fetchall()
-            }
-            if "depends_on_json" not in task_columns:
-                connection.execute(
-                    "ALTER TABLE tasks ADD COLUMN depends_on_json TEXT NOT NULL DEFAULT '[]'"
-                )
-            tool_call_columns = {
-                row["name"] for row in connection.execute(
-                    "PRAGMA table_info(agent_tool_calls)"
-                ).fetchall()
-            }
-            if "plan_step_id" not in tool_call_columns:
-                connection.execute(
-                    "ALTER TABLE agent_tool_calls ADD COLUMN plan_step_id TEXT"
-                )
-            checkpoint_columns = {
-                row["name"] for row in connection.execute(
-                    "PRAGMA table_info(agent_checkpoints)"
-                ).fetchall()
-            }
-            if "plan_step_id" not in checkpoint_columns:
-                connection.execute(
-                    "ALTER TABLE agent_checkpoints ADD COLUMN plan_step_id TEXT"
-                )
-            run_columns = {
-                row["name"] for row in connection.execute(
-                    "PRAGMA table_info(agent_runs)"
-                ).fetchall()
-            }
-            for column, definition in (
-                ("plan_status", "TEXT NOT NULL DEFAULT 'none'"),
-                ("plan_revision", "INTEGER NOT NULL DEFAULT 0"),
-                ("automatic_revision_count", "INTEGER NOT NULL DEFAULT 0"),
-                ("plan_approval_required", "INTEGER NOT NULL DEFAULT 0"),
-                ("plan_approved_at", "TEXT"),
-            ):
-                if column not in run_columns:
-                    connection.execute(
-                        f"ALTER TABLE agent_runs ADD COLUMN {column} {definition}"
-                    )
+            quick_check = connection.execute("PRAGMA quick_check").fetchone()
+            if quick_check is None or str(quick_check[0]).lower() != "ok":
+                detail = quick_check[0] if quick_check else "no result"
+                raise RuntimeError(f"数据库迁移后的完整性检查失败: {detail}")
 
     def ensure_session(
         self,
@@ -1630,6 +1936,42 @@ class ChatDatabase:
         item["plan_approval_required"] = bool(
             item.get("plan_approval_required")
         )
+        raw_action = item.get("input")
+        action: dict[str, Any] = raw_action if isinstance(raw_action, dict) else {}
+        effective_strategy = str(
+            action.get("effective_execution_strategy")
+            or action.get("execution_strategy")
+            or "direct"
+        )
+        strategy_source = str(
+            action.get("execution_strategy_source")
+            or (
+                "explicit"
+                if action.get("execution_strategy") is not None
+                else "compatibility_default"
+            )
+        )
+        item["effective_execution_strategy"] = effective_strategy
+        item["execution_strategy_source"] = strategy_source
+        effect_count = int(item.get("effect_count") or 0)
+        verified_effect_count = int(item.get("verified_effect_count") or 0)
+        failed_effect_count = int(item.get("failed_effect_count") or 0)
+        uncertain_effect_count = int(item.get("uncertain_effect_count") or 0)
+        if effect_count == 0:
+            effect_verification_status = "not_applicable"
+        elif uncertain_effect_count:
+            effect_verification_status = "uncertain"
+        elif failed_effect_count:
+            effect_verification_status = "failed"
+        elif verified_effect_count == effect_count:
+            effect_verification_status = "verified"
+        else:
+            effect_verification_status = "unverified"
+        item["effect_count"] = effect_count
+        item["verified_effect_count"] = verified_effect_count
+        item["failed_effect_count"] = failed_effect_count
+        item["uncertain_effect_count"] = uncertain_effect_count
+        item["effect_verification_status"] = effect_verification_status
         return item
 
     def create_agent_run(self, session_id: str, action: dict[str, Any], targets: list[str]) -> dict[str, Any]:
@@ -1640,7 +1982,9 @@ class ChatDatabase:
             key: value for key, value in action.items()
             if key in {
                 "content", "targets", "mode", "language", "attachment_ids",
-                "execution_strategy", "goal_spec",
+                "requested_execution_strategy", "execution_strategy",
+                "effective_execution_strategy", "execution_strategy_source",
+                "goal_spec",
                 "plan_confirmation_required", "max_revision_cycles",
                 "repository_id", "repository_name",
                 "repository_base_commit", "repository_branch",
@@ -1668,6 +2012,21 @@ class ChatDatabase:
                 """SELECT agent_runs.*,
                           (SELECT COUNT(*) FROM agent_tool_calls
                            WHERE agent_tool_calls.run_id = agent_runs.id) AS tool_call_count,
+                          (SELECT COUNT(*) FROM agent_tool_calls
+                           WHERE agent_tool_calls.run_id = agent_runs.id
+                             AND agent_tool_calls.side_effect = 1) AS effect_count,
+                          (SELECT COUNT(*) FROM agent_tool_calls
+                           WHERE agent_tool_calls.run_id = agent_runs.id
+                             AND agent_tool_calls.side_effect = 1
+                             AND agent_tool_calls.verification_status = 'verified') AS verified_effect_count,
+                          (SELECT COUNT(*) FROM agent_tool_calls
+                           WHERE agent_tool_calls.run_id = agent_runs.id
+                             AND agent_tool_calls.side_effect = 1
+                             AND agent_tool_calls.verification_status = 'failed') AS failed_effect_count,
+                          (SELECT COUNT(*) FROM agent_tool_calls
+                           WHERE agent_tool_calls.run_id = agent_runs.id
+                             AND agent_tool_calls.side_effect = 1
+                             AND agent_tool_calls.verification_status = 'uncertain') AS uncertain_effect_count,
                           (SELECT COUNT(*) FROM agent_checkpoints
                            WHERE agent_checkpoints.run_id = agent_runs.id) AS checkpoint_count,
                           (SELECT COUNT(*) FROM agent_steers
@@ -1721,6 +2080,21 @@ class ChatDatabase:
                 """SELECT agent_runs.*,
                           (SELECT COUNT(*) FROM agent_tool_calls
                            WHERE agent_tool_calls.run_id = agent_runs.id) AS tool_call_count,
+                          (SELECT COUNT(*) FROM agent_tool_calls
+                           WHERE agent_tool_calls.run_id = agent_runs.id
+                             AND agent_tool_calls.side_effect = 1) AS effect_count,
+                          (SELECT COUNT(*) FROM agent_tool_calls
+                           WHERE agent_tool_calls.run_id = agent_runs.id
+                             AND agent_tool_calls.side_effect = 1
+                             AND agent_tool_calls.verification_status = 'verified') AS verified_effect_count,
+                          (SELECT COUNT(*) FROM agent_tool_calls
+                           WHERE agent_tool_calls.run_id = agent_runs.id
+                             AND agent_tool_calls.side_effect = 1
+                             AND agent_tool_calls.verification_status = 'failed') AS failed_effect_count,
+                          (SELECT COUNT(*) FROM agent_tool_calls
+                           WHERE agent_tool_calls.run_id = agent_runs.id
+                             AND agent_tool_calls.side_effect = 1
+                             AND agent_tool_calls.verification_status = 'uncertain') AS uncertain_effect_count,
                           (SELECT COUNT(*) FROM agent_checkpoints
                            WHERE agent_checkpoints.run_id = agent_runs.id) AS checkpoint_count,
                           (SELECT COUNT(*) FROM agent_steers
@@ -1858,6 +2232,7 @@ class ChatDatabase:
         for source, target, fallback in (
             ("arguments_json", "arguments", {}),
             ("result_json", "result", None),
+            ("evidence_json", "evidence", []),
         ):
             raw = item.pop(source, None)
             if raw is None:
@@ -1908,7 +2283,8 @@ class ChatDatabase:
                     error = "上次副作用工具执行结果未确认；为避免重复执行，需人工检查后再处理。"
                     connection.execute(
                         """UPDATE agent_tool_calls
-                           SET status = 'uncertain', error = ?, updated_at = ?
+                           SET status = 'uncertain', verification_status = 'uncertain',
+                               error = ?, updated_at = ?
                            WHERE id = ?""",
                         (error, now, existing["id"]),
                     )
@@ -1926,13 +2302,16 @@ class ChatDatabase:
                            arguments_sha256 = ?, side_effect = ?, status = 'pending',
                            attempt = attempt + 1, round_index = ?, call_index = ?,
                            tool_run_id = NULL, result_json = NULL, result_sha256 = NULL,
+                           verification_status = ?, evidence_json = '[]', verified_at = NULL,
                            error = NULL, updated_at = ?, completed_at = NULL
                        WHERE id = ?""",
                     (
                         step_id, plan_step_id, str(provider_type), str(provider_model),
                         str(provider_call_id), str(tool_name), arguments_json,
                         str(arguments_sha256), 1 if side_effect else 0,
-                        int(round_index), int(call_index), now, existing["id"],
+                        int(round_index), int(call_index),
+                        "pending" if side_effect else "not_applicable",
+                        now, existing["id"],
                     ),
                 )
                 row = connection.execute(
@@ -1945,16 +2324,18 @@ class ChatDatabase:
                        (id, run_id, step_id, plan_step_id, session_id, model, provider_type,
                         provider_model, provider_call_id, tool_name, arguments_json,
                         arguments_sha256, idempotency_key, side_effect, status,
-                        attempt, round_index, call_index, created_at, updated_at)
+                        attempt, round_index, call_index, verification_status,
+                        created_at, updated_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending',
-                               1, ?, ?, ?, ?)""",
+                               1, ?, ?, ?, ?, ?)""",
                     (
                         call_id, str(run_id), step_id, plan_step_id,
                         str(session_id), str(model),
                         str(provider_type), str(provider_model), str(provider_call_id),
                         str(tool_name), arguments_json, str(arguments_sha256),
                         str(idempotency_key), 1 if side_effect else 0,
-                        int(round_index), int(call_index), now, now,
+                        int(round_index), int(call_index),
+                        "pending" if side_effect else "not_applicable", now, now,
                     ),
                 )
                 row = connection.execute(
@@ -1990,24 +2371,38 @@ class ChatDatabase:
         status: str,
         result: Any,
         result_sha256: str,
+        verification_status: str,
+        evidence: list[dict[str, Any]],
         tool_run_id: str | None = None,
         error: str | None = None,
     ) -> dict[str, Any] | None:
         now = _utc_now()
         result_json = json.dumps(result, ensure_ascii=False, default=str)
+        evidence_json = json.dumps(evidence, ensure_ascii=False, default=str)
+        verified_at = now if verification_status == "verified" else None
         with self._lock, self._connect() as connection:
             connection.execute(
                 """UPDATE agent_tool_calls
                    SET status = ?, result_json = ?, result_sha256 = ?,
+                       verification_status = ?, evidence_json = ?, verified_at = ?,
                        tool_run_id = ?, error = ?, updated_at = ?, completed_at = ?
                    WHERE id = ?""",
                 (
-                    str(status), result_json, str(result_sha256), tool_run_id,
+                    str(status), result_json, str(result_sha256),
+                    str(verification_status), evidence_json, verified_at, tool_run_id,
                     error, now, now, str(call_id),
                 ),
             )
             row = connection.execute(
                 "SELECT * FROM agent_tool_calls WHERE id = ?", (str(call_id),)
+            ).fetchone()
+        return self._decode_agent_tool_call(row) if row else None
+
+    def get_agent_tool_call(self, call_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM agent_tool_calls WHERE id = ?",
+                (str(call_id),),
             ).fetchone()
         return self._decode_agent_tool_call(row) if row else None
 
@@ -2795,6 +3190,35 @@ class ChatDatabase:
     ) -> dict[str, Any] | None:
         with self._lock, self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            expired_cancellations = connection.execute(
+                """SELECT id, schedule_id FROM background_jobs
+                   WHERE status = 'cancel_requested'
+                     AND (lease_expires_at IS NULL OR lease_expires_at <= ?)""",
+                (str(now),),
+            ).fetchall()
+            if expired_cancellations:
+                connection.execute(
+                    """UPDATE background_jobs
+                       SET status = 'cancelled', error = '用户取消',
+                           lease_owner = NULL, lease_expires_at = NULL,
+                           updated_at = ?, completed_at = COALESCE(completed_at, ?)
+                       WHERE status = 'cancel_requested'
+                         AND (lease_expires_at IS NULL OR lease_expires_at <= ?)""",
+                    (str(now), str(now), str(now)),
+                )
+                for cancelled in expired_cancellations:
+                    if cancelled["schedule_id"]:
+                        connection.execute(
+                            """UPDATE automation_schedules
+                               SET last_run_at = ?, last_status = 'cancelled',
+                                   last_error = '用户取消', updated_at = ?
+                               WHERE id = ?""",
+                            (
+                                str(now),
+                                str(now),
+                                str(cancelled["schedule_id"]),
+                            ),
+                        )
             row = connection.execute(
                 """SELECT id FROM background_jobs
                    WHERE status = 'queued'
@@ -3005,6 +3429,10 @@ class ChatDatabase:
             connection.execute(
                 f"""UPDATE agent_tool_calls
                     SET status = CASE WHEN side_effect = 1 THEN 'uncertain' ELSE 'interrupted' END,
+                        verification_status = CASE
+                            WHEN side_effect = 1 THEN 'uncertain'
+                            ELSE 'not_applicable'
+                        END,
                         error = CASE
                             WHEN side_effect = 1
                             THEN '应用重启时副作用工具结果未确认；已阻止自动重放'

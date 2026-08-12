@@ -5,11 +5,13 @@ import json
 import os
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -67,6 +69,8 @@ from app.services.automation_service import (  # noqa: E402
     AutomationService,
     automation_service,
 )
+from app.services.run_dispatcher import RunDispatcher, run_dispatcher  # noqa: E402
+from app.services.structured_logging import diagnostic_ref  # noqa: E402
 from app.services.git_workspace_service import (  # noqa: E402
     GitWorkspaceError,
     GitWorkspaceService,
@@ -90,9 +94,10 @@ def client():
 
 
 def test_health_and_rate_limit_return_expected_status(client, monkeypatch):
-    health = client.get("/health")
+    health = client.get("/health", headers={"X-Request-ID": "health-check-2026"})
     assert health.status_code == 200
     assert health.json()["service"] == "aetherchat"
+    assert health.headers["X-Request-ID"] == "health-check-2026"
 
     main_module.rate_limit_store.clear()
     monkeypatch.setattr(main_module, "RATE_LIMIT", 2)
@@ -100,8 +105,34 @@ def test_health_and_rate_limit_return_expected_status(client, monkeypatch):
     assert client.get("/models/").status_code == 200
     limited = client.get("/models/")
     assert limited.status_code == 429
-    assert limited.json() == {"detail": "Rate limit exceeded"}
+    assert limited.json()["detail"] == "Rate limit exceeded"
+    assert limited.json()["request_id"] == limited.headers["X-Request-ID"]
     assert int(limited.headers["Retry-After"]) >= 1
+
+
+def test_http_errors_return_request_id_in_body_and_header(client):
+    missing_run_id = str(uuid4())
+    session_id = str(uuid4())
+    response = client.get(
+        f"/agent-runs/{missing_run_id}",
+        params={"session_id": session_id},
+        headers={"X-Request-ID": "diagnostic-request-42"},
+    )
+    assert response.status_code == 404
+    assert response.headers["X-Request-ID"] == "diagnostic-request-42"
+    assert response.json() == {
+        "detail": "运行记录不存在",
+        "request_id": "diagnostic-request-42",
+    }
+
+    regenerated = client.get(
+        f"/agent-runs/{missing_run_id}",
+        params={"session_id": session_id},
+        headers={"X-Request-ID": "invalid request id with spaces"},
+    )
+    assert regenerated.status_code == 404
+    assert regenerated.headers["X-Request-ID"] != "invalid request id with spaces"
+    assert regenerated.json()["request_id"] == regenerated.headers["X-Request-ID"]
 
 
 def test_local_api_auth_denies_missing_token_and_accepts_bearer(client, monkeypatch):
@@ -112,13 +143,73 @@ def test_local_api_auth_denies_missing_token_and_accepts_bearer(client, monkeypa
     assert client.get("/health").status_code == 200
     missing = client.get("/models/")
     assert missing.status_code == 401
+    assert client.get("/diagnostics/snapshot").status_code == 401
     assert missing.headers["WWW-Authenticate"] == "Bearer"
     assert client.get("/models/", headers={"Authorization": "Bearer wrong"}).status_code == 401
     assert client.get(
         "/models/",
         headers={"Authorization": "Bearer test-local-api-token"},
     ).status_code == 200
+    assert client.get(
+        "/diagnostics/snapshot",
+        headers={"Authorization": "Bearer test-local-api-token"},
+    ).status_code == 200
     assert client.post("/auth/token").status_code == 404
+
+
+def test_diagnostic_snapshot_and_bundle_are_redacted(client):
+    snapshot = client.get(
+        "/diagnostics/snapshot",
+        headers={"X-Request-ID": "diagnostic-snapshot-test"},
+    )
+    assert snapshot.status_code == 200
+    payload = snapshot.json()
+    assert payload["schema"] == "aetherchat-diagnostics-v1"
+    assert payload["database"]["schema_version"] == 3
+    assert payload["privacy"] == {
+        "request_bodies_included": False,
+        "query_strings_included": False,
+        "file_contents_included": False,
+        "credentials_included": False,
+        "provider_names_included": False,
+        "model_names_included": False,
+        "raw_run_ids_included": False,
+        "tool_arguments_included": False,
+    }
+    encoded_snapshot = json.dumps(payload)
+    assert str(TEST_DATA_DIR) not in encoded_snapshot
+
+    bundle = client.post("/diagnostics/bundle")
+    assert bundle.status_code == 200
+    assert bundle.headers["Content-Type"] == "application/zip"
+    assert bundle.headers["X-Content-Type-Options"] == "nosniff"
+    assert bundle.headers["Content-Disposition"].startswith(
+        'attachment; filename="aetherchat-diagnostics-'
+    )
+    with zipfile.ZipFile(io.BytesIO(bundle.content)) as archive:
+        assert set(archive.namelist()) == {
+            "README.txt",
+            "diagnostics.json",
+            "recent-logs.jsonl",
+            "run-telemetry.json",
+        }
+        diagnostics = json.loads(archive.read("diagnostics.json"))
+        telemetry = json.loads(archive.read("run-telemetry.json"))
+        recent_logs = [
+            json.loads(line)
+            for line in archive.read("recent-logs.jsonl").splitlines()
+        ]
+    assert diagnostics["schema"] == "aetherchat-diagnostics-v1"
+    assert "recent_logs" not in diagnostics
+    assert "telemetry" not in diagnostics
+    assert telemetry["schema"] == "aetherchat-run-telemetry-v1"
+    assert telemetry["status"] == "ready"
+    assert any(
+        entry.get("route") == "/diagnostics/snapshot"
+        and entry.get("request_id") == "diagnostic-snapshot-test"
+        for entry in recent_logs
+    )
+    assert str(TEST_DATA_DIR) not in bundle.content.decode("latin-1")
 
 
 def test_local_model_runtime_config_round_trip_and_start_api(client, monkeypatch):
@@ -417,6 +508,27 @@ def test_agent_run_state_events_retry_and_restart_recovery(tmp_path):
     run = service.create(session_id, {
         "content": "实现可恢复任务", "targets": ["architect", "coder"], "mode": "project",
     })
+    assert run["effective_execution_strategy"] == "direct"
+    assert run["execution_strategy_source"] == "compatibility_default"
+    assert run["input"]["execution_strategy"] == "direct"
+    resolved_event = next(
+        event for event in database.get_agent_run(run["id"])["events"]
+        if event["event_type"] == "execution_strategy_resolved"
+    )
+    assert resolved_event["payload"] == {
+        "mode": "project",
+        "requested": None,
+        "effective": "direct",
+        "source": "compatibility_default",
+    }
+    deprecated_event = next(
+        event for event in database.get_agent_run(run["id"])["events"]
+        if event["event_type"] == "legacy_contract_deprecated"
+    )
+    assert deprecated_event["payload"] == {
+        "code": "execution_strategy_required_in_v1",
+        "effective_execution_strategy": "direct",
+    }
     service.observe(run["id"], {"type": "delta", "model": "architect", "delta": "分析"})
     service.observe(run["id"], {
         "type": "message_complete",
@@ -425,6 +537,9 @@ def test_agent_run_state_events_retry_and_restart_recovery(tmp_path):
             "author_model": "architect",
             "role": "assistant",
             "content": "架构结论与证据摘要",
+            "tokens_in": 120,
+            "tokens_out": 30,
+            "cost_usd": 0.015,
         },
     })
     message_event = next(
@@ -432,6 +547,9 @@ def test_agent_run_state_events_retry_and_restart_recovery(tmp_path):
         if event["event_type"] == "message_complete"
     )
     assert message_event["payload"]["content_preview"] == "架构结论与证据摘要"
+    assert message_event["payload"]["tokens_in"] == 120
+    assert message_event["payload"]["tokens_out"] == 30
+    assert message_event["payload"]["cost_usd"] == 0.015
     service.observe(run["id"], {
         "type": "error", "code": "provider_error", "model": "coder", "message": "provider offline",
     })
@@ -444,6 +562,8 @@ def test_agent_run_state_events_retry_and_restart_recovery(tmp_path):
     retry_action, retrying = service.prepare_retry(run["id"], session_id)
     assert retry_action["targets"] == ["coder"]
     assert retry_action["_aether_retry"] is True
+    assert retry_action["effective_execution_strategy"] == "direct"
+    assert retry_action["execution_strategy_source"] == "compatibility_default"
     assert retrying["retry_count"] == 1
     service.observe(run["id"], {"type": "delta", "model": "coder", "delta": "修复"})
     service.observe(run["id"], {
@@ -461,6 +581,178 @@ def test_agent_run_state_events_retry_and_restart_recovery(tmp_path):
     assert recovered["status"] == "recoverable"
     assert recovered["steps"][0]["status"] == "interrupted"
     assert recovered["events"][-1]["event_type"] == "recovery_required"
+
+
+def test_agent_run_execution_strategy_contract_is_explicit_and_validated(tmp_path):
+    database = ChatDatabase(tmp_path / "agent-strategy.sqlite3")
+    service = AgentRunService(database)
+    session_id = str(uuid4())
+
+    action = {
+        "content": "按计划执行", "targets": ["coder"],
+        "mode": "project", "execution_strategy": "planned",
+    }
+    run = service.create(session_id, action)
+    assert action["effective_execution_strategy"] == "planned"
+    assert run["effective_execution_strategy"] == "planned"
+    assert run["execution_strategy_source"] == "explicit"
+    assert run["input"]["requested_execution_strategy"] == "planned"
+
+    spoofed = service.create(session_id, {
+        "content": "不能伪造实际策略", "targets": ["coder"],
+        "mode": "project", "execution_strategy": "direct",
+        "effective_execution_strategy": "planned",
+        "execution_strategy_source": "compatibility_default",
+    })
+    assert spoofed["effective_execution_strategy"] == "direct"
+    assert spoofed["execution_strategy_source"] == "explicit"
+
+    with pytest.raises(ValueError, match="仅适用于 project"):
+        service.create(session_id, {
+            "content": "无效组合", "targets": ["coder"],
+            "mode": "casual", "execution_strategy": "planned",
+        })
+
+    with pytest.raises(ValueError, match="不支持的执行策略"):
+        service.create(session_id, {
+            "content": "无效策略", "targets": ["coder"],
+            "mode": "project", "execution_strategy": "automatic",
+        })
+
+
+def _create_legacy_chat_database(path: Path) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            PRAGMA user_version = 0;
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                summary TEXT NOT NULL DEFAULT '',
+                mode TEXT NOT NULL DEFAULT 'project',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_message_at TEXT
+            );
+            CREATE TABLE messages (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                author_model TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                tokens_in INTEGER NOT NULL DEFAULT 0,
+                tokens_out INTEGER NOT NULL DEFAULT 0,
+                cost_usd REAL NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            INSERT INTO sessions
+                (id, title, mode, created_at, updated_at)
+                VALUES ('legacy-session', '旧数据', 'project', '2026-08-01', '2026-08-01');
+            INSERT INTO messages
+                (id, session_id, author_model, role, content, created_at)
+                VALUES ('legacy-message', 'legacy-session', 'user', 'user', '必须保留', '2026-08-01');
+            """
+        )
+
+
+def test_chat_database_migrates_in_order_with_pre_upgrade_backup(tmp_path):
+    path = tmp_path / "legacy.sqlite3"
+    _create_legacy_chat_database(path)
+
+    database = ChatDatabase(path)
+
+    assert database.last_migration_backup is not None
+    assert database.last_migration_backup.exists()
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute(
+            "SELECT content FROM messages WHERE id = 'legacy-message'"
+        ).fetchone()[0] == "必须保留"
+        tool_columns = {
+            row[1] for row in connection.execute(
+                "PRAGMA table_info(agent_tool_calls)"
+            ).fetchall()
+        }
+        assert {"verification_status", "evidence_json", "verified_at"} <= tool_columns
+        event_tables = {
+            row[0] for row in connection.execute(
+                """SELECT name FROM sqlite_schema
+                   WHERE type = 'table' AND name IN ('event_streams', 'event_journal')"""
+            ).fetchall()
+        }
+        assert event_tables == {"event_streams", "event_journal"}
+    with sqlite3.connect(database.last_migration_backup) as backup:
+        assert backup.execute("PRAGMA user_version").fetchone()[0] == 0
+        message_columns = {
+            row[1] for row in backup.execute("PRAGMA table_info(messages)").fetchall()
+        }
+        assert "attachments_json" not in message_columns
+        assert backup.execute(
+            "SELECT content FROM messages WHERE id = 'legacy-message'"
+        ).fetchone()[0] == "必须保留"
+
+    reopened = ChatDatabase(path)
+    assert reopened.last_migration_backup is None
+
+
+def test_chat_database_restores_backup_when_migration_fails(tmp_path, monkeypatch):
+    path = tmp_path / "broken-migration.sqlite3"
+    _create_legacy_chat_database(path)
+
+    def fail_migration(_self, _connection):
+        raise RuntimeError("injected migration failure")
+
+    monkeypatch.setattr(ChatDatabase, "_migration_2", fail_migration)
+    with pytest.raises(RuntimeError, match="injected migration failure"):
+        ChatDatabase(path)
+
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT content FROM messages WHERE id = 'legacy-message'"
+        ).fetchone()[0] == "必须保留"
+        assert connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'agent_tool_calls'"
+        ).fetchone()[0] == 0
+    assert len(list(tmp_path.glob("broken-migration.sqlite3.pre-v0-to-v3-*.bak"))) == 1
+
+
+def test_chat_database_restores_schema_2_backup_when_event_migration_fails(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "broken-event-migration.sqlite3"
+    ChatDatabase(path)
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP TABLE event_journal")
+        connection.execute("DROP TABLE event_streams")
+        connection.execute("PRAGMA user_version = 2")
+        connection.execute(
+            """INSERT INTO sessions
+               (id, title, mode, created_at, updated_at)
+               VALUES ('schema-2-session', '保留数据', 'project', '2026-08-11', '2026-08-11')"""
+        )
+
+    def fail_event_migration(_self, connection):
+        connection.execute("CREATE TABLE migration_3_partial (id TEXT PRIMARY KEY)")
+        raise RuntimeError("injected event migration failure")
+
+    monkeypatch.setattr(ChatDatabase, "_migration_3", fail_event_migration)
+    with pytest.raises(RuntimeError, match="injected event migration failure"):
+        ChatDatabase(path)
+
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute(
+            "SELECT title FROM sessions WHERE id = 'schema-2-session'"
+        ).fetchone()[0] == "保留数据"
+        assert connection.execute(
+            """SELECT COUNT(*) FROM sqlite_schema
+               WHERE type = 'table' AND name = 'migration_3_partial'"""
+        ).fetchone()[0] == 0
+    assert len(list(
+        tmp_path.glob("broken-event-migration.sqlite3.pre-v2-to-v3-*.bak")
+    )) == 1
 
 
 def test_agent_plan_persists_goal_dag_review_and_retry_state(tmp_path):
@@ -1078,6 +1370,11 @@ def test_agent_run_persists_tool_chain_checkpoint_and_idempotent_replay(tmp_path
         tool_run_id="tool-run-1",
     )
     assert completed["status"] == "completed"
+    assert completed["verification_status"] == "verified"
+    assert [item["kind"] for item in completed["evidence"]] == [
+        "tool_result_digest", "artifact_version",
+    ]
+    assert completed["verified_at"] is not None
 
     replay = service.begin_tool_call(
         run_id=run["id"],
@@ -1119,6 +1416,8 @@ def test_agent_run_persists_tool_chain_checkpoint_and_idempotent_replay(tmp_path
             "error": "connection closed after dispatch",
         },
     )
+    failed_record = database.get_agent_tool_call(failed_call["id"])
+    assert failed_record["verification_status"] == "failed"
     uncertain_retry = service.begin_tool_call(
         run_id=run["id"],
         session_id=session_id,
@@ -1132,6 +1431,33 @@ def test_agent_run_persists_tool_chain_checkpoint_and_idempotent_replay(tmp_path
         call_index=0,
     )
     assert uncertain_retry["disposition"] == "uncertain"
+    assert uncertain_retry["verification_status"] == "uncertain"
+
+    unverified_call = service.begin_tool_call(
+        run_id=run["id"],
+        session_id=session_id,
+        model="coder",
+        provider_type="mcp",
+        provider_model="remote",
+        provider_call_id="provider-call-unverified",
+        tool_name="remote__send_message",
+        arguments={"message": "hello"},
+        round_index=2,
+        call_index=0,
+    )
+    unverified = service.finish_tool_call(
+        unverified_call["id"],
+        {"tool": "remote__send_message", "status": "success", "result": {"ok": True}},
+    )
+    assert unverified["status"] == "completed"
+    assert unverified["verification_status"] == "unverified"
+    assert unverified["verified_at"] is None
+    aggregate = database.get_agent_run(run["id"], include_events=False)
+    assert aggregate["effect_count"] == 3
+    assert aggregate["verified_effect_count"] == 1
+    assert aggregate["failed_effect_count"] == 0
+    assert aggregate["uncertain_effect_count"] == 1
+    assert aggregate["effect_verification_status"] == "uncertain"
 
     checkpoint = service.save_checkpoint(
         run_id=run["id"],
@@ -1149,7 +1475,7 @@ def test_agent_run_persists_tool_chain_checkpoint_and_idempotent_replay(tmp_path
     assert latest["id"] == checkpoint["id"]
     assert latest["state"]["next_tool_round"] == 1
     detail = reopened.get_agent_run(run["id"])
-    assert len(detail["tool_calls"]) == 2
+    assert len(detail["tool_calls"]) == 3
     assert len(detail["checkpoints"]) == 1
 
 
@@ -1197,6 +1523,65 @@ def test_agent_run_blocks_uncertain_side_effect_after_restart(tmp_path):
     )
     assert blocked["disposition"] == "uncertain"
     assert "人工检查" in blocked["error"]
+
+
+def test_effect_verification_trusts_only_known_nested_desktop_receipts(tmp_path):
+    database = ChatDatabase(tmp_path / "effect-receipts.sqlite3")
+    service = AgentRunService(database)
+    session_id = str(uuid4())
+    run = service.create(session_id, {
+        "content": "核验桌面凭证",
+        "targets": ["coder"],
+        "mode": "project",
+        "execution_strategy": "direct",
+    })
+    receipt = {
+        "success": True,
+        "verification": "launcher_accepted",
+        "launcher": "firefox",
+        "browser": "firefox",
+        "accepted_at": "2026-08-11T00:00:00Z",
+    }
+    nested_result = {
+        "plugin_id": "browser-links",
+        "status": "success",
+        "result": {
+            "kind": "open_external",
+            "url": "https://example.test",
+            "execution_receipt": receipt,
+        },
+    }
+
+    trusted_call = service.begin_tool_call(
+        run_id=run["id"], session_id=session_id, model="coder",
+        provider_type="openai_compat", provider_model="offline",
+        provider_call_id="trusted-browser", tool_name="plugin__browser_links__open_url",
+        arguments={"url": "https://example.test", "browser": "firefox"},
+        round_index=0, call_index=0,
+    )
+    trusted = service.finish_tool_call(trusted_call["id"], {
+        "tool": "plugin__browser_links__open_url",
+        "status": "success",
+        "result": nested_result,
+    })
+    assert trusted["verification_status"] == "verified"
+    assert [item["kind"] for item in trusted["evidence"]] == [
+        "tool_result_digest", "execution_receipt",
+    ]
+
+    spoofed_call = service.begin_tool_call(
+        run_id=run["id"], session_id=session_id, model="coder",
+        provider_type="mcp", provider_model="remote",
+        provider_call_id="spoofed-browser", tool_name="remote__open_url",
+        arguments={"url": "https://example.test"},
+        round_index=1, call_index=0,
+    )
+    spoofed = service.finish_tool_call(spoofed_call["id"], {
+        "tool": "remote__open_url",
+        "status": "success",
+        "result": nested_result,
+    })
+    assert spoofed["verification_status"] == "unverified"
 
 
 def test_agent_run_api_lists_session_scoped_records(client):
@@ -1378,6 +1763,11 @@ def test_project_image_is_sanitized_and_available_for_multimodal_context(client)
     urls = knowledge_service.image_data_urls(session_id, [attachment["id"]])
     assert len(urls) == 1
     assert urls[0].startswith("data:image/png;base64,")
+    native_path = Path(knowledge_service.image_path(session_id, attachment["id"]))
+    assert native_path.is_file()
+    assert knowledge_service.image_paths(session_id, [attachment["id"]]) == [
+        str(native_path)
+    ]
     sanitized = __import__("base64").b64decode(urls[0].split(",", 1)[1])
     assert b"untrusted-trailing-payload" not in sanitized
     preview = client.get(f"/knowledge/{session_id}/attachments/{attachment['id']}/preview")
@@ -2593,10 +2983,104 @@ async def test_orchestrator_requires_real_comfyui_generation_without_status_roun
     assert SessionOrchestrator._requested_comfyui_image_model(
         "使用 bigaspv2模型来进行多张连贯的图片"
     ) == "bigaspv2"
+    assert SessionOrchestrator._requested_comfyui_video_model(
+        "使用 Wan2.2_Remix_NSFW_i2v_14b_high_lighting_fp8_e4m3fn_v3.0.safetensors 生成视频"
+    ) == "Wan2.2_Remix_NSFW_i2v_14b_high_lighting_fp8_e4m3fn_v3.0.safetensors"
     assert SessionOrchestrator._required_comfyui_tools(
         "只检查 ComfyUI 图像模型状态；不要生成任何图片或视频",
         {"instruction": "生成单一最终交付，并核验图像模型数量"},
     ) == []
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_injects_attached_image_and_requested_video_model(monkeypatch):
+    from PIL import Image
+
+    from app.services.comfyui_service import WAN22_REMIX_HIGH_MODEL
+
+    class AttachedVideoProvider(_FakeProvider):
+        async def stream_chat(self, messages, tools=None, **kwargs):
+            assert [tool.name for tool in (tools or [])] == [
+                "plugin__comfyui__generate_video"
+            ]
+            yield {
+                "delta": "",
+                "usage": None,
+                "tool_calls": [{
+                    "id": "attached-video",
+                    "name": "plugin__comfyui__generate_video",
+                    "arguments": {
+                        "prompt": "slow cinematic movement",
+                        "pipeline": "wan-i2v",
+                    },
+                }],
+            }
+            yield {
+                "delta": "",
+                "usage": {"prompt_tokens": 10, "completion_tokens": 4},
+            }
+
+    session_id = str(uuid4())
+    source = io.BytesIO()
+    Image.new("RGB", (32, 24), (30, 60, 90)).save(source, format="PNG")
+    attachment = knowledge_service.create_attachment(
+        session_id,
+        "start.png",
+        "image/png",
+        source.getvalue(),
+    )
+    expected_path = knowledge_service.image_path(session_id, attachment["id"])
+    captured = {}
+
+    async def fake_plugin_invoke(tool_name, received_session, _caller, arguments):
+        captured.update(arguments)
+        assert tool_name == "plugin__comfyui__generate_video"
+        assert received_session == session_id
+        return {
+            "plugin_id": "comfyui",
+            "action": "generate_video",
+            "status": "success",
+            "result": {
+                "generated_files": [{
+                    "path": "generated/comfyui/video/output.webm",
+                    "name": "output.webm",
+                    "mime_type": "video/webm",
+                    "size_bytes": 512,
+                    "source": "comfyui",
+                }],
+            },
+        }
+
+    provider = AttachedVideoProvider("attached-video-provider")
+    orchestrator = SessionOrchestrator(session_id)
+    orchestrator.providers = {provider.config.name: provider}
+    orchestrator.refresh_providers = lambda: None
+    monkeypatch.setattr(
+        orchestrator_module.plugin_registry,
+        "invoke_tool",
+        fake_plugin_invoke,
+    )
+
+    async def allow_tool(_queue, _model, _tool_name, _arguments):
+        return True, ""
+
+    orchestrator._authorize_model_tool = allow_tool
+    events = [
+        event
+        async for event in orchestrator.stream_user_message({
+            "content": f"使用 {WAN22_REMIX_HIGH_MODEL} 生成视频",
+            "targets": [provider.config.name],
+            "mode": "casual",
+            "attachment_ids": [attachment["id"]],
+        })
+    ]
+
+    assert captured["input_image"] == expected_path
+    assert captured["_user_requested_model"] == WAN22_REMIX_HIGH_MODEL
+    assert any(
+        event["type"] == "tool_run" and event["run"]["status"] == "success"
+        for event in events
+    )
 
 
 @pytest.mark.asyncio
@@ -2680,6 +3164,7 @@ async def test_orchestrator_emits_factual_provider_status_telemetry():
         "streaming",
         "finalizing",
     ]
+    assert {event["provider_type"] for event in statuses} == {"openai_compat"}
     assert statuses[0]["context_messages"] >= 2
     assert statuses[0]["context_tokens"] > 0
     assert statuses[0]["tool_count"] == 0
@@ -4402,10 +4887,443 @@ def test_websocket_action_error_does_not_close_connection(client):
         error = websocket.receive_json()
         assert error["type"] == "error"
         assert error["code"] == "invalid_action"
+        assert error["request_id"]
+
+        websocket.send_json({
+            "type": "not_supported",
+            "request_id": "ws-diagnostic-77",
+        })
+        unsupported = websocket.receive_json()
+        assert unsupported["type"] == "error"
+        assert unsupported["code"] == "unsupported_action"
+        assert unsupported["request_id"] == "ws-diagnostic-77"
 
         websocket.send_json({"type": "interrupt", "scope": "all"})
         acknowledgement = websocket.receive_json()
         assert acknowledgement == {"type": "interrupt_ack", "scope": "all"}
+
+
+def test_websocket_dispatcher_enforces_session_owner_across_connections(
+    client,
+    monkeypatch,
+):
+    released = threading.Event()
+
+    async def slow_stream(self, action):
+        yield {"type": "delta", "model": "owner-model", "delta": "started"}
+        while not released.is_set():
+            await asyncio.sleep(0.01)
+        yield {"type": "interrupted", "model": "owner-model"}
+
+    def record_interrupt(self, scope="all"):
+        released.set()
+
+    monkeypatch.setattr(SessionOrchestrator, "stream_user_message", slow_stream)
+    monkeypatch.setattr(SessionOrchestrator, "interrupt", record_interrupt)
+    session_id = str(uuid4())
+
+    with client.websocket_connect(f"/ws/sessions/{session_id}") as owner:
+        owner.send_json({
+            "type": "post_message",
+            "content": "hold the session owner",
+            "targets": ["owner-model"],
+        })
+        assert owner.receive_json() == {"type": "ack"}
+        assert owner.receive_json()["type"] == "agent_run_update"
+        assert owner.receive_json()["delta"] == "started"
+
+        with client.websocket_connect(f"/ws/sessions/{session_id}") as contender:
+            contender.send_json({
+                "type": "post_message",
+                "content": "must not create a second run",
+                "targets": ["owner-model"],
+            })
+            conflict = contender.receive_json()
+            assert conflict["type"] == "error"
+            assert conflict["code"] == "run_in_progress"
+            assert conflict["dispatch_state"] == "running"
+
+        assert len(chat_database.list_agent_runs(session_id)) == 1
+        owner.send_json({"type": "interrupt", "scope": "all"})
+        assert owner.receive_json() == {"type": "interrupt_ack", "scope": "all"}
+
+
+def test_websocket_dispatcher_queues_other_session_without_false_running_record(
+    client,
+    monkeypatch,
+):
+    released = threading.Event()
+    first_session = str(uuid4())
+    second_session = str(uuid4())
+
+    async def capacity_stream(self, action):
+        yield {
+            "type": "delta",
+            "model": "capacity-model",
+            "delta": f"started:{self.session_id}",
+        }
+        if self.session_id == first_session:
+            while not released.is_set():
+                await asyncio.sleep(0.01)
+        yield {
+            "type": "message_complete",
+            "message": {
+                "id": str(uuid4()),
+                "session_id": self.session_id,
+                "role": "assistant",
+                "author_model": "capacity-model",
+                "content": "completed",
+            },
+        }
+
+    def record_interrupt(self, scope="all"):
+        if self.session_id == first_session:
+            released.set()
+
+    monkeypatch.setattr(run_dispatcher, "capacity", 1)
+    monkeypatch.setattr(SessionOrchestrator, "stream_user_message", capacity_stream)
+    monkeypatch.setattr(SessionOrchestrator, "interrupt", record_interrupt)
+
+    with client.websocket_connect(f"/ws/sessions/{first_session}") as first:
+        first.send_json({
+            "type": "post_message",
+            "content": "occupy the only slot",
+            "targets": ["capacity-model"],
+        })
+        assert first.receive_json() == {"type": "ack"}
+        assert first.receive_json()["type"] == "agent_run_update"
+        assert first.receive_json()["delta"] == f"started:{first_session}"
+
+        with client.websocket_connect(f"/ws/sessions/{second_session}") as second:
+            second.send_json({
+                "type": "post_message",
+                "content": "wait for the slot",
+                "targets": ["capacity-model"],
+            })
+            assert second.receive_json() == {"type": "ack"}
+            queued = second.receive_json()
+            assert queued["type"] == "run_queued"
+            assert queued["queue_position"] == 1
+            assert queued["queue_capacity"] == run_dispatcher.queue_capacity
+            assert chat_database.list_agent_runs(second_session) == []
+
+            first.send_json({"type": "interrupt", "scope": "all"})
+            assert first.receive_json() == {
+                "type": "interrupt_ack",
+                "scope": "all",
+            }
+
+            dispatch_started = second.receive_json()
+            assert dispatch_started["type"] == "run_dispatch_started"
+            assert dispatch_started["dispatch_id"] == queued["dispatch_id"]
+            running = second.receive_json()
+            assert running["type"] == "agent_run_update"
+            assert running["agent_run"]["status"] == "running"
+            assert second.receive_json()["delta"] == f"started:{second_session}"
+            assert second.receive_json()["type"] == "message_complete"
+            completed = second.receive_json()
+            assert completed["type"] == "agent_run_update"
+            assert completed["agent_run"]["status"] == "completed"
+
+        assert len(chat_database.list_agent_runs(second_session)) == 1
+
+
+def test_websocket_dispatcher_cancels_queued_run_before_persistence(
+    client,
+    monkeypatch,
+):
+    released = threading.Event()
+    first_session = str(uuid4())
+    queued_session = str(uuid4())
+
+    async def slow_stream(self, action):
+        yield {"type": "delta", "model": "queue-model", "delta": "started"}
+        if self.session_id == first_session:
+            while not released.is_set():
+                await asyncio.sleep(0.01)
+
+    def record_interrupt(self, scope="all"):
+        if self.session_id == first_session:
+            released.set()
+
+    monkeypatch.setattr(run_dispatcher, "capacity", 1)
+    monkeypatch.setattr(SessionOrchestrator, "stream_user_message", slow_stream)
+    monkeypatch.setattr(SessionOrchestrator, "interrupt", record_interrupt)
+
+    with client.websocket_connect(f"/ws/sessions/{first_session}") as first:
+        first.send_json({
+            "type": "post_message",
+            "content": "occupy capacity",
+            "targets": ["queue-model"],
+        })
+        assert first.receive_json() == {"type": "ack"}
+        assert first.receive_json()["type"] == "agent_run_update"
+        assert first.receive_json()["type"] == "delta"
+
+        with client.websocket_connect(f"/ws/sessions/{queued_session}") as queued_ws:
+            queued_ws.send_json({
+                "type": "post_message",
+                "content": "cancel before persistence",
+                "targets": ["queue-model"],
+            })
+            assert queued_ws.receive_json() == {"type": "ack"}
+            queued = queued_ws.receive_json()
+            assert queued["type"] == "run_queued"
+
+            queued_ws.send_json({
+                "type": "interrupt",
+                "scope": "all",
+                "dispatch_id": queued["dispatch_id"],
+            })
+            cancellation_events = [
+                queued_ws.receive_json(),
+                queued_ws.receive_json(),
+            ]
+            assert {event["type"] for event in cancellation_events} == {
+                "interrupt_ack",
+                "run_cancelled",
+            }
+            acknowledgement = next(
+                event
+                for event in cancellation_events
+                if event["type"] == "interrupt_ack"
+            )
+            assert acknowledgement["queued"] is True
+            assert acknowledgement["dispatch_id"] == queued["dispatch_id"]
+            assert chat_database.list_agent_runs(queued_session) == []
+
+        first.send_json({"type": "interrupt", "scope": "all"})
+        assert first.receive_json() == {"type": "interrupt_ack", "scope": "all"}
+
+
+def test_websocket_dispatcher_preserves_runtime_failure_as_action_failed(
+    client,
+    monkeypatch,
+):
+    async def failing_stream(self, action):
+        if False:
+            yield {"type": "unreachable"}
+        raise RuntimeError("provider execution failed")
+
+    monkeypatch.setattr(SessionOrchestrator, "stream_user_message", failing_stream)
+    session_id = str(uuid4())
+
+    with client.websocket_connect(f"/ws/sessions/{session_id}") as websocket:
+        websocket.send_json({
+            "type": "post_message",
+            "content": "preserve the execution error contract",
+            "targets": ["failing-model"],
+        })
+        assert websocket.receive_json() == {"type": "ack"}
+        assert websocket.receive_json()["type"] == "agent_run_update"
+        error = websocket.receive_json()
+        assert error["type"] == "error"
+        assert error["code"] == "action_failed"
+        assert error["message"] == "provider execution failed"
+
+
+def test_websocket_v1_requires_explicit_project_execution_strategy(client, monkeypatch):
+    async def contract_stream(self, action):
+        assert action["execution_strategy"] == "planned"
+        assert action["effective_execution_strategy"] == "planned"
+        yield {"type": "v1_contract_observed"}
+
+    monkeypatch.setattr(SessionOrchestrator, "stream_user_message", contract_stream)
+    session_id = str(uuid4())
+    with client.websocket_connect(f"/ws/v1/sessions/{session_id}") as websocket:
+        websocket.send_json({
+            "type": "post_message",
+            "content": "缺少执行策略",
+            "targets": ["Qwen"],
+            "mode": "project",
+            "request_id": "v1-contract-test",
+        })
+        error = websocket.receive_json()
+        assert error["type"] == "error"
+        assert error["code"] == "invalid_action"
+        assert error["request_id"] == "v1-contract-test"
+        assert "execution_strategy" in error["message"]
+        assert error["contract_version"] == "1"
+        assert error["sequence"] == 1
+        assert error["session_id"] == session_id
+        assert error["run_id"] is None
+        assert error["step_id"] is None
+        assert error["event_id"]
+        assert error["occurred_at"].endswith("Z")
+
+        websocket.send_json({
+            "type": "post_message",
+            "content": "显式计划执行",
+            "targets": ["Qwen"],
+            "mode": "project",
+            "execution_strategy": "planned",
+            "request_id": "v1-planned-test",
+        })
+        acknowledgement = websocket.receive_json()
+        assert acknowledgement["type"] == "ack"
+        assert acknowledgement["contract_version"] == "1"
+        assert acknowledgement["sequence"] == 2
+        assert acknowledgement["request_id"] == "v1-planned-test"
+        assert acknowledgement["session_id"] == session_id
+        assert acknowledgement["run_id"]
+        assert acknowledgement["step_id"] is None
+        update = websocket.receive_json()
+        assert update["type"] == "agent_run_update"
+        assert update["contract_version"] == "1"
+        assert update["sequence"] == 3
+        assert update["request_id"] == "v1-planned-test"
+        assert update["session_id"] == session_id
+        assert update["run_id"] == acknowledgement["run_id"]
+        assert update["agent_run"]["effective_execution_strategy"] == "planned"
+        assert update["agent_run"]["execution_strategy_source"] == "explicit"
+        observed = websocket.receive_json()
+        assert observed["type"] == "v1_contract_observed"
+        assert observed["contract_version"] == "1"
+        assert observed["sequence"] == 4
+        assert observed["request_id"] == "v1-planned-test"
+        assert observed["session_id"] == session_id
+        assert observed["run_id"] == acknowledgement["run_id"]
+        trace_context = next(
+            event
+            for event in chat_database.get_agent_run(
+                acknowledgement["run_id"]
+            )["events"]
+            if event["event_type"] == "trace_context"
+        )
+        assert trace_context["payload"] == {
+            "request_ref": diagnostic_ref("request", "v1-planned-test")
+        }
+        assert len({
+            error["event_id"],
+            acknowledgement["event_id"],
+            update["event_id"],
+            observed["event_id"],
+        }) == 4
+
+
+def test_websocket_v1_replays_persisted_stream_cursor_across_connections(client):
+    session_id = str(uuid4())
+    stream_id = f"test-stream-{uuid4()}"
+    path = f"/ws/v1/sessions/{session_id}?stream_id={stream_id}"
+
+    with client.websocket_connect(f"{path}&cursor=0") as websocket:
+        websocket.send_json({
+            "type": "unsupported",
+            "request_id": "persisted-event-1",
+        })
+        first = websocket.receive_json()
+        assert first["type"] == "error"
+        assert first["sequence"] == 1
+        assert first["stream_id"] == stream_id
+
+    with client.websocket_connect(f"{path}&cursor=0") as websocket:
+        replayed = websocket.receive_json()
+        assert replayed == first
+        websocket.send_json({
+            "type": "unsupported",
+            "request_id": "persisted-event-2",
+        })
+        second = websocket.receive_json()
+        assert second["sequence"] == 2
+        assert second["stream_id"] == stream_id
+
+    with client.websocket_connect(f"{path}&cursor=2") as websocket:
+        websocket.send_json({
+            "type": "unsupported",
+            "request_id": "persisted-event-3",
+        })
+        third = websocket.receive_json()
+        assert third["sequence"] == 3
+
+    with client.websocket_connect(f"{path}&cursor=999") as websocket:
+        with pytest.raises(WebSocketDisconnect) as closed:
+            websocket.receive_json()
+        assert closed.value.code == 4009
+
+
+def test_websocket_v1_allows_only_one_active_writer_per_stream(client):
+    session_id = str(uuid4())
+    stream_id = f"exclusive-stream-{uuid4()}"
+    path = f"/ws/v1/sessions/{session_id}?stream_id={stream_id}&cursor=0"
+
+    with client.websocket_connect(path) as first:
+        with client.websocket_connect(path) as replacement:
+            with pytest.raises(WebSocketDisconnect) as replaced:
+                first.receive_json()
+            assert replaced.value.code == 4009
+
+            replacement.send_json({
+                "type": "unsupported",
+                "request_id": "exclusive-writer",
+            })
+            event = replacement.receive_json()
+            assert event["sequence"] == 1
+            assert event["stream_id"] == stream_id
+
+
+def test_websocket_v1_coalesces_delta_bursts_and_legacy_keeps_fragments(
+    client,
+    monkeypatch,
+):
+    async def burst_stream(self, action):
+        for fragment in ("A", "ether", "Chat"):
+            yield {
+                "type": "delta",
+                "model": "burst-model",
+                "delta": fragment,
+                "ts": "2026-08-11T08:00:00Z",
+            }
+        yield {"type": "burst_boundary"}
+
+    monkeypatch.setattr(SessionOrchestrator, "stream_user_message", burst_stream)
+
+    v1_session_id = str(uuid4())
+    with client.websocket_connect(
+        f"/ws/v1/sessions/{v1_session_id}"
+    ) as websocket:
+        websocket.send_json({
+            "type": "post_message",
+            "content": "测试突发增量",
+            "targets": ["burst-model"],
+            "mode": "project",
+            "execution_strategy": "direct",
+            "request_id": "delta-burst-v1",
+        })
+        assert websocket.receive_json()["type"] == "ack"
+        assert websocket.receive_json()["type"] == "agent_run_update"
+        delta = websocket.receive_json()
+        boundary = websocket.receive_json()
+        completed = websocket.receive_json()
+
+    assert delta["type"] == "delta"
+    assert delta["delta"] == "AetherChat"
+    assert delta["coalesced_count"] == 3
+    assert delta["request_id"] == "delta-burst-v1"
+    assert [delta["sequence"], boundary["sequence"], completed["sequence"]] == [
+        3,
+        4,
+        5,
+    ]
+    assert boundary["type"] == "burst_boundary"
+    assert completed["type"] == "agent_run_update"
+
+    legacy_session_id = str(uuid4())
+    with client.websocket_connect(
+        f"/ws/sessions/{legacy_session_id}"
+    ) as websocket:
+        websocket.send_json({
+            "type": "post_message",
+            "content": "验证旧版逐片发送",
+            "targets": ["burst-model"],
+        })
+        assert websocket.receive_json()["type"] == "ack"
+        assert websocket.receive_json()["type"] == "agent_run_update"
+        legacy_deltas = [websocket.receive_json() for _index in range(3)]
+        assert websocket.receive_json()["type"] == "burst_boundary"
+        assert websocket.receive_json()["type"] == "agent_run_update"
+
+    assert [event["delta"] for event in legacy_deltas] == ["A", "ether", "Chat"]
+    assert all("coalesced_count" not in event for event in legacy_deltas)
 
 
 def test_websocket_waits_for_desktop_navigation_receipt(client, monkeypatch):
@@ -5260,6 +6178,15 @@ def test_comfyui_graphs_cover_local_image_and_video_pipelines():
     assert wan["1"]["inputs"]["unet_name"].startswith("wan2.1_i2v")
     assert wan["12"]["class_type"] == "SaveWEBM"
 
+    remix = service._wan22_remix_i2v_graph(
+        "slow camera move", "input.png", 480, 832, 33, 16, 8, 1.0, 789,
+    )
+    assert "high_lighting" in remix["1"]["inputs"]["unet_name"]
+    assert "low_lighting" in remix["2"]["inputs"]["unet_name"]
+    assert remix["11"]["inputs"]["end_at_step"] == 4
+    assert remix["12"]["inputs"]["start_at_step"] == 4
+    assert remix["15"]["class_type"] == "SaveVideo"
+
     ltx = service._ltx_t2v_graph("cinematic motion", 768, 512, 9, 16, 4, 3.0, 101)
     assert ltx["1"]["inputs"]["ckpt_name"].startswith("ltx-2.3")
     assert ltx["19"]["class_type"] == "SaveVideo"
@@ -5396,6 +6323,9 @@ async def test_comfyui_model_catalog_lists_supported_models_and_blocks_ltx_when_
 ):
     from app.services.comfyui_service import (
         LTX_MIN_FREE_MEMORY,
+        WAN22_REMIX_HIGH_MODEL,
+        WAN22_REMIX_LOW_MODEL,
+        WAN22_REMIX_TEXT_ENCODER,
         ComfyUIService,
     )
 
@@ -5412,11 +6342,14 @@ async def test_comfyui_model_catalog_lists_supported_models_and_blocks_ltx_when_
             "diffusion_models": [
                 "qwen_image_2512_fp8_e4m3fn.safetensors",
                 "wan2.1_i2v_480p_14B_fp8_scaled.safetensors",
+                WAN22_REMIX_HIGH_MODEL,
+                WAN22_REMIX_LOW_MODEL,
             ],
             "loras": [],
             "vae": ["wan_2.1_vae.safetensors"],
             "text_encoders": [
                 "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+                WAN22_REMIX_TEXT_ENCODER,
                 "gemma-3-12b-it/model-00001-of-00005.safetensors",
             ],
             "clip_vision": ["clip_vision_h.safetensors"],
@@ -5425,6 +6358,9 @@ async def test_comfyui_model_catalog_lists_supported_models_and_blocks_ltx_when_
             "capabilities": {
                 "WanImageToVideo": True,
                 "SaveWEBM": True,
+                "ModelSamplingSD3": True,
+                "KSamplerAdvanced": True,
+                "CreateVideo": True,
                 "LTXVGemmaCLIPModelLoader": True,
                 "LTXVAudioVAELoader": True,
                 "LTXVConditioning": True,
@@ -5454,6 +6390,13 @@ async def test_comfyui_model_catalog_lists_supported_models_and_blocks_ltx_when_
     wan, ltx = catalog["video_pipelines"]
     assert wan["installed"] is True
     assert wan["available"] is True
+    assert wan["requires_input_image"] is False
+    assert wan["auto_generates_input_image"] is True
+    assert [item["name"] for item in wan["models"]] == [
+        "wan2.1_i2v_480p_14B_fp8_scaled.safetensors",
+        WAN22_REMIX_HIGH_MODEL,
+    ]
+    assert wan["models"][1]["companion_models"] == [WAN22_REMIX_LOW_MODEL]
     assert ltx["installed"] is True
     assert ltx["available"] is False
     assert ltx["minimum_free_memory_bytes"] == LTX_MIN_FREE_MEMORY
@@ -5496,6 +6439,132 @@ async def test_comfyui_generate_video_rejects_unsafe_ltx_before_submitting(monke
 
 
 @pytest.mark.asyncio
+async def test_comfyui_wan_video_auto_generates_starter_image(monkeypatch):
+    from app.services.comfyui_service import WAN_I2V_MODEL, ComfyUIService
+
+    service = ComfyUIService()
+    captured = {}
+
+    async def fake_ready():
+        return {"ready": True}
+
+    async def fake_catalog(**_kwargs):
+        return {
+            "video_pipelines": [{
+                "id": "wan-i2v",
+                "installed": True,
+                "available": True,
+                "missing": [],
+                "models": [{
+                    "name": WAN_I2V_MODEL,
+                    "installed": True,
+                    "missing": [],
+                    "recommended": True,
+                }],
+            }],
+        }
+
+    async def fake_generate_image(prompt, **kwargs):
+        captured["starter"] = {"prompt": prompt, **kwargs}
+        return {"prompt_id": "starter-prompt", "files": [{"filename": "start.png"}]}
+
+    async def fake_upload_generated(result):
+        assert result["prompt_id"] == "starter-prompt"
+        return "uploaded-start.png"
+
+    async def fake_submit(graph, timeout, metadata):
+        captured["graph"] = graph
+        captured["timeout"] = timeout
+        captured["metadata"] = metadata
+        return {"completed": True, "files": []}
+
+    monkeypatch.setattr(service, "ensure_ready", fake_ready)
+    monkeypatch.setattr(service, "model_catalog", fake_catalog)
+    monkeypatch.setattr(service, "generate_image", fake_generate_image)
+    monkeypatch.setattr(service, "_upload_generated_image", fake_upload_generated)
+    monkeypatch.setattr(service, "_submit_and_wait", fake_submit)
+
+    result = await service.generate_video(
+        "cinematic clouds moving over a city",
+        pipeline="wan-i2v",
+        width=480,
+        height=832,
+        seed=42,
+    )
+
+    assert result["completed"] is True
+    assert captured["starter"]["width"] == 480
+    assert captured["starter"]["height"] == 832
+    assert captured["graph"]["5"]["inputs"]["image"] == "uploaded-start.png"
+    parameters = captured["metadata"]["parameters"]
+    assert parameters["input_image"] is None
+    assert parameters["input_image_source"] == "auto-generated"
+    assert parameters["starter_image_prompt_id"] == "starter-prompt"
+    assert parameters["model"] == WAN_I2V_MODEL
+
+
+@pytest.mark.asyncio
+async def test_comfyui_wan22_requested_model_uses_two_stage_graph(monkeypatch):
+    from app.services.comfyui_service import (
+        WAN22_REMIX_HIGH_MODEL,
+        WAN22_REMIX_LOW_MODEL,
+        ComfyUIService,
+    )
+
+    service = ComfyUIService()
+    captured = {}
+
+    async def fake_ready():
+        return {"ready": True}
+
+    async def fake_catalog(**_kwargs):
+        return {
+            "video_pipelines": [{
+                "id": "wan-i2v",
+                "installed": True,
+                "available": True,
+                "missing": [],
+                "models": [{
+                    "name": WAN22_REMIX_HIGH_MODEL,
+                    "installed": True,
+                    "missing": [],
+                    "recommended": True,
+                    "companion_models": [WAN22_REMIX_LOW_MODEL],
+                }],
+            }],
+        }
+
+    async def fake_upload(path):
+        assert path == "/safe/session/source.png"
+        return "source.png"
+
+    async def fake_submit(graph, timeout, metadata):
+        captured["graph"] = graph
+        captured["metadata"] = metadata
+        return {"completed": True, "files": []}
+
+    monkeypatch.setattr(service, "ensure_ready", fake_ready)
+    monkeypatch.setattr(service, "model_catalog", fake_catalog)
+    monkeypatch.setattr(service, "_upload_image", fake_upload)
+    monkeypatch.setattr(service, "_submit_and_wait", fake_submit)
+
+    await service.generate_video(
+        "slow cinematic movement",
+        pipeline="wan-i2v",
+        model=WAN22_REMIX_HIGH_MODEL,
+        input_image="/safe/session/source.png",
+        steps=8,
+        cfg=1.0,
+    )
+
+    assert captured["graph"]["1"]["inputs"]["unet_name"] == WAN22_REMIX_HIGH_MODEL
+    assert captured["graph"]["2"]["inputs"]["unet_name"] == WAN22_REMIX_LOW_MODEL
+    assert captured["graph"]["15"]["class_type"] == "SaveVideo"
+    assert captured["metadata"]["parameters"]["model"] == WAN22_REMIX_HIGH_MODEL
+    assert captured["metadata"]["parameters"]["input_image_source"] == "local-file"
+
+
+@pytest.mark.asyncio
 async def test_comfyui_saved_selection_overrides_automatic_tool_arguments(monkeypatch):
     from app.services.comfyui_service import comfyui_service
 
@@ -5535,6 +6604,20 @@ async def test_comfyui_saved_selection_overrides_automatic_tool_arguments(monkey
 
     assert captured["image"]["model"] == "selected-image.safetensors"
     assert captured["video"]["pipeline"] == "ltx-t2v"
+
+    await plugin_registry._dispatch(
+        {"handler": "comfyui_generate_video"},
+        "session",
+        {
+            "prompt": "slow movement",
+            "pipeline": "wan-i2v",
+            "_user_requested_model": "Wan2.2_Remix.safetensors",
+            "input_image": "/safe/source.png",
+        },
+    )
+    assert captured["video"]["pipeline"] == "wan-i2v"
+    assert captured["video"]["model"] == "Wan2.2_Remix.safetensors"
+    assert captured["video"]["input_image"] == "/safe/source.png"
 
     await plugin_registry._dispatch(
         {"handler": "comfyui_generate_image"},
@@ -6315,6 +7398,7 @@ def test_automation_api_crud_manual_run_and_review(client, monkeypatch):
 @pytest.mark.asyncio
 async def test_automation_scheduler_materializes_once_and_reclaims_expired_lease(tmp_path):
     database = ChatDatabase(tmp_path / "automations.sqlite3")
+    dispatcher = RunDispatcher(capacity=1)
     session_id = str(uuid4())
     now = datetime.now(timezone.utc).replace(microsecond=0)
     calls = []
@@ -6345,6 +7429,8 @@ async def test_automation_scheduler_materializes_once_and_reclaims_expired_lease
         lease_seconds=6,
         concurrency=1,
         executor=fake_executor,
+        dispatcher=dispatcher,
+        resource_resolver=lambda _action: (),
     )
     materialized = await service.run_cycle(now)
     assert len(materialized) == 1
@@ -6382,6 +7468,7 @@ async def test_automation_scheduler_materializes_once_and_reclaims_expired_lease
     assert recovered["status"] == "completed"
     assert recovered["attempt"] == 2
     assert calls.count(stranded["id"]) == 1
+    await dispatcher.stop()
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,1406 @@
+{
+  "schema_version": 1,
+  "name": "agent_benchmark_suite",
+  "description": "Deterministic Agent domain benchmarks (20+ categories × 3). No paid providers or network.",
+  "count": 60,
+  "min_categories": 20,
+  "min_per_category": 3,
+  "cases": [
+    {
+      "id": "strategy_ok_00",
+      "category": "execution_strategy_ok",
+      "kind": "execution_strategy",
+      "polarity": "positive",
+      "input": {
+        "action": {
+          "mode": "project",
+          "execution_strategy": "planned"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "mode": "project",
+        "effective": "planned",
+        "source": "explicit",
+        "requested": "planned"
+      }
+    },
+    {
+      "id": "strategy_ok_01",
+      "category": "execution_strategy_ok",
+      "kind": "execution_strategy",
+      "polarity": "positive",
+      "input": {
+        "action": {
+          "mode": "project",
+          "execution_strategy": "direct"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "mode": "project",
+        "effective": "direct",
+        "source": "explicit",
+        "requested": "direct"
+      }
+    },
+    {
+      "id": "strategy_ok_02",
+      "category": "execution_strategy_ok",
+      "kind": "execution_strategy",
+      "polarity": "positive",
+      "input": {
+        "action": {
+          "mode": "casual",
+          "execution_strategy": "direct"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "mode": "casual",
+        "effective": "direct",
+        "source": "explicit",
+        "requested": "direct"
+      }
+    },
+    {
+      "id": "strategy_compat_00",
+      "category": "execution_strategy_compat",
+      "kind": "execution_strategy",
+      "polarity": "positive",
+      "input": {
+        "action": {
+          "mode": "project"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "mode": "project",
+        "effective": "direct",
+        "source": "compatibility_default",
+        "requested": null
+      }
+    },
+    {
+      "id": "strategy_compat_01",
+      "category": "execution_strategy_compat",
+      "kind": "execution_strategy",
+      "polarity": "positive",
+      "input": {
+        "action": {
+          "mode": "casual"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "mode": "casual",
+        "effective": "direct",
+        "source": "compatibility_default",
+        "requested": null
+      }
+    },
+    {
+      "id": "strategy_compat_02",
+      "category": "execution_strategy_compat",
+      "kind": "execution_strategy",
+      "polarity": "positive",
+      "input": {
+        "action": {
+          "mode": "roundtable"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "mode": "roundtable",
+        "effective": "direct",
+        "source": "compatibility_default",
+        "requested": null
+      }
+    },
+    {
+      "id": "strategy_reject_00",
+      "category": "execution_strategy_reject",
+      "kind": "execution_strategy",
+      "polarity": "negative",
+      "input": {
+        "action": {
+          "mode": "unknown"
+        }
+      },
+      "expect": {
+        "ok": false,
+        "error_contains": "不支持的运行模式"
+      }
+    },
+    {
+      "id": "strategy_reject_01",
+      "category": "execution_strategy_reject",
+      "kind": "execution_strategy",
+      "polarity": "negative",
+      "input": {
+        "action": {
+          "mode": "project",
+          "execution_strategy": "automatic"
+        }
+      },
+      "expect": {
+        "ok": false,
+        "error_contains": "不支持的执行策略"
+      }
+    },
+    {
+      "id": "strategy_reject_02",
+      "category": "execution_strategy_reject",
+      "kind": "execution_strategy",
+      "polarity": "negative",
+      "input": {
+        "action": {
+          "mode": "casual",
+          "execution_strategy": "planned"
+        }
+      },
+      "expect": {
+        "ok": false,
+        "error_contains": "planned 执行策略仅适用于 project 模式"
+      }
+    },
+    {
+      "id": "effect_not_applicable_00",
+      "category": "effect_not_applicable",
+      "kind": "effect_verification",
+      "polarity": "positive",
+      "input": {
+        "tool_call": {
+          "side_effect": false,
+          "tool_name": "read_0"
+        },
+        "payload": {
+          "status": "success",
+          "result": {
+            "x": 1
+          }
+        },
+        "tool_run_id": null
+      },
+      "expect": {
+        "status": "not_applicable",
+        "evidence_kinds": []
+      }
+    },
+    {
+      "id": "effect_not_applicable_01",
+      "category": "effect_not_applicable",
+      "kind": "effect_verification",
+      "polarity": "positive",
+      "input": {
+        "tool_call": {
+          "side_effect": false,
+          "tool_name": "read_1"
+        },
+        "payload": {
+          "status": "success",
+          "result": {
+            "x": 1
+          }
+        },
+        "tool_run_id": null
+      },
+      "expect": {
+        "status": "not_applicable",
+        "evidence_kinds": []
+      }
+    },
+    {
+      "id": "effect_not_applicable_02",
+      "category": "effect_not_applicable",
+      "kind": "effect_verification",
+      "polarity": "positive",
+      "input": {
+        "tool_call": {
+          "side_effect": false,
+          "tool_name": "read_2"
+        },
+        "payload": {
+          "status": "success",
+          "result": {
+            "x": 1
+          }
+        },
+        "tool_run_id": null
+      },
+      "expect": {
+        "status": "not_applicable",
+        "evidence_kinds": []
+      }
+    },
+    {
+      "id": "effect_failed_00",
+      "category": "effect_failed",
+      "kind": "effect_verification",
+      "polarity": "positive",
+      "input": {
+        "tool_call": {
+          "side_effect": true,
+          "tool_name": "remote__x"
+        },
+        "payload": {
+          "status": "error",
+          "error": "e-0"
+        },
+        "tool_run_id": "r1-0"
+      },
+      "expect": {
+        "status": "failed",
+        "evidence_kinds": [
+          "tool_result_digest"
+        ]
+      }
+    },
+    {
+      "id": "effect_failed_01",
+      "category": "effect_failed",
+      "kind": "effect_verification",
+      "polarity": "positive",
+      "input": {
+        "tool_call": {
+          "side_effect": true,
+          "tool_name": "remote__x"
+        },
+        "payload": {
+          "status": "error",
+          "error": "e-1"
+        },
+        "tool_run_id": "r1-1"
+      },
+      "expect": {
+        "status": "failed",
+        "evidence_kinds": [
+          "tool_result_digest"
+        ]
+      }
+    },
+    {
+      "id": "effect_failed_02",
+      "category": "effect_failed",
+      "kind": "effect_verification",
+      "polarity": "positive",
+      "input": {
+        "tool_call": {
+          "side_effect": true,
+          "tool_name": "remote__x"
+        },
+        "payload": {
+          "status": "error",
+          "error": "e-2"
+        },
+        "tool_run_id": "r1-2"
+      },
+      "expect": {
+        "status": "failed",
+        "evidence_kinds": [
+          "tool_result_digest"
+        ]
+      }
+    },
+    {
+      "id": "effect_unverified_00",
+      "category": "effect_unverified",
+      "kind": "effect_verification",
+      "polarity": "positive",
+      "input": {
+        "tool_call": {
+          "side_effect": true,
+          "tool_name": "remote__x"
+        },
+        "payload": {
+          "status": "success",
+          "result": {
+            "ok": true,
+            "i": 0
+          }
+        },
+        "tool_run_id": "r2-0"
+      },
+      "expect": {
+        "status": "unverified",
+        "evidence_kinds": [
+          "tool_result_digest"
+        ]
+      }
+    },
+    {
+      "id": "effect_unverified_01",
+      "category": "effect_unverified",
+      "kind": "effect_verification",
+      "polarity": "positive",
+      "input": {
+        "tool_call": {
+          "side_effect": true,
+          "tool_name": "remote__x"
+        },
+        "payload": {
+          "status": "success",
+          "result": {
+            "ok": true,
+            "i": 1
+          }
+        },
+        "tool_run_id": "r2-1"
+      },
+      "expect": {
+        "status": "unverified",
+        "evidence_kinds": [
+          "tool_result_digest"
+        ]
+      }
+    },
+    {
+      "id": "effect_unverified_02",
+      "category": "effect_unverified",
+      "kind": "effect_verification",
+      "polarity": "positive",
+      "input": {
+        "tool_call": {
+          "side_effect": true,
+          "tool_name": "remote__x"
+        },
+        "payload": {
+          "status": "success",
+          "result": {
+            "ok": true,
+            "i": 2
+          }
+        },
+        "tool_run_id": "r2-2"
+      },
+      "expect": {
+        "status": "unverified",
+        "evidence_kinds": [
+          "tool_result_digest"
+        ]
+      }
+    },
+    {
+      "id": "effect_verified_browser_00",
+      "category": "effect_verified_browser",
+      "kind": "effect_verification",
+      "polarity": "positive",
+      "input": {
+        "tool_call": {
+          "side_effect": true,
+          "tool_name": "plugin__browser_links__open_url"
+        },
+        "payload": {
+          "status": "success",
+          "result": {
+            "execution_receipt": {
+              "success": true,
+              "verification": "launcher_accepted",
+              "launcher": "firefox",
+              "browser": "firefox",
+              "accepted_at": "2026-08-11T00:00:00Z"
+            }
+          }
+        },
+        "tool_run_id": "r3-0"
+      },
+      "expect": {
+        "status": "verified",
+        "evidence_kinds": [
+          "tool_result_digest",
+          "execution_receipt"
+        ]
+      }
+    },
+    {
+      "id": "effect_verified_browser_01",
+      "category": "effect_verified_browser",
+      "kind": "effect_verification",
+      "polarity": "positive",
+      "input": {
+        "tool_call": {
+          "side_effect": true,
+          "tool_name": "plugin__browser_links__open_url"
+        },
+        "payload": {
+          "status": "success",
+          "result": {
+            "execution_receipt": {
+              "success": true,
+              "verification": "launcher_accepted",
+              "launcher": "firefox",
+              "browser": "firefox",
+              "accepted_at": "2026-08-11T00:01:00Z"
+            }
+          }
+        },
+        "tool_run_id": "r3-1"
+      },
+      "expect": {
+        "status": "verified",
+        "evidence_kinds": [
+          "tool_result_digest",
+          "execution_receipt"
+        ]
+      }
+    },
+    {
+      "id": "effect_verified_browser_02",
+      "category": "effect_verified_browser",
+      "kind": "effect_verification",
+      "polarity": "positive",
+      "input": {
+        "tool_call": {
+          "side_effect": true,
+          "tool_name": "plugin__browser_links__open_url"
+        },
+        "payload": {
+          "status": "success",
+          "result": {
+            "execution_receipt": {
+              "success": true,
+              "verification": "launcher_accepted",
+              "launcher": "firefox",
+              "browser": "firefox",
+              "accepted_at": "2026-08-11T00:02:00Z"
+            }
+          }
+        },
+        "tool_run_id": "r3-2"
+      },
+      "expect": {
+        "status": "verified",
+        "evidence_kinds": [
+          "tool_result_digest",
+          "execution_receipt"
+        ]
+      }
+    },
+    {
+      "id": "effect_artifact_00",
+      "category": "effect_verified_artifact",
+      "kind": "effect_verification",
+      "polarity": "positive",
+      "input": {
+        "tool_call": {
+          "side_effect": true,
+          "tool_name": "write_artifact"
+        },
+        "payload": {
+          "status": "success",
+          "result": {
+            "path": "docs/a_0.md",
+            "version": 1
+          }
+        },
+        "tool_run_id": "art-0"
+      },
+      "expect": {
+        "status": "verified",
+        "evidence_kinds": [
+          "tool_result_digest",
+          "artifact_version"
+        ],
+        "path": "docs/a_0.md"
+      }
+    },
+    {
+      "id": "effect_artifact_01",
+      "category": "effect_verified_artifact",
+      "kind": "effect_verification",
+      "polarity": "positive",
+      "input": {
+        "tool_call": {
+          "side_effect": true,
+          "tool_name": "write_artifact"
+        },
+        "payload": {
+          "status": "success",
+          "result": {
+            "path": "docs/a_1.md",
+            "version": 2
+          }
+        },
+        "tool_run_id": "art-1"
+      },
+      "expect": {
+        "status": "verified",
+        "evidence_kinds": [
+          "tool_result_digest",
+          "artifact_version"
+        ],
+        "path": "docs/a_1.md"
+      }
+    },
+    {
+      "id": "effect_artifact_02",
+      "category": "effect_verified_artifact",
+      "kind": "effect_verification",
+      "polarity": "positive",
+      "input": {
+        "tool_call": {
+          "side_effect": true,
+          "tool_name": "write_artifact"
+        },
+        "payload": {
+          "status": "success",
+          "result": {
+            "path": "docs/a_2.md",
+            "version": 3
+          }
+        },
+        "tool_run_id": "art-2"
+      },
+      "expect": {
+        "status": "verified",
+        "evidence_kinds": [
+          "tool_result_digest",
+          "artifact_version"
+        ],
+        "path": "docs/a_2.md"
+      }
+    },
+    {
+      "id": "effect_file_00",
+      "category": "effect_verified_file",
+      "kind": "effect_verification",
+      "polarity": "positive",
+      "input": {
+        "tool_call": {
+          "side_effect": true,
+          "tool_name": "plugin__documents__export_to_local"
+        },
+        "payload": {
+          "status": "success",
+          "result": {
+            "path": "/tmp/f_0.bin",
+            "output_sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+          }
+        },
+        "tool_run_id": "file-0"
+      },
+      "expect": {
+        "status": "verified",
+        "evidence_kinds": [
+          "tool_result_digest",
+          "file_digest"
+        ],
+        "path": "/tmp/f_0.bin"
+      }
+    },
+    {
+      "id": "effect_file_01",
+      "category": "effect_verified_file",
+      "kind": "effect_verification",
+      "polarity": "positive",
+      "input": {
+        "tool_call": {
+          "side_effect": true,
+          "tool_name": "plugin__documents__export_to_local"
+        },
+        "payload": {
+          "status": "success",
+          "result": {
+            "path": "/tmp/f_1.bin",
+            "output_sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+          }
+        },
+        "tool_run_id": "file-1"
+      },
+      "expect": {
+        "status": "verified",
+        "evidence_kinds": [
+          "tool_result_digest",
+          "file_digest"
+        ],
+        "path": "/tmp/f_1.bin"
+      }
+    },
+    {
+      "id": "effect_file_02",
+      "category": "effect_verified_file",
+      "kind": "effect_verification",
+      "polarity": "positive",
+      "input": {
+        "tool_call": {
+          "side_effect": true,
+          "tool_name": "plugin__documents__export_to_local"
+        },
+        "payload": {
+          "status": "success",
+          "result": {
+            "path": "/tmp/f_2.bin",
+            "output_sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+          }
+        },
+        "tool_run_id": "file-2"
+      },
+      "expect": {
+        "status": "verified",
+        "evidence_kinds": [
+          "tool_result_digest",
+          "file_digest"
+        ],
+        "path": "/tmp/f_2.bin"
+      }
+    },
+    {
+      "id": "effect_adv_browser_00",
+      "category": "effect_adversarial_browser",
+      "kind": "effect_verification",
+      "polarity": "adversarial",
+      "input": {
+        "tool_call": {
+          "side_effect": true,
+          "tool_name": "plugin__browser_links__open_url"
+        },
+        "payload": {
+          "status": "success",
+          "result": {
+            "execution_receipt": {
+              "success": false,
+              "verification": "launcher_accepted",
+              "launcher": "firefox",
+              "browser": "firefox",
+              "accepted_at": "t"
+            }
+          }
+        },
+        "tool_run_id": "advb-0"
+      },
+      "expect": {
+        "status": "unverified",
+        "evidence_kinds": [
+          "tool_result_digest"
+        ]
+      }
+    },
+    {
+      "id": "effect_adv_browser_01",
+      "category": "effect_adversarial_browser",
+      "kind": "effect_verification",
+      "polarity": "adversarial",
+      "input": {
+        "tool_call": {
+          "side_effect": true,
+          "tool_name": "plugin__browser_links__open_url"
+        },
+        "payload": {
+          "status": "success",
+          "result": {
+            "execution_receipt": {
+              "success": true,
+              "verification": "model_ok",
+              "launcher": "firefox",
+              "browser": "firefox",
+              "accepted_at": "t"
+            }
+          }
+        },
+        "tool_run_id": "advb-1"
+      },
+      "expect": {
+        "status": "unverified",
+        "evidence_kinds": [
+          "tool_result_digest"
+        ]
+      }
+    },
+    {
+      "id": "effect_adv_browser_02",
+      "category": "effect_adversarial_browser",
+      "kind": "effect_verification",
+      "polarity": "adversarial",
+      "input": {
+        "tool_call": {
+          "side_effect": true,
+          "tool_name": "plugin__browser_links__open_url"
+        },
+        "payload": {
+          "status": "success",
+          "result": {
+            "execution_receipt": {
+              "success": true,
+              "verification": "launcher_accepted",
+              "launcher": "chrome",
+              "browser": "firefox",
+              "accepted_at": "t"
+            }
+          }
+        },
+        "tool_run_id": "advb-2"
+      },
+      "expect": {
+        "status": "unverified",
+        "evidence_kinds": [
+          "tool_result_digest"
+        ]
+      }
+    },
+    {
+      "id": "run_create_direct_00",
+      "category": "run_create_direct",
+      "kind": "run_create",
+      "polarity": "positive",
+      "input": {
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "action": {
+          "content": "task 0",
+          "targets": [
+            "coder"
+          ],
+          "mode": "project",
+          "execution_strategy": "direct"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "status": "running",
+        "effective": "direct",
+        "source": "explicit",
+        "events_contain": [
+          "execution_strategy_resolved",
+          "run_started"
+        ]
+      }
+    },
+    {
+      "id": "run_create_direct_01",
+      "category": "run_create_direct",
+      "kind": "run_create",
+      "polarity": "positive",
+      "input": {
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "action": {
+          "content": "task 1",
+          "targets": [
+            "coder"
+          ],
+          "mode": "casual",
+          "execution_strategy": "direct"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "status": "running",
+        "effective": "direct",
+        "source": "explicit",
+        "events_contain": [
+          "execution_strategy_resolved",
+          "run_started"
+        ]
+      }
+    },
+    {
+      "id": "run_create_direct_02",
+      "category": "run_create_direct",
+      "kind": "run_create",
+      "polarity": "positive",
+      "input": {
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "action": {
+          "content": "task 2",
+          "targets": [
+            "coder"
+          ],
+          "mode": "roundtable",
+          "execution_strategy": "direct"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "status": "running",
+        "effective": "direct",
+        "source": "explicit",
+        "events_contain": [
+          "execution_strategy_resolved",
+          "run_started"
+        ]
+      }
+    },
+    {
+      "id": "run_create_planned_00",
+      "category": "run_create_planned",
+      "kind": "run_create",
+      "polarity": "positive",
+      "input": {
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "action": {
+          "content": "plan 0",
+          "targets": [
+            "coder"
+          ],
+          "mode": "project",
+          "execution_strategy": "planned"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "status": "running",
+        "effective": "planned",
+        "source": "explicit",
+        "events_contain": [
+          "execution_strategy_resolved",
+          "run_started"
+        ]
+      }
+    },
+    {
+      "id": "run_create_planned_01",
+      "category": "run_create_planned",
+      "kind": "run_create",
+      "polarity": "positive",
+      "input": {
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "action": {
+          "content": "plan 1",
+          "targets": [
+            "coder"
+          ],
+          "mode": "project",
+          "execution_strategy": "planned"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "status": "running",
+        "effective": "planned",
+        "source": "explicit",
+        "events_contain": [
+          "execution_strategy_resolved",
+          "run_started"
+        ]
+      }
+    },
+    {
+      "id": "run_create_planned_02",
+      "category": "run_create_planned",
+      "kind": "run_create",
+      "polarity": "positive",
+      "input": {
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "action": {
+          "content": "plan 2",
+          "targets": [
+            "coder"
+          ],
+          "mode": "project",
+          "execution_strategy": "planned"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "status": "running",
+        "effective": "planned",
+        "source": "explicit",
+        "events_contain": [
+          "execution_strategy_resolved",
+          "run_started"
+        ]
+      }
+    },
+    {
+      "id": "run_create_legacy_00",
+      "category": "run_create_legacy",
+      "kind": "run_create",
+      "polarity": "positive",
+      "input": {
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "action": {
+          "content": "legacy 0",
+          "targets": [
+            "coder"
+          ],
+          "mode": "project"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "status": "running",
+        "effective": "direct",
+        "source": "compatibility_default",
+        "events_contain": [
+          "execution_strategy_resolved",
+          "legacy_contract_deprecated",
+          "run_started"
+        ]
+      }
+    },
+    {
+      "id": "run_create_legacy_01",
+      "category": "run_create_legacy",
+      "kind": "run_create",
+      "polarity": "positive",
+      "input": {
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "action": {
+          "content": "legacy 1",
+          "targets": [
+            "coder"
+          ],
+          "mode": "casual"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "status": "running",
+        "effective": "direct",
+        "source": "compatibility_default",
+        "events_contain": [
+          "execution_strategy_resolved",
+          "legacy_contract_deprecated",
+          "run_started"
+        ]
+      }
+    },
+    {
+      "id": "run_create_legacy_02",
+      "category": "run_create_legacy",
+      "kind": "run_create",
+      "polarity": "positive",
+      "input": {
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "action": {
+          "content": "legacy 2",
+          "targets": [
+            "coder"
+          ],
+          "mode": "roundtable"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "status": "running",
+        "effective": "direct",
+        "source": "compatibility_default",
+        "events_contain": [
+          "execution_strategy_resolved",
+          "legacy_contract_deprecated",
+          "run_started"
+        ]
+      }
+    },
+    {
+      "id": "run_create_reject_00",
+      "category": "run_create_reject",
+      "kind": "run_create",
+      "polarity": "negative",
+      "input": {
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "action": {
+          "content": "x",
+          "targets": [
+            "coder"
+          ],
+          "mode": "casual",
+          "execution_strategy": "planned"
+        }
+      },
+      "expect": {
+        "ok": false,
+        "error_contains": "planned"
+      }
+    },
+    {
+      "id": "run_create_reject_01",
+      "category": "run_create_reject",
+      "kind": "run_create",
+      "polarity": "negative",
+      "input": {
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "action": {
+          "content": "x",
+          "targets": [
+            "coder"
+          ],
+          "mode": "project",
+          "execution_strategy": "auto"
+        }
+      },
+      "expect": {
+        "ok": false,
+        "error_contains": "不支持的执行策略"
+      }
+    },
+    {
+      "id": "run_create_reject_02",
+      "category": "run_create_reject",
+      "kind": "run_create",
+      "polarity": "negative",
+      "input": {
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "action": {
+          "content": "x",
+          "targets": [
+            "coder"
+          ],
+          "mode": "bad",
+          "execution_strategy": "direct"
+        }
+      },
+      "expect": {
+        "ok": false,
+        "error_contains": "不支持的运行模式"
+      }
+    },
+    {
+      "id": "admission_provider_00",
+      "category": "admission_provider_resource",
+      "kind": "admission_provider",
+      "polarity": "positive",
+      "input": {
+        "name": "kimi"
+      },
+      "expect": {
+        "resource": "provider:kimi"
+      }
+    },
+    {
+      "id": "admission_provider_01",
+      "category": "admission_provider_resource",
+      "kind": "admission_provider",
+      "polarity": "positive",
+      "input": {
+        "name": "Qwen"
+      },
+      "expect": {
+        "resource": "provider:qwen"
+      }
+    },
+    {
+      "id": "admission_provider_02",
+      "category": "admission_provider_resource",
+      "kind": "admission_provider",
+      "polarity": "positive",
+      "input": {
+        "name": "DeepSeek"
+      },
+      "expect": {
+        "resource": "provider:deepseek"
+      }
+    },
+    {
+      "id": "admission_select_00",
+      "category": "admission_resources_selection",
+      "kind": "admission_resources",
+      "polarity": "positive",
+      "input": {
+        "action": {
+          "mode": "project",
+          "targets": [
+            "kimi"
+          ]
+        }
+      },
+      "expect": {
+        "must_include": [
+          "provider:kimi"
+        ]
+      }
+    },
+    {
+      "id": "admission_select_01",
+      "category": "admission_resources_selection",
+      "kind": "admission_resources",
+      "polarity": "positive",
+      "input": {
+        "action": {
+          "mode": "project",
+          "targets": [
+            "Qwen"
+          ]
+        }
+      },
+      "expect": {
+        "must_include": [
+          "provider:qwen",
+          "gpu"
+        ]
+      }
+    },
+    {
+      "id": "admission_select_02",
+      "category": "admission_resources_selection",
+      "kind": "admission_resources",
+      "polarity": "positive",
+      "input": {
+        "action": {
+          "mode": "roundtable",
+          "targets": [
+            "all"
+          ]
+        }
+      },
+      "expect": {
+        "must_include": [
+          "provider:kimi",
+          "provider:qwen",
+          "gpu"
+        ]
+      }
+    },
+    {
+      "id": "envelope_v1_00",
+      "category": "event_envelope_v1",
+      "kind": "event_envelope",
+      "polarity": "positive",
+      "input": {
+        "session_id": "sess-1",
+        "payload": {
+          "type": "message_delta",
+          "delta": "hi"
+        }
+      },
+      "expect": {
+        "contract_version": "1",
+        "has_event_id": true,
+        "sequence_positive": true,
+        "session_id": "sess-1"
+      }
+    },
+    {
+      "id": "envelope_v1_01",
+      "category": "event_envelope_v1",
+      "kind": "event_envelope",
+      "polarity": "positive",
+      "input": {
+        "session_id": "sess-1",
+        "payload": {
+          "type": "tool_completed",
+          "run_id": "run-1",
+          "step_id": "step-1"
+        }
+      },
+      "expect": {
+        "contract_version": "1",
+        "has_event_id": true,
+        "sequence_positive": true,
+        "session_id": "sess-1"
+      }
+    },
+    {
+      "id": "envelope_v1_02",
+      "category": "event_envelope_v1",
+      "kind": "event_envelope",
+      "polarity": "positive",
+      "input": {
+        "session_id": "sess-1",
+        "payload": {
+          "type": "agent_status",
+          "agent_run": {
+            "id": "run-2"
+          }
+        }
+      },
+      "expect": {
+        "contract_version": "1",
+        "has_event_id": true,
+        "sequence_positive": true,
+        "session_id": "sess-1"
+      }
+    },
+    {
+      "id": "tool_lifecycle_00",
+      "category": "tool_lifecycle",
+      "kind": "tool_lifecycle",
+      "polarity": "positive",
+      "input": {
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "action": {
+          "content": "tl 0",
+          "targets": [
+            "coder"
+          ],
+          "mode": "project",
+          "execution_strategy": "direct"
+        },
+        "tool_name": "remote__send",
+        "payload": {
+          "status": "error",
+          "error": "x"
+        }
+      },
+      "expect": {
+        "verification_status": "failed"
+      }
+    },
+    {
+      "id": "tool_lifecycle_01",
+      "category": "tool_lifecycle",
+      "kind": "tool_lifecycle",
+      "polarity": "positive",
+      "input": {
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "action": {
+          "content": "tl 1",
+          "targets": [
+            "coder"
+          ],
+          "mode": "project",
+          "execution_strategy": "direct"
+        },
+        "tool_name": "remote__send",
+        "payload": {
+          "status": "success",
+          "result": {
+            "ok": true
+          }
+        }
+      },
+      "expect": {
+        "verification_status": "unverified"
+      }
+    },
+    {
+      "id": "tool_lifecycle_02",
+      "category": "tool_lifecycle",
+      "kind": "tool_lifecycle",
+      "polarity": "positive",
+      "input": {
+        "session_id": "11111111-1111-4111-8111-111111111111",
+        "action": {
+          "content": "tl 2",
+          "targets": [
+            "coder"
+          ],
+          "mode": "project",
+          "execution_strategy": "direct"
+        },
+        "tool_name": "write_artifact",
+        "payload": {
+          "status": "success",
+          "result": {
+            "path": "p2.md",
+            "version": 1
+          }
+        }
+      },
+      "expect": {
+        "verification_status": "verified"
+      }
+    },
+    {
+      "id": "strategy_restore_00",
+      "category": "strategy_restore_persisted",
+      "kind": "execution_strategy",
+      "polarity": "positive",
+      "input": {
+        "action": {
+          "mode": "project",
+          "requested_execution_strategy": null,
+          "execution_strategy": "direct",
+          "effective_execution_strategy": "direct",
+          "execution_strategy_source": "compatibility_default"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "mode": "project",
+        "effective": "direct",
+        "source": "compatibility_default",
+        "requested": null
+      }
+    },
+    {
+      "id": "strategy_restore_01",
+      "category": "strategy_restore_persisted",
+      "kind": "execution_strategy",
+      "polarity": "positive",
+      "input": {
+        "action": {
+          "mode": "project",
+          "requested_execution_strategy": "direct",
+          "execution_strategy": "direct",
+          "effective_execution_strategy": "direct",
+          "execution_strategy_source": "explicit"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "mode": "project",
+        "effective": "direct",
+        "source": "explicit",
+        "requested": "direct"
+      }
+    },
+    {
+      "id": "strategy_restore_02",
+      "category": "strategy_restore_persisted",
+      "kind": "execution_strategy",
+      "polarity": "positive",
+      "input": {
+        "action": {
+          "mode": "project",
+          "requested_execution_strategy": "planned",
+          "execution_strategy": "planned",
+          "effective_execution_strategy": "planned",
+          "execution_strategy_source": "explicit"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "mode": "project",
+        "effective": "planned",
+        "source": "explicit",
+        "requested": "planned"
+      }
+    },
+    {
+      "id": "strategy_inconsistent_00",
+      "category": "strategy_reject_inconsistent",
+      "kind": "execution_strategy",
+      "polarity": "adversarial",
+      "input": {
+        "action": {
+          "mode": "project",
+          "requested_execution_strategy": "planned",
+          "execution_strategy": "direct",
+          "effective_execution_strategy": "direct",
+          "execution_strategy_source": "explicit"
+        }
+      },
+      "expect": {
+        "ok": false,
+        "error_contains": "不一致"
+      }
+    },
+    {
+      "id": "strategy_inconsistent_01",
+      "category": "strategy_reject_inconsistent",
+      "kind": "execution_strategy",
+      "polarity": "adversarial",
+      "input": {
+        "action": {
+          "mode": "project",
+          "requested_execution_strategy": "direct",
+          "execution_strategy": "planned",
+          "effective_execution_strategy": "planned",
+          "execution_strategy_source": "explicit"
+        }
+      },
+      "expect": {
+        "ok": false,
+        "error_contains": "不一致"
+      }
+    },
+    {
+      "id": "strategy_inconsistent_02",
+      "category": "strategy_reject_inconsistent",
+      "kind": "execution_strategy",
+      "polarity": "adversarial",
+      "input": {
+        "action": {
+          "mode": "project",
+          "execution_strategy_source": "explicit",
+          "requested_execution_strategy": null,
+          "execution_strategy": "direct",
+          "effective_execution_strategy": "direct"
+        }
+      },
+      "expect": {
+        "ok": false,
+        "error_contains": "缺少 requested"
+      }
+    }
+  ]
+}

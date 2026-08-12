@@ -33,6 +33,7 @@ release-meta/
 .mypy_cache/
 .ruff_cache/
 .coverage
+frontend/coverage/
 htmlcov/
 
 # ── 运行/调试输出 ───────────────────────────────────────
@@ -60,3 +61,7 @@ Thumbs.db
 .vscode/
 *.swp
 *~
+
+# 本地评测/运行时临时目录
+.tmp-rag-eval/
+/AetherChat/

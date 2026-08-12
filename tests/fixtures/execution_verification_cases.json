@@ -1,0 +1,2216 @@
+{
+  "schema_version": 1,
+  "name": "execution_verification_declarations",
+  "description": "Deterministic positive/negative/adversarial cases for ExecutionVerificationService. No paid providers.",
+  "count": 100,
+  "error_green_definition": "actual_status == verified and expected_status != verified",
+  "cases": [
+    {
+      "id": "read_only_not_applicable",
+      "category": "not_applicable",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": false,
+        "tool_name": "read_artifact"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "content": "read-only result"
+        }
+      },
+      "tool_run_id": null,
+      "expected_status": "not_applicable",
+      "expected_evidence_kinds": []
+    },
+    {
+      "id": "failed_side_effect",
+      "category": "failed",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__send_message"
+      },
+      "payload": {
+        "status": "error",
+        "error": "remote service unavailable"
+      },
+      "tool_run_id": "tool-run-failed",
+      "expected_status": "failed",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "unknown_success_unverified",
+      "category": "unverified_bare",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__send_message"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "ok": true
+        }
+      },
+      "tool_run_id": "tool-run-unknown",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "trusted_browser_receipt",
+      "category": "browser_trusted",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__browser_links__open_url"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "plugin_id": "browser-links",
+          "result": {
+            "kind": "open_external",
+            "url": "https://example.test",
+            "execution_receipt": {
+              "success": true,
+              "verification": "launcher_accepted",
+              "launcher": "firefox",
+              "browser": "firefox",
+              "accepted_at": "2026-08-11T00:00:00Z"
+            }
+          }
+        }
+      },
+      "tool_run_id": "tool-run-browser",
+      "expected_status": "verified",
+      "expected_evidence_kinds": [
+        "tool_result_digest",
+        "execution_receipt"
+      ]
+    },
+    {
+      "id": "untrusted_browser_receipt",
+      "category": "browser_adversarial",
+      "polarity": "adversarial",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__open_url"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "execution_receipt": {
+            "success": true,
+            "verification": "launcher_accepted",
+            "launcher": "firefox",
+            "browser": "firefox",
+            "accepted_at": "2026-08-11T00:00:00Z"
+          }
+        }
+      },
+      "tool_run_id": "tool-run-spoofed-browser",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "artifact_version_verified",
+      "category": "artifact_version",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "write_artifact"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "reports/assessment.md",
+          "version": 3
+        }
+      },
+      "tool_run_id": "tool-run-artifact",
+      "expected_status": "verified",
+      "expected_evidence_kinds": [
+        "tool_result_digest",
+        "artifact_version"
+      ],
+      "expected_path": "reports/assessment.md"
+    },
+    {
+      "id": "file_digest_verified",
+      "category": "file_digest",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__documents__export_to_local"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "/tmp/aetherchat-report.pdf",
+          "output_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        }
+      },
+      "tool_run_id": "tool-run-file",
+      "expected_status": "verified",
+      "expected_evidence_kinds": [
+        "tool_result_digest",
+        "file_digest"
+      ],
+      "expected_path": "/tmp/aetherchat-report.pdf"
+    },
+    {
+      "id": "invalid_file_digest_unverified",
+      "category": "file_digest",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__documents__export_to_local"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "/tmp/aetherchat-report.pdf",
+          "output_sha256": "not-a-valid-sha256"
+        }
+      },
+      "tool_run_id": "tool-run-invalid-file",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "na_readonly_00",
+      "category": "not_applicable",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": false,
+        "tool_name": "list_directory"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "ok": true,
+          "n": 0
+        }
+      },
+      "tool_run_id": null,
+      "expected_status": "not_applicable",
+      "expected_evidence_kinds": []
+    },
+    {
+      "id": "na_readonly_01",
+      "category": "not_applicable",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": false,
+        "tool_name": "search_messages"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "ok": true,
+          "n": 1
+        }
+      },
+      "tool_run_id": null,
+      "expected_status": "not_applicable",
+      "expected_evidence_kinds": []
+    },
+    {
+      "id": "na_readonly_02",
+      "category": "not_applicable",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": false,
+        "tool_name": "get_session"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "ok": true,
+          "n": 2
+        }
+      },
+      "tool_run_id": null,
+      "expected_status": "not_applicable",
+      "expected_evidence_kinds": []
+    },
+    {
+      "id": "na_readonly_03",
+      "category": "not_applicable",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": false,
+        "tool_name": "health_probe"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "ok": true,
+          "n": 3
+        }
+      },
+      "tool_run_id": null,
+      "expected_status": "not_applicable",
+      "expected_evidence_kinds": []
+    },
+    {
+      "id": "na_readonly_04",
+      "category": "not_applicable",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": false,
+        "tool_name": "plugin__documents__read_document"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "ok": true,
+          "n": 4
+        }
+      },
+      "tool_run_id": null,
+      "expected_status": "not_applicable",
+      "expected_evidence_kinds": []
+    },
+    {
+      "id": "na_readonly_05",
+      "category": "not_applicable",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": false,
+        "tool_name": "plugin__desktop_control__list_directory"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "ok": true,
+          "n": 5
+        }
+      },
+      "tool_run_id": null,
+      "expected_status": "not_applicable",
+      "expected_evidence_kinds": []
+    },
+    {
+      "id": "na_readonly_06",
+      "category": "not_applicable",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": false,
+        "tool_name": "memory_get"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "ok": true,
+          "n": 6
+        }
+      },
+      "tool_run_id": null,
+      "expected_status": "not_applicable",
+      "expected_evidence_kinds": []
+    },
+    {
+      "id": "na_readonly_07",
+      "category": "not_applicable",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": false,
+        "tool_name": "artifact_diff"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "ok": true,
+          "n": 7
+        }
+      },
+      "tool_run_id": null,
+      "expected_status": "not_applicable",
+      "expected_evidence_kinds": []
+    },
+    {
+      "id": "failed_status_00",
+      "category": "failed",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__action_0"
+      },
+      "payload": {
+        "status": "error",
+        "error": "boom-0"
+      },
+      "tool_run_id": "tool-run-failed-0",
+      "expected_status": "failed",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "failed_status_01",
+      "category": "failed",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__action_1"
+      },
+      "payload": {
+        "status": "failed",
+        "error": "boom-1"
+      },
+      "tool_run_id": "tool-run-failed-1",
+      "expected_status": "failed",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "failed_status_02",
+      "category": "failed",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__action_2"
+      },
+      "payload": {
+        "status": "timeout",
+        "error": "boom-2"
+      },
+      "tool_run_id": "tool-run-failed-2",
+      "expected_status": "failed",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "failed_status_03",
+      "category": "failed",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__action_3"
+      },
+      "payload": {
+        "status": "cancelled",
+        "error": "boom-3"
+      },
+      "tool_run_id": "tool-run-failed-3",
+      "expected_status": "failed",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "failed_status_04",
+      "category": "failed",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__action_4"
+      },
+      "payload": {
+        "status": "denied",
+        "error": "boom-4"
+      },
+      "tool_run_id": "tool-run-failed-4",
+      "expected_status": "failed",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "failed_status_05",
+      "category": "failed",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__action_5"
+      },
+      "payload": {
+        "status": "exception",
+        "error": "boom-5"
+      },
+      "tool_run_id": "tool-run-failed-5",
+      "expected_status": "failed",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "failed_status_06",
+      "category": "failed",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__action_6"
+      },
+      "payload": {
+        "status": "abort",
+        "error": "boom-6"
+      },
+      "tool_run_id": "tool-run-failed-6",
+      "expected_status": "failed",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "failed_status_07",
+      "category": "failed",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__action_7"
+      },
+      "payload": {
+        "status": "denied_by_user",
+        "error": "boom-7"
+      },
+      "tool_run_id": "tool-run-failed-7",
+      "expected_status": "failed",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "failed_status_08",
+      "category": "failed",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__action_8"
+      },
+      "payload": {
+        "status": "rate_limited",
+        "error": "boom-8"
+      },
+      "tool_run_id": "tool-run-failed-8",
+      "expected_status": "failed",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "failed_status_09",
+      "category": "failed",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__action_9"
+      },
+      "payload": {
+        "status": "offline",
+        "error": "boom-9"
+      },
+      "tool_run_id": "tool-run-failed-9",
+      "expected_status": "failed",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "bare_success_00",
+      "category": "unverified_bare",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__send_0"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "ok": true,
+          "message": "done-0"
+        }
+      },
+      "tool_run_id": "tool-run-bare-0",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "bare_success_01",
+      "category": "unverified_bare",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__send_1"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "ok": true,
+          "message": "done-1"
+        }
+      },
+      "tool_run_id": "tool-run-bare-1",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "bare_success_02",
+      "category": "unverified_bare",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__send_2"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "ok": true,
+          "message": "done-2"
+        }
+      },
+      "tool_run_id": "tool-run-bare-2",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "bare_success_03",
+      "category": "unverified_bare",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__send_3"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "ok": true,
+          "message": "done-3"
+        }
+      },
+      "tool_run_id": "tool-run-bare-3",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "bare_success_04",
+      "category": "unverified_bare",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__send_4"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "ok": true,
+          "message": "done-4"
+        }
+      },
+      "tool_run_id": "tool-run-bare-4",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "bare_success_05",
+      "category": "unverified_bare",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__send_5"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "ok": true,
+          "message": "done-5"
+        }
+      },
+      "tool_run_id": "tool-run-bare-5",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "bare_success_06",
+      "category": "unverified_bare",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__send_6"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "ok": true,
+          "message": "done-6"
+        }
+      },
+      "tool_run_id": "tool-run-bare-6",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "bare_success_07",
+      "category": "unverified_bare",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__send_7"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "ok": true,
+          "message": "done-7"
+        }
+      },
+      "tool_run_id": "tool-run-bare-7",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "bare_success_08",
+      "category": "unverified_bare",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__send_8"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "ok": true,
+          "message": "done-8"
+        }
+      },
+      "tool_run_id": "tool-run-bare-8",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "bare_success_09",
+      "category": "unverified_bare",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__send_9"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "ok": true,
+          "message": "done-9"
+        }
+      },
+      "tool_run_id": "tool-run-bare-9",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "non_dict_result_00",
+      "category": "unverified_bare",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__blob_0"
+      },
+      "payload": {
+        "status": "success",
+        "result": null
+      },
+      "tool_run_id": "tool-run-nondict-0",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "non_dict_result_01",
+      "category": "unverified_bare",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__blob_1"
+      },
+      "payload": {
+        "status": "success",
+        "result": "ok"
+      },
+      "tool_run_id": "tool-run-nondict-1",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "non_dict_result_02",
+      "category": "unverified_bare",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__blob_2"
+      },
+      "payload": {
+        "status": "success",
+        "result": 1
+      },
+      "tool_run_id": "tool-run-nondict-2",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "non_dict_result_03",
+      "category": "unverified_bare",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__blob_3"
+      },
+      "payload": {
+        "status": "success",
+        "result": true
+      },
+      "tool_run_id": "tool-run-nondict-3",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "non_dict_result_04",
+      "category": "unverified_bare",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__blob_4"
+      },
+      "payload": {
+        "status": "success",
+        "result": [
+          "x"
+        ]
+      },
+      "tool_run_id": "tool-run-nondict-4",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "non_dict_result_05",
+      "category": "unverified_bare",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__blob_5"
+      },
+      "payload": {
+        "status": "success",
+        "result": 3.14
+      },
+      "tool_run_id": "tool-run-nondict-5",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "browser_trusted_nested_00",
+      "category": "browser_trusted",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__browser_links__open_url"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "plugin_id": "browser-links",
+          "result": {
+            "execution_receipt": {
+              "success": true,
+              "verification": "launcher_accepted",
+              "launcher": "firefox",
+              "browser": "firefox",
+              "accepted_at": "2026-08-11T00:00:00Z"
+            }
+          }
+        }
+      },
+      "tool_run_id": "tool-run-br-n-0",
+      "expected_status": "verified",
+      "expected_evidence_kinds": [
+        "tool_result_digest",
+        "execution_receipt"
+      ]
+    },
+    {
+      "id": "browser_trusted_flat_00",
+      "category": "browser_trusted",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__browser_links__open_url"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "execution_receipt": {
+            "success": true,
+            "verification": "launcher_accepted",
+            "launcher": "firefox",
+            "browser": "firefox",
+            "accepted_at": "2026-08-11T00:00:00Z"
+          },
+          "url": "https://example.test"
+        }
+      },
+      "tool_run_id": "tool-run-br-f-0",
+      "expected_status": "verified",
+      "expected_evidence_kinds": [
+        "tool_result_digest",
+        "execution_receipt"
+      ]
+    },
+    {
+      "id": "browser_trusted_nested_01",
+      "category": "browser_trusted",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__browser_links__open_url"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "plugin_id": "browser-links",
+          "result": {
+            "execution_receipt": {
+              "success": true,
+              "verification": "launcher_accepted",
+              "launcher": "system_default",
+              "browser": "default",
+              "accepted_at": "2026-08-11T00:01:00Z"
+            }
+          }
+        }
+      },
+      "tool_run_id": "tool-run-br-n-1",
+      "expected_status": "verified",
+      "expected_evidence_kinds": [
+        "tool_result_digest",
+        "execution_receipt"
+      ]
+    },
+    {
+      "id": "browser_trusted_flat_01",
+      "category": "browser_trusted",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__browser_links__open_url"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "execution_receipt": {
+            "success": true,
+            "verification": "launcher_accepted",
+            "launcher": "system_default",
+            "browser": "default",
+            "accepted_at": "2026-08-11T00:01:00Z"
+          },
+          "url": "https://example.test"
+        }
+      },
+      "tool_run_id": "tool-run-br-f-1",
+      "expected_status": "verified",
+      "expected_evidence_kinds": [
+        "tool_result_digest",
+        "execution_receipt"
+      ]
+    },
+    {
+      "id": "browser_trusted_nested_02",
+      "category": "browser_trusted",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__browser_links__open_url"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "plugin_id": "browser-links",
+          "result": {
+            "execution_receipt": {
+              "success": true,
+              "verification": "launcher_accepted",
+              "launcher": "firefox",
+              "browser": "default",
+              "accepted_at": "2026-08-11T00:02:00Z"
+            }
+          }
+        }
+      },
+      "tool_run_id": "tool-run-br-n-2",
+      "expected_status": "verified",
+      "expected_evidence_kinds": [
+        "tool_result_digest",
+        "execution_receipt"
+      ]
+    },
+    {
+      "id": "browser_trusted_flat_02",
+      "category": "browser_trusted",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__browser_links__open_url"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "execution_receipt": {
+            "success": true,
+            "verification": "launcher_accepted",
+            "launcher": "firefox",
+            "browser": "default",
+            "accepted_at": "2026-08-11T00:02:00Z"
+          },
+          "url": "https://example.test"
+        }
+      },
+      "tool_run_id": "tool-run-br-f-2",
+      "expected_status": "verified",
+      "expected_evidence_kinds": [
+        "tool_result_digest",
+        "execution_receipt"
+      ]
+    },
+    {
+      "id": "browser_trusted_nested_03",
+      "category": "browser_trusted",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__browser_links__open_url"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "plugin_id": "browser-links",
+          "result": {
+            "execution_receipt": {
+              "success": true,
+              "verification": "launcher_accepted",
+              "launcher": "system_default",
+              "browser": "firefox",
+              "accepted_at": "2026-08-11T00:03:00Z"
+            }
+          }
+        }
+      },
+      "tool_run_id": "tool-run-br-n-3",
+      "expected_status": "verified",
+      "expected_evidence_kinds": [
+        "tool_result_digest",
+        "execution_receipt"
+      ]
+    },
+    {
+      "id": "browser_trusted_flat_03",
+      "category": "browser_trusted",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__browser_links__open_url"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "execution_receipt": {
+            "success": true,
+            "verification": "launcher_accepted",
+            "launcher": "system_default",
+            "browser": "firefox",
+            "accepted_at": "2026-08-11T00:03:00Z"
+          },
+          "url": "https://example.test"
+        }
+      },
+      "tool_run_id": "tool-run-br-f-3",
+      "expected_status": "verified",
+      "expected_evidence_kinds": [
+        "tool_result_digest",
+        "execution_receipt"
+      ]
+    },
+    {
+      "id": "browser_bad_receipt_00",
+      "category": "browser_adversarial",
+      "polarity": "adversarial",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__browser_links__open_url"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "result": {
+            "execution_receipt": {
+              "success": false,
+              "verification": "launcher_accepted",
+              "launcher": "firefox",
+              "browser": "firefox",
+              "accepted_at": "2026-08-11T00:00:00Z"
+            }
+          }
+        }
+      },
+      "tool_run_id": "tool-run-br-bad-0",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "browser_bad_receipt_01",
+      "category": "browser_adversarial",
+      "polarity": "adversarial",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__browser_links__open_url"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "result": {
+            "execution_receipt": {
+              "success": true,
+              "verification": "model_said_ok",
+              "launcher": "firefox",
+              "browser": "firefox",
+              "accepted_at": "2026-08-11T00:00:00Z"
+            }
+          }
+        }
+      },
+      "tool_run_id": "tool-run-br-bad-1",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "browser_bad_receipt_02",
+      "category": "browser_adversarial",
+      "polarity": "adversarial",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__browser_links__open_url"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "result": {
+            "execution_receipt": {
+              "success": true,
+              "verification": "launcher_accepted",
+              "launcher": "chrome",
+              "browser": "firefox",
+              "accepted_at": "2026-08-11T00:00:00Z"
+            }
+          }
+        }
+      },
+      "tool_run_id": "tool-run-br-bad-2",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "browser_bad_receipt_03",
+      "category": "browser_adversarial",
+      "polarity": "adversarial",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__browser_links__open_url"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "result": {
+            "execution_receipt": {
+              "success": true,
+              "verification": "launcher_accepted",
+              "launcher": "firefox",
+              "browser": "chrome",
+              "accepted_at": "2026-08-11T00:00:00Z"
+            }
+          }
+        }
+      },
+      "tool_run_id": "tool-run-br-bad-3",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "browser_bad_receipt_04",
+      "category": "browser_adversarial",
+      "polarity": "adversarial",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__browser_links__open_url"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "result": {
+            "execution_receipt": {
+              "success": true,
+              "verification": "launcher_accepted",
+              "launcher": "firefox",
+              "browser": "firefox",
+              "accepted_at": ""
+            }
+          }
+        }
+      },
+      "tool_run_id": "tool-run-br-bad-4",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "browser_bad_receipt_05",
+      "category": "browser_adversarial",
+      "polarity": "adversarial",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__browser_links__open_url"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "result": {
+            "execution_receipt": {
+              "success": true,
+              "verification": "launcher_accepted",
+              "launcher": "firefox",
+              "browser": "firefox"
+            }
+          }
+        }
+      },
+      "tool_run_id": "tool-run-br-bad-5",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "browser_bad_receipt_06",
+      "category": "browser_adversarial",
+      "polarity": "adversarial",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__browser_links__open_url"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "result": {
+            "execution_receipt": {
+              "success": true,
+              "verification": "launcher_accepted",
+              "launcher": "firefox",
+              "browser": "firefox",
+              "accepted_at": "   "
+            }
+          }
+        }
+      },
+      "tool_run_id": "tool-run-br-bad-6",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "browser_bad_receipt_07",
+      "category": "browser_adversarial",
+      "polarity": "adversarial",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__browser_links__open_url"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "result": {
+            "execution_receipt": {
+              "success": true,
+              "verification": "launcher_accepted",
+              "launcher": "",
+              "browser": "firefox",
+              "accepted_at": "2026-08-11T00:00:00Z"
+            }
+          }
+        }
+      },
+      "tool_run_id": "tool-run-br-bad-7",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "browser_spoof_tool_00",
+      "category": "browser_adversarial",
+      "polarity": "adversarial",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__fake_browser__open_0"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "execution_receipt": {
+            "success": true,
+            "verification": "launcher_accepted",
+            "launcher": "firefox",
+            "browser": "firefox",
+            "accepted_at": "2026-08-11T00:00:00Z"
+          }
+        }
+      },
+      "tool_run_id": "tool-run-spoof-0",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "browser_spoof_tool_01",
+      "category": "browser_adversarial",
+      "polarity": "adversarial",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__fake_browser__open_1"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "execution_receipt": {
+            "success": true,
+            "verification": "launcher_accepted",
+            "launcher": "firefox",
+            "browser": "firefox",
+            "accepted_at": "2026-08-11T00:00:00Z"
+          }
+        }
+      },
+      "tool_run_id": "tool-run-spoof-1",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "browser_spoof_tool_02",
+      "category": "browser_adversarial",
+      "polarity": "adversarial",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__fake_browser__open_2"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "execution_receipt": {
+            "success": true,
+            "verification": "launcher_accepted",
+            "launcher": "firefox",
+            "browser": "firefox",
+            "accepted_at": "2026-08-11T00:00:00Z"
+          }
+        }
+      },
+      "tool_run_id": "tool-run-spoof-2",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "browser_spoof_tool_03",
+      "category": "browser_adversarial",
+      "polarity": "adversarial",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__fake_browser__open_3"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "execution_receipt": {
+            "success": true,
+            "verification": "launcher_accepted",
+            "launcher": "firefox",
+            "browser": "firefox",
+            "accepted_at": "2026-08-11T00:00:00Z"
+          }
+        }
+      },
+      "tool_run_id": "tool-run-spoof-3",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "artifact_ok_00",
+      "category": "artifact_version",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "write_artifact"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "docs/note_0.md",
+          "version": 1
+        }
+      },
+      "tool_run_id": "tool-run-art-0",
+      "expected_status": "verified",
+      "expected_evidence_kinds": [
+        "tool_result_digest",
+        "artifact_version"
+      ],
+      "expected_path": "docs/note_0.md"
+    },
+    {
+      "id": "artifact_ok_01",
+      "category": "artifact_version",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "write_artifact"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "docs/note_1.md",
+          "version": 2
+        }
+      },
+      "tool_run_id": "tool-run-art-1",
+      "expected_status": "verified",
+      "expected_evidence_kinds": [
+        "tool_result_digest",
+        "artifact_version"
+      ],
+      "expected_path": "docs/note_1.md"
+    },
+    {
+      "id": "artifact_ok_02",
+      "category": "artifact_version",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "write_artifact"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "docs/note_2.md",
+          "version": 3
+        }
+      },
+      "tool_run_id": "tool-run-art-2",
+      "expected_status": "verified",
+      "expected_evidence_kinds": [
+        "tool_result_digest",
+        "artifact_version"
+      ],
+      "expected_path": "docs/note_2.md"
+    },
+    {
+      "id": "artifact_ok_03",
+      "category": "artifact_version",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "write_artifact"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "docs/note_3.md",
+          "version": 4
+        }
+      },
+      "tool_run_id": "tool-run-art-3",
+      "expected_status": "verified",
+      "expected_evidence_kinds": [
+        "tool_result_digest",
+        "artifact_version"
+      ],
+      "expected_path": "docs/note_3.md"
+    },
+    {
+      "id": "artifact_ok_04",
+      "category": "artifact_version",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "write_artifact"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "docs/note_4.md",
+          "version": 5
+        }
+      },
+      "tool_run_id": "tool-run-art-4",
+      "expected_status": "verified",
+      "expected_evidence_kinds": [
+        "tool_result_digest",
+        "artifact_version"
+      ],
+      "expected_path": "docs/note_4.md"
+    },
+    {
+      "id": "artifact_ok_05",
+      "category": "artifact_version",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "write_artifact"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "docs/note_5.md",
+          "version": 6
+        }
+      },
+      "tool_run_id": "tool-run-art-5",
+      "expected_status": "verified",
+      "expected_evidence_kinds": [
+        "tool_result_digest",
+        "artifact_version"
+      ],
+      "expected_path": "docs/note_5.md"
+    },
+    {
+      "id": "artifact_bad_00",
+      "category": "artifact_version",
+      "polarity": "adversarial",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "write_artifact"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "",
+          "version": 1
+        }
+      },
+      "tool_run_id": "tool-run-art-bad-0",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "artifact_bad_01",
+      "category": "artifact_version",
+      "polarity": "adversarial",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "write_artifact"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "x.md"
+        }
+      },
+      "tool_run_id": "tool-run-art-bad-1",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "artifact_bad_02",
+      "category": "artifact_version",
+      "polarity": "adversarial",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "write_artifact"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "version": 2
+        }
+      },
+      "tool_run_id": "tool-run-art-bad-2",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "artifact_bad_03",
+      "category": "artifact_version",
+      "polarity": "adversarial",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "write_artifact"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "x.md",
+          "version": null
+        }
+      },
+      "tool_run_id": "tool-run-art-bad-3",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "artifact_bad_04",
+      "category": "artifact_version",
+      "polarity": "adversarial",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "write_artifact"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "   ",
+          "version": 1
+        }
+      },
+      "tool_run_id": "tool-run-art-bad-4",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "file_digest_ok_0_00",
+      "category": "file_digest",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__documents__export_to_local"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "/tmp/out_0_0.bin",
+          "output_sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        }
+      },
+      "tool_run_id": "tool-run-fd-0-0",
+      "expected_status": "verified",
+      "expected_evidence_kinds": [
+        "tool_result_digest",
+        "file_digest"
+      ],
+      "expected_path": "/tmp/out_0_0.bin"
+    },
+    {
+      "id": "file_digest_ok_0_01",
+      "category": "file_digest",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__documents__export_to_local"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "/tmp/out_0_1.bin",
+          "output_sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        }
+      },
+      "tool_run_id": "tool-run-fd-0-1",
+      "expected_status": "verified",
+      "expected_evidence_kinds": [
+        "tool_result_digest",
+        "file_digest"
+      ],
+      "expected_path": "/tmp/out_0_1.bin"
+    },
+    {
+      "id": "file_digest_ok_0_02",
+      "category": "file_digest",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__documents__export_to_local"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "/tmp/out_0_2.bin",
+          "output_sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        }
+      },
+      "tool_run_id": "tool-run-fd-0-2",
+      "expected_status": "verified",
+      "expected_evidence_kinds": [
+        "tool_result_digest",
+        "file_digest"
+      ],
+      "expected_path": "/tmp/out_0_2.bin"
+    },
+    {
+      "id": "file_digest_upper_00",
+      "category": "file_digest",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__documents__export_to_local"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "/tmp/upper_0.bin",
+          "sha256": "ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789"
+        }
+      },
+      "tool_run_id": "tool-run-fd-up-0",
+      "expected_status": "verified",
+      "expected_evidence_kinds": [
+        "tool_result_digest",
+        "file_digest"
+      ],
+      "expected_path": "/tmp/upper_0.bin"
+    },
+    {
+      "id": "file_digest_ok_1_00",
+      "category": "file_digest",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__desktop_control__write_document"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "/tmp/out_1_0.bin",
+          "output_sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        }
+      },
+      "tool_run_id": "tool-run-fd-1-0",
+      "expected_status": "verified",
+      "expected_evidence_kinds": [
+        "tool_result_digest",
+        "file_digest"
+      ],
+      "expected_path": "/tmp/out_1_0.bin"
+    },
+    {
+      "id": "file_digest_ok_1_01",
+      "category": "file_digest",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__desktop_control__write_document"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "/tmp/out_1_1.bin",
+          "output_sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        }
+      },
+      "tool_run_id": "tool-run-fd-1-1",
+      "expected_status": "verified",
+      "expected_evidence_kinds": [
+        "tool_result_digest",
+        "file_digest"
+      ],
+      "expected_path": "/tmp/out_1_1.bin"
+    },
+    {
+      "id": "file_digest_ok_1_02",
+      "category": "file_digest",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__desktop_control__write_document"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "/tmp/out_1_2.bin",
+          "output_sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        }
+      },
+      "tool_run_id": "tool-run-fd-1-2",
+      "expected_status": "verified",
+      "expected_evidence_kinds": [
+        "tool_result_digest",
+        "file_digest"
+      ],
+      "expected_path": "/tmp/out_1_2.bin"
+    },
+    {
+      "id": "file_digest_upper_01",
+      "category": "file_digest",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__desktop_control__write_document"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "/tmp/upper_1.bin",
+          "sha256": "ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789"
+        }
+      },
+      "tool_run_id": "tool-run-fd-up-1",
+      "expected_status": "verified",
+      "expected_evidence_kinds": [
+        "tool_result_digest",
+        "file_digest"
+      ],
+      "expected_path": "/tmp/upper_1.bin"
+    },
+    {
+      "id": "file_digest_bad_00",
+      "category": "file_digest",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__documents__export_to_local"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "/tmp/bad_0.pdf",
+          "output_sha256": ""
+        }
+      },
+      "tool_run_id": "tool-run-fd-bad-0",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "file_digest_bad_01",
+      "category": "file_digest",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__documents__export_to_local"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "/tmp/bad_1.pdf",
+          "output_sha256": "abc"
+        }
+      },
+      "tool_run_id": "tool-run-fd-bad-1",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "file_digest_bad_02",
+      "category": "file_digest",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__documents__export_to_local"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "/tmp/bad_2.pdf",
+          "output_sha256": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+        }
+      },
+      "tool_run_id": "tool-run-fd-bad-2",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "file_digest_bad_03",
+      "category": "file_digest",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__documents__export_to_local"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "/tmp/bad_3.pdf",
+          "output_sha256": "0123"
+        }
+      },
+      "tool_run_id": "tool-run-fd-bad-3",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "file_digest_bad_04",
+      "category": "file_digest",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__documents__export_to_local"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "/tmp/bad_4.pdf",
+          "output_sha256": "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg"
+        }
+      },
+      "tool_run_id": "tool-run-fd-bad-4",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "file_digest_bad_05",
+      "category": "file_digest",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__documents__export_to_local"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "/tmp/bad_5.pdf",
+          "output_sha256": "                                                                "
+        }
+      },
+      "tool_run_id": "tool-run-fd-bad-5",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "file_digest_no_path",
+      "category": "file_digest",
+      "polarity": "adversarial",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__documents__export_to_local"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "output_sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        }
+      },
+      "tool_run_id": "tool-run-fd-nopath",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "file_digest_nested_ok",
+      "category": "file_digest",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "plugin__desktop_control__write_document"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "plugin_id": "desktop-control",
+          "result": {
+            "path": "/tmp/nested-doc.md",
+            "sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+          }
+        }
+      },
+      "tool_run_id": "tool-run-fd-nested",
+      "expected_status": "verified",
+      "expected_evidence_kinds": [
+        "tool_result_digest",
+        "file_digest"
+      ],
+      "expected_path": "/tmp/nested-doc.md"
+    },
+    {
+      "id": "file_digest_wrong_tool",
+      "category": "file_digest",
+      "polarity": "adversarial",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__upload"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "/tmp/x.bin",
+          "output_sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        }
+      },
+      "tool_run_id": "tool-run-fd-wrong-tool",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "missing_side_effect_flag",
+      "category": "not_applicable",
+      "polarity": "positive",
+      "tool_call": {
+        "tool_name": "write_artifact"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "x.md",
+          "version": 1
+        }
+      },
+      "tool_run_id": null,
+      "expected_status": "not_applicable",
+      "expected_evidence_kinds": []
+    },
+    {
+      "id": "side_effect_zero",
+      "category": "not_applicable",
+      "polarity": "positive",
+      "tool_call": {
+        "side_effect": 0,
+        "tool_name": "write_artifact"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "path": "x.md",
+          "version": 1
+        }
+      },
+      "tool_run_id": null,
+      "expected_status": "not_applicable",
+      "expected_evidence_kinds": []
+    },
+    {
+      "id": "pad_bare_00",
+      "category": "unverified_bare",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__pad_0"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "note": 0
+        }
+      },
+      "tool_run_id": "tool-run-pad-0",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "pad_bare_01",
+      "category": "unverified_bare",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__pad_1"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "note": 1
+        }
+      },
+      "tool_run_id": "tool-run-pad-1",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "pad_bare_02",
+      "category": "unverified_bare",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__pad_2"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "note": 2
+        }
+      },
+      "tool_run_id": "tool-run-pad-2",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "pad_bare_03",
+      "category": "unverified_bare",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__pad_3"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "note": 3
+        }
+      },
+      "tool_run_id": "tool-run-pad-3",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "pad_bare_04",
+      "category": "unverified_bare",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__pad_4"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "note": 4
+        }
+      },
+      "tool_run_id": "tool-run-pad-4",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "pad_bare_05",
+      "category": "unverified_bare",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__pad_5"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "note": 5
+        }
+      },
+      "tool_run_id": "tool-run-pad-5",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "pad_bare_06",
+      "category": "unverified_bare",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__pad_6"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "note": 6
+        }
+      },
+      "tool_run_id": "tool-run-pad-6",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    },
+    {
+      "id": "pad_bare_07",
+      "category": "unverified_bare",
+      "polarity": "negative",
+      "tool_call": {
+        "side_effect": true,
+        "tool_name": "remote__pad_7"
+      },
+      "payload": {
+        "status": "success",
+        "result": {
+          "note": 7
+        }
+      },
+      "tool_run_id": "tool-run-pad-7",
+      "expected_status": "unverified",
+      "expected_evidence_kinds": [
+        "tool_result_digest"
+      ]
+    }
+  ]
+}

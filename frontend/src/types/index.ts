@@ -236,7 +236,10 @@ export interface AgentRun {
     content?: string;
     targets?: string[];
     attachment_ids?: string[];
+    requested_execution_strategy?: 'direct' | 'planned' | null;
     execution_strategy?: 'direct' | 'planned';
+    effective_execution_strategy?: 'direct' | 'planned';
+    execution_strategy_source?: 'explicit' | 'compatibility_default';
     plan_confirmation_required?: boolean;
     max_revision_cycles?: number;
     repository_id?: string;
@@ -245,6 +248,8 @@ export interface AgentRun {
     repository_branch?: string;
     verification_commands?: string[];
   };
+  effective_execution_strategy?: 'direct' | 'planned';
+  execution_strategy_source?: 'explicit' | 'compatibility_default';
   targets: string[];
   retry_count: number;
   plan_status?: 'none' | 'draft' | 'approved' | 'executing' | 'completed' | 'failed' | 'interrupted' | 'cancelled';
@@ -259,6 +264,11 @@ export interface AgentRun {
   completed_at?: string | null;
   steps: AgentStep[];
   tool_call_count?: number;
+  effect_count?: number;
+  verified_effect_count?: number;
+  failed_effect_count?: number;
+  uncertain_effect_count?: number;
+  effect_verification_status?: 'not_applicable' | 'unverified' | 'verified' | 'failed' | 'uncertain';
   checkpoint_count?: number;
   steer_count?: number;
   plan_step_count?: number;
@@ -289,6 +299,10 @@ export interface AgentToolCall {
   model: string;
   tool_name: string;
   status: string;
+  side_effect?: boolean;
+  verification_status?: 'pending' | 'verified' | 'unverified' | 'failed' | 'uncertain' | 'not_applicable';
+  evidence?: Array<Record<string, unknown>>;
+  verified_at?: string | null;
   arguments: Record<string, unknown>;
   result?: unknown;
   error?: string | null;
@@ -465,9 +479,10 @@ export interface ToolRun {
 }
 
 export interface WSMessage {
-  type: 'ack' | 'system' | 'delta' | 'provider_status' | 'reasoning_step' | 'stream_reset' | 'message_complete' | 'task_update' | 'artifact_update' | 'cost_update' | 'user_message' | 'tool_update' | 'tool_run' | 'tool_call' | 'tool_result' | 'tool_result_replayed' | 'desktop_action_required' | 'approval_required' | 'approval_resolved' | 'agent_run_update' | 'plan_created' | 'plan_confirmation_required' | 'plan_updated' | 'plan_replanned' | 'plan_rejected' | 'plan_step_update' | 'plan_step_output' | 'review_recorded' | 'workspace_verified' | 'steer_ack' | 'steer_applied' | 'interrupted' | 'error';
+  type: 'ack' | 'system' | 'delta' | 'provider_status' | 'reasoning_step' | 'stream_reset' | 'stream_resync_required' | 'message_complete' | 'task_update' | 'artifact_update' | 'cost_update' | 'user_message' | 'tool_update' | 'tool_run' | 'tool_call' | 'tool_result' | 'tool_result_replayed' | 'desktop_action_required' | 'approval_required' | 'approval_resolved' | 'agent_run_update' | 'run_queued' | 'run_dispatch_started' | 'run_cancelled' | 'plan_created' | 'plan_confirmation_required' | 'plan_updated' | 'plan_replanned' | 'plan_rejected' | 'plan_step_update' | 'plan_step_output' | 'review_recorded' | 'workspace_verified' | 'steer_ack' | 'steer_applied' | 'interrupted' | 'error';
   model?: string;
   delta?: string;
+  coalesced_count?: number;
   seq?: number;
   ts?: string;
   message?: Message;
@@ -490,6 +505,13 @@ export interface WSMessage {
   plan_step_key?: string;
   plan_step_kind?: AgentPlanStep['kind'];
   run_id?: string;
+  dispatch_id?: string;
+  dispatch_state?: string;
+  queue_position?: number | null;
+  queue_capacity?: number;
+  queued?: boolean;
+  queued_at?: string;
+  started_at?: string;
   revision?: number;
   automatic_revision_count?: number;
   trigger_review?: AgentReview;
@@ -515,6 +537,14 @@ export interface WSMessage {
   elapsed_ms?: number;
   step?: ReasoningStep;
   reset?: boolean;
+  request_id?: string;
+  contract_version?: string;
+  event_id?: string;
+  sequence?: number;
+  session_id?: string;
+  stream_id?: string;
+  step_id?: string | null;
+  occurred_at?: string;
 }
 
 export interface Provider {

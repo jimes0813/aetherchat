@@ -21,6 +21,37 @@
 
 私钥和证书不得写入仓库、构建产物或日志。tag 构建缺少 Windows 证书、公钥或清单私钥时会失败；普通 PR 构建可以保持无签名，但客户端更新功能因没有嵌入公钥而禁用。
 
+### 生成本地 Ed25519 密钥对
+
+```bash
+# 打印 Base64（勿提交输出）
+python scripts/release_security.py generate-keys
+
+# 或写入私有目录（私钥文件权限 600）
+python scripts/release_security.py generate-keys --output-dir ~/.aetherchat-release-keys
+```
+
+配置到 GitHub（示例）：
+
+```bash
+gh secret set AETHERCHAT_RELEASE_PRIVATE_KEY_B64 < ~/.aetherchat-release-keys/AETHERCHAT_RELEASE_PRIVATE_KEY_B64.txt
+gh secret set AETHERCHAT_RELEASE_PUBLIC_KEY_B64 < ~/.aetherchat-release-keys/AETHERCHAT_RELEASE_PUBLIC_KEY_B64.txt
+# Windows CSC 按证书形态设置 WINDOWS_CSC_LINK / WINDOWS_CSC_KEY_PASSWORD
+```
+
+### Public RC 预检
+
+```bash
+python scripts/release_evidence.py check --refresh-metadata
+python scripts/public_rc_preflight.py
+```
+
+- `release_evidence.py`：本机 local_dev 门禁 + public_rc 缺项列表  
+- `public_rc_preflight.py`：secrets 是否在本机环境/GitHub 配置、Ed25519 对是否匹配、操作步骤清单  
+- 输出：`frontend/release/public-rc-preflight.json`、`docs/PUBLIC_RC_CHECKLIST.md`  
+
+在四个 secrets 与三平台 CI 全绿、签名清单发布完成之前，`public_1.0` 保持 **No-Go**。
+
 ## 更新协议
 
 正式客户端只读取：

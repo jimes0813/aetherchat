@@ -78,5 +78,23 @@ async def search_knowledge(
     session_id: UUID,
     q: str = Query(min_length=1, max_length=500),
     limit: int = Query(default=8, ge=1, le=30),
+    extension: str | None = Query(default=None, max_length=16, description="可选扩展名过滤，如 .md"),
 ):
-    return await asyncio.to_thread(knowledge_service.search, str(session_id), q, limit)
+    rows = await asyncio.to_thread(knowledge_service.search, str(session_id), q, limit)
+    if extension:
+        ext = extension if extension.startswith(".") else f".{extension}"
+        ext = ext.lower()
+        # Filter via attachment list metadata
+        attachments = await asyncio.to_thread(knowledge_service.list_attachments, str(session_id))
+        allowed = {
+            item["id"]
+            for item in attachments
+            if str(item.get("extension") or "").lower() == ext
+        }
+        rows = [item for item in rows if item.get("attachment_id") in allowed]
+    return rows
+
+
+@router.get("/{session_id}/stats")
+async def knowledge_stats(session_id: UUID):
+    return await asyncio.to_thread(knowledge_service.session_stats, str(session_id))

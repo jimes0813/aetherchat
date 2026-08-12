@@ -15,6 +15,8 @@ contextBridge.exposeInMainWorld('aetherWindow', {
 contextBridge.exposeInMainWorld('aetherRuntime', {
   apiBase: argumentValue('aether-api-base', 'http://127.0.0.1:8000'),
   backendStatus: argumentValue('aether-backend-status', 'starting'),
+  backendErrorCode: argumentValue('aether-backend-error-code'),
+  backendRequestId: argumentValue('aether-backend-request-id'),
   appVersion: argumentValue('aether-app-version'),
   platform: argumentValue('aether-platform', process.platform),
   quickEntryShortcut: argumentValue('aether-quick-entry-shortcut'),

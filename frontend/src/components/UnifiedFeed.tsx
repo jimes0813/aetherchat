@@ -4,13 +4,18 @@ import { useSessionStore } from '../stores/sessionStore';
 import type { ApprovalRequest, GeneratedFile, GeneratedFileView, Message, ReasoningStep } from '../types';
 import { SafeMarkdown } from './SafeMarkdown';
 import { useI18n } from '../i18n';
+import { ChatEmptyState } from './ChatEmptyState';
 
 interface UnifiedFeedProps {
   approvals?: ApprovalRequest[];
+  hasConfiguredModel?: boolean;
+  hasLocalModel?: boolean;
   onInspectGeneratedFile?: (file: GeneratedFile) => void;
   onResolveGeneratedFile?: (file: GeneratedFile, includePreview?: boolean) => Promise<GeneratedFileView>;
   onOpenGeneratedFile?: (file: GeneratedFile, action: 'open' | 'reveal') => void;
   onOpenRunHistory?: () => void;
+  onPickExample?: (prompt: string) => void;
+  onOpenModels?: () => void;
 }
 
 const fileSize = (value?: number) => {
@@ -310,10 +315,14 @@ const ExecutionReceipt = ({
 
 export const UnifiedFeed = ({
   approvals = [],
+  hasConfiguredModel = true,
+  hasLocalModel = false,
   onInspectGeneratedFile,
   onResolveGeneratedFile,
   onOpenGeneratedFile,
   onOpenRunHistory,
+  onPickExample,
+  onOpenModels,
 }: UnifiedFeedProps) => {
   const {
     messages,
@@ -353,10 +362,13 @@ export const UnifiedFeed = ({
         </div>
 
         {visibleMessages.length === 0 && (
-          <div className="rounded-lg border border-dashed border-[#d6cbbd] bg-[#fffdf9] px-5 py-12 text-center">
-            <div className="text-sm font-medium text-[#4a4037]">{t('emptyTitle')}</div>
-            <div className="mt-2 text-sm text-[#6b6259]">{t('emptyDescription')}</div>
-          </div>
+          <ChatEmptyState
+            hasConfiguredModel={hasConfiguredModel}
+            hasLocalModel={hasLocalModel}
+            onPickExample={(prompt) => onPickExample?.(prompt)}
+            onOpenModels={onOpenModels}
+            onOpenRuns={onOpenRunHistory}
+          />
         )}
 
         {visibleMessages.map((msg) => (

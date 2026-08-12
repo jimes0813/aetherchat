@@ -349,6 +349,7 @@ async function installMockDesktopBridge(page: Page) {
       configurable: true,
       value: {
         platform: 'linux',
+        backendStatus: 'ready',
         onLaunchIntent: (callback: (intent: unknown) => void) => {
           launchIntentHandler = callback;
           return () => { launchIntentHandler = null; };
@@ -539,10 +540,23 @@ async function installMockApi(page: Page) {
     session_id: sessionId,
     status: 'recoverable',
     mode: 'project',
-    input: { content: '继续实现可恢复 Agent', targets: ['deepseek'] },
+    input: {
+      content: '继续实现可恢复 Agent',
+      targets: ['deepseek'],
+      execution_strategy: 'planned',
+      effective_execution_strategy: 'planned',
+      execution_strategy_source: 'explicit',
+    },
+    effective_execution_strategy: 'planned',
+    execution_strategy_source: 'explicit',
     targets: ['deepseek'],
     retry_count: 0,
     tool_call_count: 2,
+    effect_count: 1,
+    verified_effect_count: 0,
+    failed_effect_count: 0,
+    uncertain_effect_count: 0,
+    effect_verification_status: 'unverified',
     checkpoint_count: 1,
     steer_count: 1,
     plan_step_count: 5,
@@ -791,7 +805,15 @@ async function installMockApi(page: Page) {
     const url = new URL(request.url());
     const { pathname } = url;
 
-    if (pathname === '/health') return json(route, { status: 'ok', redis: false });
+    if (pathname === '/health') return json(route, { status: 'ok', service: 'aetherchat', redis: false });
+    if (pathname === '/health/ready') return json(route, {
+      status: 'ready',
+      ready: true,
+      service: 'aetherchat',
+      checks: { database: { status: 'ready', schema_version: 3, expected_schema_version: 3 } },
+      optional_dependencies: { redis: { status: 'unavailable', required: false } },
+      request_id: 'e2e-readiness-request',
+    });
     if (pathname === '/sessions/' && request.method() === 'GET') return json(route, sessions);
     if (pathname === '/sessions/' && request.method() === 'POST') {
       const payload = request.postDataJSON();
@@ -877,6 +899,9 @@ async function installMockApi(page: Page) {
           model: 'deepseek',
           tool_name: 'plugin__comfyui__run_workflow',
           status: 'completed',
+          side_effect: true,
+          verification_status: 'unverified',
+          evidence: [{ kind: 'tool_result_digest', sha256: 'a'.repeat(64) }],
           arguments: { name: 'cover', overrides: { 6: { seed: 42 } } },
           result: { prompt_id: 'cover' },
           error: null,
@@ -1119,15 +1144,49 @@ async function installMockApi(page: Page) {
     if (pathname.startsWith('/export/session/')) {
       return route.fulfill({ status: 200, contentType: 'text/markdown; charset=utf-8', body: '# AetherChat mock export\n' });
     }
+    if (pathname === '/diagnostics/bundle' && request.method() === 'POST') {
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/zip',
+        headers: {
+          'Content-Disposition': 'attachment; filename="aetherchat-diagnostics-20260811T000000Z.zip"',
+          'Access-Control-Expose-Headers': 'Content-Disposition',
+          'X-Content-Type-Options': 'nosniff',
+        },
+        body: 'mock-redacted-diagnostics',
+      });
+    }
     if (pathname === '/auth/token') return json(route, { access_token: 'mock-token', token_type: 'bearer' });
 
     return json(route, {});
   });
 }
 
+/** Phase-2 rail defaults: expand advanced panels so legacy e2e panel titles stay reachable. */
+async function installWorkspaceUiDefaults(page: Page, options?: {
+  dismissFirstRun?: boolean;
+  expandAdvancedRail?: boolean;
+}) {
+  const dismissFirstRun = options?.dismissFirstRun ?? true;
+  const expandAdvancedRail = options?.expandAdvancedRail ?? true;
+  await page.addInitScript(({ dismiss, expand }) => {
+    if (dismiss) {
+      localStorage.setItem('aetherchat.first_run.dismissed.v1', '1');
+    } else {
+      localStorage.removeItem('aetherchat.first_run.dismissed.v1');
+    }
+    if (expand) {
+      localStorage.setItem('aetherchat.activity_rail.advanced.v1', '1');
+    } else {
+      localStorage.removeItem('aetherchat.activity_rail.advanced.v1');
+    }
+  }, { dismiss: dismissFirstRun, expand: expandAdvancedRail });
+}
+
 test.describe('AetherChat Frontend E2E', () => {
   test.beforeEach(async ({ page }) => {
     page.on('pageerror', (error) => console.error(`Browser page error: ${error.message}`));
+    await installWorkspaceUiDefaults(page);
     await installMockWebSocket(page);
     await installMockDesktopBridge(page);
     await installMockApi(page);
@@ -1143,6 +1202,54 @@ test.describe('AetherChat Frontend E2E', () => {
     await expect(page.getByRole('button', { name: '圆桌' })).toBeVisible();
     await expect(page.getByRole('button', { name: '项目' })).toBeVisible();
     await expect(page.getByText('已连接', { exact: true })).toBeVisible();
+  });
+
+  test('shows and clears bounded run queue state in the desktop status bar', async ({ page }) => {
+    await page.evaluate(() => (
+      window as typeof window & { __emitAetherWs?: (payload: unknown) => void }
+    ).__emitAetherWs?.({
+      type: 'run_queued',
+      dispatch_id: 'dispatch-queued-e2e',
+      queue_position: 2,
+      queue_capacity: 64,
+    }));
+    await expect(page.locator('footer')).toContainText('运行排队 #2');
+    await expect(page.getByText('运行已排队，前方位置 2')).toBeVisible();
+
+    await page.evaluate(() => (
+      window as typeof window & { __emitAetherWs?: (payload: unknown) => void }
+    ).__emitAetherWs?.({
+      type: 'run_dispatch_started',
+      dispatch_id: 'dispatch-queued-e2e',
+    }));
+    await expect(page.locator('footer')).not.toContainText('运行排队');
+    await expect(page.getByText('排队结束，运行已获得执行槽')).toBeVisible();
+
+    await page.evaluate(() => (
+      window as typeof window & { __emitAetherWs?: (payload: unknown) => void }
+    ).__emitAetherWs?.({
+        type: 'run_queued',
+        dispatch_id: 'dispatch-cancelled-e2e',
+        queue_position: 1,
+      }));
+    await page.getByRole('button', { name: '取消排队运行' }).click();
+    await expect.poll(() => page.evaluate(() => (
+      window as typeof window & {
+        __aetherWsActions?: Array<{ type?: string; dispatch_id?: string }>;
+      }
+    ).__aetherWsActions?.some((action) => (
+      action.type === 'interrupt'
+      && action.dispatch_id === 'dispatch-cancelled-e2e'
+    )))).toBe(true);
+    await page.evaluate(() => (
+      window as typeof window & { __emitAetherWs?: (payload: unknown) => void }
+    ).__emitAetherWs?.({
+        type: 'run_cancelled',
+        dispatch_id: 'dispatch-cancelled-e2e',
+        detail: '排队中的运行已取消',
+      }));
+    await expect(page.locator('footer')).not.toContainText('运行排队');
+    await expect(page.getByText('排队中的运行已取消')).toBeVisible();
   });
 
   test('shows one compact Claude/Codex-style working strip that updates in place', async ({ page }) => {
@@ -1476,8 +1583,8 @@ test.describe('AetherChat Frontend E2E', () => {
 
     await expect(page.getByText('请 @deepseek 开始分析任务')).toBeVisible();
     await expect.poll(() => page.evaluate(() => (
-      (window as typeof window & { __aetherWsActions?: Array<{ type?: string }> }).__aetherWsActions
-        ?.some((action) => action.type === 'post_message')
+      (window as typeof window & { __aetherWsActions?: Array<{ type?: string; request_id?: string }> }).__aetherWsActions
+        ?.some((action) => action.type === 'post_message' && Boolean(action.request_id))
     ))).toBe(true);
   });
 
@@ -1686,6 +1793,7 @@ test.describe('AetherChat Frontend E2E', () => {
     await page.getByTitle('运行').click();
     await expect(page.getByRole('button', { name: '基础检查' })).toBeVisible();
     await expect(page.getByRole('button', { name: '验证模型（可能计费）' })).toBeVisible();
+    await expect(page.getByText('/ws/v1/sessions/:id', { exact: true })).toBeVisible();
     await page.waitForTimeout(250);
     expect(verificationRequests).toBe(0);
   });
@@ -1754,6 +1862,8 @@ test.describe('AetherChat Frontend E2E', () => {
     const run = page.getByRole('article').filter({ hasText: '继续实现可恢复 Agent' });
     await expect(run.getByText('可恢复', { exact: true })).toBeVisible();
     await expect(run.getByText('工具 2 · 检查点 1 · 转向 1', { exact: true })).toBeVisible();
+    await expect(run.getByText('执行 计划 · 来源 显式请求', { exact: true })).toBeVisible();
+    await expect(run.getByText('副作用核验 0/1 · 存在未核验项', { exact: true })).toBeVisible();
     await expect(run.getByText('计划 2/5 · 核验 1', { exact: true })).toBeVisible();
     await expect(run.getByText('目标：完成可恢复 Agent 计划', { exact: true })).toBeVisible();
     await expect(run.getByText('核验结论：需修订', { exact: true })).toBeVisible();
@@ -1774,9 +1884,38 @@ test.describe('AetherChat Frontend E2E', () => {
     await expect(run.getByText('Agent 协作审计日志')).toBeVisible();
     await expect(run.getByText('不记录或暴露模型私密思维链')).toBeVisible();
     await expect(run.getByText('deepseek → plugin__comfyui__run_workflow')).toBeVisible();
+    await expect(run.getByText('completed · 未核验', { exact: true })).toBeVisible();
+    await expect(run.getByText('证据：tool_result_digest', { exact: true })).toBeVisible();
     await expect(run.getByText('tool_call', { exact: true })).toBeVisible();
     await expect(run.getByText(/已将工作流参数交给 ComfyUI/)).toBeVisible();
     await expect(run.getByText(/结果：/)).toContainText('cover');
+  });
+
+  test('isolates a broken run panel and exposes a diagnostic id', async ({ page }) => {
+    await page.route('**/agent-runs?**', (route) => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([{
+        id: 'broken-run',
+        session_id: sessionId,
+        status: 'failed',
+        mode: 'project',
+        input: null,
+        targets: [],
+        retry_count: 0,
+        created_at: '2026-08-11T00:00:00Z',
+        updated_at: '2026-08-11T00:00:00Z',
+        steps: [],
+      }]),
+    }));
+    await page.reload();
+    await expect(page.getByText('统一对话流')).toBeVisible();
+    await page.getByTitle('运行').click();
+
+    await expect(page.getByText('运行面板暂时不可用')).toBeVisible();
+    await expect(page.getByText(/^ui-[A-Za-z0-9-]+$/)).toBeVisible();
+    await expect(page.getByRole('button', { name: '复制诊断码' })).toBeVisible();
+    await expect(page.getByText('AetherChat 持久化工作区', { exact: true })).toBeVisible();
   });
 
   test('edits and confirms a persisted plan before workers start', async ({ page }) => {
@@ -1912,6 +2051,16 @@ test.describe('AetherChat Frontend E2E', () => {
     await expect(page.getByText('语言策略', { exact: true }).locator('..').getByRole('combobox')).toHaveValue('中英双语');
   });
 
+  test('exports a redacted diagnostic bundle from settings', async ({ page }) => {
+    await page.getByTitle('设置').click();
+    await expect(page.getByText(/哈希 trace 引用/)).toBeVisible();
+    await expect(page.getByText(/原始 Run ID 或工具参数/)).toBeVisible();
+    const download = page.waitForEvent('download');
+    await page.getByRole('button', { name: '导出脱敏诊断包' }).click();
+    expect((await download).suggestedFilename()).toBe('aetherchat-diagnostics-20260811T000000Z.zip');
+    await expect(page.getByRole('status')).toContainText('不含请求正文、文件内容或凭据');
+  });
+
   test('sends an interrupt action for the selected target', async ({ page }) => {
     const targetSelect = page.locator('select').first();
     await targetSelect.selectOption('GLM');
@@ -2042,10 +2191,198 @@ test.describe('AetherChat Frontend E2E', () => {
     expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(720);
     await expect(dialog.getByRole('button', { name: '关闭' })).toBeVisible();
   });
+
+  test('fills empty-state examples into the composer', async ({ page }) => {
+    // Clear messages so empty state is visible.
+    await page.route(/^http:\/\/(localhost|127\.0\.0\.1):8000\/sessions\/[^/]+\/messages/, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json; charset=utf-8',
+        body: '[]',
+      });
+    });
+    await page.reload();
+    const example = page.locator('button').filter({ hasText: '快速认识工作台' }).first();
+    await expect(example).toBeVisible();
+    await expect(example).toBeEnabled();
+    await example.click();
+    await expect(page.locator('textarea[data-aether-composer]')).toHaveValue(
+      /用三句话介绍你能帮我做什么/,
+    );
+  });
+});
+
+test.describe('AetherChat progressive disclosure', () => {
+  test('keeps primary panels visible and reveals advanced panels on demand', async ({ page }) => {
+    page.on('pageerror', (error) => console.error(`Browser page error: ${error.message}`));
+    await installWorkspaceUiDefaults(page, { expandAdvancedRail: false });
+    await installMockWebSocket(page);
+    await installMockDesktopBridge(page);
+    await installMockApi(page);
+    await page.goto('/');
+    await expect(page.getByText('统一对话流')).toBeVisible();
+
+    await expect(page.getByRole('button', { name: '设置', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '模型', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '运行', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '记忆', exact: true })).toHaveCount(0);
+
+    await page.getByRole('button', { name: '更多面板' }).click();
+    await expect(page.getByRole('button', { name: '记忆', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '任务', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: '记忆', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: '记忆 panel' })).toBeVisible();
+  });
+});
+
+test.describe('AetherChat first-run wizard', () => {
+  test('walks cloud preset save and verify without leaving the main path blocked', async ({ page }) => {
+    page.on('pageerror', (error) => console.error(`Browser page error: ${error.message}`));
+    await installWorkspaceUiDefaults(page, { dismissFirstRun: false, expandAdvancedRail: true });
+    await installMockWebSocket(page);
+    await installMockDesktopBridge(page);
+
+    // No configured models → wizard should open after hydrate.
+    const unconfigured = [{
+      name: 'claude',
+      type: 'anthropic',
+      model: 'claude-3-5-sonnet',
+      base_url: '',
+      api_key_ref: 'ANTHROPIC_API_KEY',
+      has_api_key: false,
+      max_tokens: 8192,
+      participation_policy: 'always',
+      persona: '架构评审',
+      token_limit: 128000,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+    }];
+    await page.route(/^http:\/\/(localhost|127\.0\.0\.1):8000\/.*/, async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const { pathname } = url;
+      const json = (body: unknown, status = 200) => route.fulfill({
+        status,
+        contentType: 'application/json; charset=utf-8',
+        body: JSON.stringify(body),
+      });
+      if (pathname === '/health') return json({ status: 'ok', service: 'aetherchat', redis: false });
+      if (pathname === '/health/ready') {
+        return json({
+          status: 'ready', ready: true, service: 'aetherchat',
+          checks: { database: { status: 'ready', schema_version: 3, expected_schema_version: 3 } },
+          optional_dependencies: { redis: { status: 'unavailable', required: false } },
+        });
+      }
+      if (pathname === '/auth/token') return json({ access_token: 'mock-token', token_type: 'bearer' });
+      if (pathname === '/sessions/' && request.method() === 'GET') {
+        return json([{
+          id: sessionId, title: '向导会话', summary: '', mode: 'project',
+          created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z',
+          message_count: 0, task_count: 0, open_task_count: 0,
+        }]);
+      }
+      if (pathname === '/models/' && request.method() === 'GET') return json(unconfigured);
+      if (pathname === '/models/' && request.method() === 'POST') {
+        const payload = request.postDataJSON();
+        return json({
+          ...unconfigured[0],
+          name: payload.name || 'kimi',
+          type: payload.type || 'openai_compat',
+          model: payload.model || 'kimi-k3',
+          base_url: payload.base_url || 'https://api.moonshot.cn/v1',
+          has_api_key: true,
+        }, 201);
+      }
+      if (/^\/models\/[^/]+\/verify$/.test(pathname) && request.method() === 'POST') {
+        return json({ ok: true, message: '真实对话检测通过', sample: '向导OK' });
+      }
+      if (pathname.startsWith('/sessions/')) return json([]);
+      if (pathname.startsWith('/agent-runs')) return json([]);
+      if (pathname.startsWith('/tasks')) return json([]);
+      if (pathname.startsWith('/tools')) return json([]);
+      if (pathname.startsWith('/artifacts')) return json([]);
+      if (pathname.startsWith('/memory')) return json({
+        session_id: sessionId, summary: '', project_note: '', decisions: [], preferences: [],
+        open_items: [], entities: [], message_count: 0, updated_at: '2026-01-01T00:00:00.000Z',
+      });
+      if (pathname.startsWith('/automations')) return json([]);
+      if (pathname.startsWith('/mcp')) return json([]);
+      if (pathname.startsWith('/plugins')) return json([]);
+      if (pathname.startsWith('/workspaces')) return json([]);
+      return json({});
+    });
+
+    await page.goto('/');
+    const wizard = page.getByRole('dialog', { name: /欢迎使用 AetherChat|配置一个可对话的模型|已就绪/ });
+    await expect(wizard).toBeVisible();
+    await expect(page.getByRole('heading', { name: '欢迎使用 AetherChat' })).toBeVisible();
+    await page.getByRole('button', { name: '开始配置' }).click();
+    await expect(page.getByRole('heading', { name: '配置一个可对话的模型' })).toBeVisible();
+    await page.getByPlaceholder('sk-...').fill('sk-e2e-test-key');
+    await page.getByRole('button', { name: '保存并验证' }).click();
+    await expect(page.getByRole('heading', { name: '已就绪，可以开始' })).toBeVisible();
+    await expect(page.getByText(/样本回复：向导OK/)).toBeVisible();
+    await page.getByRole('button', { name: '进入工作台' }).click();
+    await expect(page.getByRole('dialog', { name: /欢迎使用 AetherChat|配置一个可对话的模型|已就绪/ })).toHaveCount(0);
+    await expect(page.getByText('统一对话流')).toBeVisible();
+  });
+
+  test('has no serious or critical axe violations on the first-run wizard', async ({ page }) => {
+    await installWorkspaceUiDefaults(page, { dismissFirstRun: false });
+    await installMockWebSocket(page);
+    await installMockApi(page);
+    // Force unconfigured models for wizard.
+    await page.route(/^http:\/\/(localhost|127\.0\.0\.1):8000\/models\/$/, async (route) => {
+      if (route.request().method() !== 'GET') return route.fallback();
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json; charset=utf-8',
+        body: JSON.stringify([{
+          name: 'claude', type: 'anthropic', model: 'claude-3-5-sonnet', base_url: '',
+          api_key_ref: 'ANTHROPIC_API_KEY', has_api_key: false, max_tokens: 8192,
+          participation_policy: 'always', persona: '架构评审', token_limit: 128000,
+          created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z',
+        }]),
+      });
+    });
+    await page.goto('/');
+    await expect(page.getByRole('heading', { name: '欢迎使用 AetherChat' })).toBeVisible();
+    const results = await new AxeBuilder({ page }).exclude('iframe').analyze();
+    const severe = results.violations.filter((item) => item.impact === 'serious' || item.impact === 'critical');
+    expect(severe, severe.map((item) => `${item.id}: ${item.help}`).join('\n')).toEqual([]);
+  });
+});
+
+test.describe('AetherChat desktop startup recovery', () => {
+  test('blocks the workspace and gives safe schema mismatch recovery guidance', async ({ page }) => {
+    await installWorkspaceUiDefaults(page);
+    await page.addInitScript(() => {
+      Object.defineProperty(window, 'aetherRuntime', {
+        configurable: true,
+        value: {
+          apiBase: 'http://127.0.0.1:8000',
+          backendStatus: 'unavailable',
+          backendErrorCode: 'database_schema_mismatch',
+          backendRequestId: 'desktop-schema-e2e',
+        },
+      });
+    });
+    await page.goto('/');
+
+    const alert = page.getByRole('alert');
+    await expect(alert).toContainText('本机数据库版本不兼容');
+    await expect(alert).toContainText('请不要删除用户数据');
+    await expect(alert).toContainText('database_schema_mismatch');
+    await expect(alert).toContainText('desktop-schema-e2e');
+    await expect(page.getByText('统一对话流')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '重试启动' })).toBeVisible();
+  });
 });
 
 test.describe('AetherChat offline behavior', () => {
   test('keeps an unsent message in the composer when WebSocket is unavailable', async ({ page }) => {
+    await installWorkspaceUiDefaults(page);
     await installMockWebSocket(page, false);
     await installMockApi(page);
     await page.goto('/');
@@ -2060,4 +2397,33 @@ test.describe('AetherChat offline behavior', () => {
       (window as typeof window & { __aetherWsActions?: unknown[] }).__aetherWsActions?.length
     ))).toBe(0);
   });
+});
+
+test.describe('AetherChat viewport and zoom baseline', () => {
+  for (const viewport of [
+    { name: '960x540', width: 960, height: 540 },
+    { name: '1280x720', width: 1280, height: 720 },
+    { name: '720x450-200pct', width: 720, height: 450 },
+  ] as const) {
+    test(`primary chrome stays usable at ${viewport.name}`, async ({ page }) => {
+      await installWorkspaceUiDefaults(page);
+      await installMockWebSocket(page);
+      await installMockDesktopBridge(page);
+      await installMockApi(page);
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await page.goto('/');
+      await expect(page.getByText('统一对话流')).toBeVisible();
+      await expect(page.getByTitle('设置')).toBeVisible();
+      await expect(page.getByRole('button', { name: '发送' })).toBeVisible();
+      await page.getByTitle('设置').click();
+      const dialog = page.getByRole('dialog', { name: '设置 panel' });
+      await expect(dialog).toBeVisible();
+      const bounds = await dialog.boundingBox();
+      expect(bounds).not.toBeNull();
+      expect(bounds!.x).toBeGreaterThanOrEqual(0);
+      expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport.width + 1);
+      await page.keyboard.press('Escape');
+      await expect(dialog).toBeHidden();
+    });
+  }
 });

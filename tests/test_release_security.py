@@ -19,15 +19,37 @@ SPEC.loader.exec_module(release_security)
 
 
 def test_linux_desktop_entry_and_icon_match_electron_package():
-    build_script = (PROJECT_ROOT / "frontend" / "build-deb.sh").read_text()
+    build_script = (PROJECT_ROOT / "frontend" / "build-deb.sh").read_text(
+        encoding="utf-8"
+    )
     assert "StartupWMClass=aetherchat" in build_script
     assert "StartupWMClass=AetherChat" not in build_script
     assert '"$SCRIPT_DIR/build/icon.svg"' in build_script
     assert "electron-linux/256x256.png" not in build_script
 
-    package = json.loads((PROJECT_ROOT / "frontend" / "package.json").read_text())
+    package = json.loads(
+        (PROJECT_ROOT / "frontend" / "package.json").read_text(
+            encoding="utf-8"
+        )
+    )
     assert package["build"]["linux"]["icon"] == "icon.svg"
     assert (PROJECT_ROOT / "frontend" / "build" / "icon.svg").is_file()
+
+
+def test_release_workflow_fails_fast_when_signing_secrets_are_missing():
+    workflow = (PROJECT_ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "release-preflight:" in workflow
+    assert "needs: release-preflight" in workflow
+    for secret_name in (
+        "WINDOWS_CSC_LINK",
+        "WINDOWS_CSC_KEY_PASSWORD",
+        "AETHERCHAT_RELEASE_PRIVATE_KEY_B64",
+        "AETHERCHAT_RELEASE_PUBLIC_KEY_B64",
+    ):
+        assert secret_name in workflow
+    assert "Signed release is blocked; missing secret(s)" in workflow
 
 
 def _encoded_keys():
@@ -66,9 +88,9 @@ def test_release_manifest_signature_accepts_valid_and_rejects_tampering(tmp_path
     ))
     assert "verified" in capsys.readouterr().out
 
-    envelope = json.loads(envelope_path.read_text())
+    envelope = json.loads(envelope_path.read_text(encoding="utf-8"))
     envelope["manifest"]["version"] = "9.9.9"
-    envelope_path.write_text(json.dumps(envelope))
+    envelope_path.write_text(json.dumps(envelope), encoding="utf-8")
     with pytest.raises(SystemExit, match="verification failed"):
         release_security.command_verify(SimpleNamespace(
             envelope=str(envelope_path), key_env="TEST_RELEASE_PUBLIC",
@@ -82,7 +104,7 @@ def test_cyclonedx_sbom_and_build_metadata_include_pinned_components_and_hashes(
         requirements=str(PROJECT_ROOT / "backend" / "requirements.txt"),
         version="0.2.0", timestamp="2026-07-16T00:00:00Z", output=str(sbom_path),
     ))
-    sbom = json.loads(sbom_path.read_text())
+    sbom = json.loads(sbom_path.read_text(encoding="utf-8"))
     assert sbom["bomFormat"] == "CycloneDX"
     assert sbom["specVersion"] == "1.5"
     refs = {item["bom-ref"] for item in sbom["components"]}
@@ -96,6 +118,6 @@ def test_cyclonedx_sbom_and_build_metadata_include_pinned_components_and_hashes(
         version="0.2.0", platform="linux", arch="arm64",
         timestamp="2026-07-16T00:00:00Z", artifact=[str(artifact)], output=str(metadata_path),
     ))
-    metadata = json.loads(metadata_path.read_text())
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert metadata["artifacts"][0]["sha256"] == release_security.sha256(artifact)
     assert metadata["schema"] == "aetherchat-build-metadata-v1"

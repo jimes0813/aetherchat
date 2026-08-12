@@ -11,6 +11,15 @@ from uuid import uuid4
 
 from .agent_run_service import AgentRunService, agent_run_service
 from .chat_database import ChatDatabase, chat_database
+from .run_admission import admission_resources_for_action
+from .run_dispatcher import (
+    RunDispatcher,
+    RunDispatcherStopped,
+    RunDispatchHandle,
+    RunOwnershipConflict,
+    RunQueueFull,
+    run_dispatcher,
+)
 
 
 def _utc_now() -> datetime:
@@ -30,6 +39,7 @@ class AutomationExecutionResult:
 
 
 AutomationExecutor = Callable[[dict[str, Any]], Awaitable[AutomationExecutionResult]]
+RunAdmissionResourceResolver = Callable[[dict[str, Any]], tuple[str, ...]]
 
 
 class AutomationService:
@@ -44,9 +54,12 @@ class AutomationService:
         lease_seconds: int = 30,
         concurrency: int | None = None,
         executor: AutomationExecutor | None = None,
+        dispatcher: RunDispatcher | None = None,
+        resource_resolver: RunAdmissionResourceResolver | None = None,
     ) -> None:
         self.database = database or chat_database
         self.run_service = run_service or agent_run_service
+        self.dispatcher = dispatcher or run_dispatcher
         configured_concurrency = concurrency
         if configured_concurrency is None:
             try:
@@ -61,8 +74,12 @@ class AutomationService:
         self.max_attempts = 3
         self.worker_id = f"local-{uuid4()}"
         self._executor = executor
+        self._resource_resolver = (
+            resource_resolver or admission_resources_for_action
+        )
         self._poll_task: asyncio.Task[None] | None = None
         self._active_tasks: dict[str, asyncio.Task[None]] = {}
+        self._dispatch_handles: dict[str, RunDispatchHandle] = {}
         self._wake = asyncio.Event()
         self._stopping = False
 
@@ -70,12 +87,25 @@ class AutomationService:
     def running(self) -> bool:
         return self._poll_task is not None and not self._poll_task.done()
 
-    def status(self) -> dict[str, Any]:
+    def liveness_status(self) -> dict[str, Any]:
+        dispatch_states = [
+            handle.status().state for handle in self._dispatch_handles.values()
+        ]
         return {
             "scheduler_running": self.running,
             "worker_id": self.worker_id,
             "active_workers": len(self._active_tasks),
             "concurrency": self.concurrency,
+            "dispatch_queued": dispatch_states.count("queued"),
+            "dispatch_running": sum(
+                state in {"running", "cancelling"}
+                for state in dispatch_states
+            ),
+        }
+
+    def status(self) -> dict[str, Any]:
+        return {
+            **self.liveness_status(),
             **self.database.automation_status(),
         }
 
@@ -105,7 +135,26 @@ class AutomationService:
             task.cancel()
         if active:
             await asyncio.gather(*active, return_exceptions=True)
+        # A task can be cancelled before its coroutine receives its first event
+        # loop turn, so its own CancelledError handler may never run. Reconcile
+        # every still-owned durable lease before dropping the in-memory map.
+        for job_id in tuple(self._active_tasks):
+            current = self.database.get_background_job(job_id)
+            if current is None or current.get("lease_owner") != self.worker_id:
+                continue
+            if current.get("status") == "cancel_requested":
+                self._finish_cancelled_claim(job_id, current)
+            elif current.get("status") == "running":
+                run_id = str(current.get("agent_run_id") or "")
+                if run_id:
+                    self.run_service.finish(run_id, disconnected=True)
+                self.database.requeue_background_job(
+                    job_id,
+                    worker_id=self.worker_id,
+                    error="后台服务停止；将在下次启动后恢复",
+                )
         self._active_tasks.clear()
+        self._dispatch_handles.clear()
 
     def wake(self) -> None:
         self._wake.set()
@@ -189,9 +238,43 @@ class AutomationService:
             raise KeyError("后台任务不存在")
         task = self._active_tasks.get(str(job_id))
         if task is not None and not task.done():
+            task.add_done_callback(
+                lambda _task: self._finish_cancelled_claim(str(job_id))
+            )
             task.cancel()
         self.wake()
         return job
+
+    def _finish_cancelled_claim(
+        self,
+        job_id: str,
+        current: dict[str, Any] | None = None,
+    ) -> bool:
+        claimed = current or self.database.get_background_job(job_id)
+        if (
+            claimed is None
+            or claimed.get("status") != "cancel_requested"
+            or claimed.get("lease_owner") != self.worker_id
+        ):
+            return False
+        run_id = str(claimed.get("agent_run_id") or "")
+        if run_id:
+            self.run_service.database.update_agent_run(
+                run_id,
+                "interrupted",
+                error="后台任务被用户取消",
+            )
+            self.run_service.database.append_agent_event(
+                run_id,
+                "run_interrupted",
+                {"reason": "background_job_cancelled", "job_id": job_id},
+            )
+        return self.database.finish_background_job(
+            job_id,
+            worker_id=self.worker_id,
+            status="cancelled",
+            error="用户取消",
+        ) is not None
 
     async def _heartbeat(self, job_id: str, parent: asyncio.Task[None]) -> None:
         delay = max(2.0, self.lease_seconds / 3)
@@ -211,6 +294,47 @@ class AutomationService:
         except asyncio.CancelledError:
             raise
 
+    async def _acquire_dispatch(
+        self,
+        job: dict[str, Any],
+        parent: asyncio.Task[None],
+    ) -> RunDispatchHandle:
+        job_id = str(job["id"])
+        session_id = str(job["session_id"])
+        resources = self._resource_resolver(dict(job.get("action") or {}))
+        while True:
+            current = self.database.get_background_job(job_id)
+            if current is None or current.get("status") in {
+                "cancel_requested",
+                "cancelled",
+            }:
+                raise asyncio.CancelledError
+            try:
+                handle = await self.dispatcher.submit(
+                    owner_id=f"automation:{self.worker_id}:{job_id}",
+                    session_id=session_id,
+                    kind="background",
+                    resources=resources,
+                )
+            except (RunOwnershipConflict, RunQueueFull):
+                accepting = await self.dispatcher.wait_for_submission_capacity(
+                    session_id,
+                    timeout=max(0.1, self.poll_interval),
+                )
+                if not accepting:
+                    raise RunDispatcherStopped("运行调度器正在关闭") from None
+                continue
+
+            self._dispatch_handles[job_id] = handle
+            try:
+                await handle.bind_task(parent)
+                await handle.wait_until_started()
+            except (Exception, asyncio.CancelledError):
+                await handle.release(cancelled=True)
+                self._dispatch_handles.pop(job_id, None)
+                raise
+            return handle
+
     async def _run_claimed_job(self, job: dict[str, Any]) -> None:
         job_id = str(job["id"])
         parent = asyncio.current_task()
@@ -220,7 +344,15 @@ class AutomationService:
             self._heartbeat(job_id, parent),
             name=f"aetherchat-background-heartbeat:{job_id}",
         )
+        dispatch_handle: RunDispatchHandle | None = None
+        dispatch_cancelled = False
         try:
+            dispatch_handle = await self._acquire_dispatch(job, parent)
+            current = self.database.get_background_job(job_id) or job
+            if current.get("status") == "cancel_requested":
+                raise asyncio.CancelledError
+            if current.get("lease_owner") != self.worker_id:
+                raise RuntimeError("后台任务租约已丢失")
             if int(job.get("attempt") or 0) > self.max_attempts:
                 result = AutomationExecutionResult(
                     status="failed",
@@ -238,27 +370,19 @@ class AutomationService:
                 error=result.error,
                 budget_spent_usd=result.budget_spent_usd,
             )
+        except RunDispatcherStopped as exc:
+            dispatch_cancelled = True
+            self.database.requeue_background_job(
+                job_id,
+                worker_id=self.worker_id,
+                error=f"{exc}；将在调度器恢复后重试",
+            )
         except asyncio.CancelledError:
+            dispatch_cancelled = True
             current = self.database.get_background_job(job_id) or job
             run_id = str(current.get("agent_run_id") or "")
             if current.get("status") == "cancel_requested":
-                if run_id:
-                    self.run_service.database.update_agent_run(
-                        run_id,
-                        "interrupted",
-                        error="后台任务被用户取消",
-                    )
-                    self.run_service.database.append_agent_event(
-                        run_id,
-                        "run_interrupted",
-                        {"reason": "background_job_cancelled", "job_id": job_id},
-                    )
-                self.database.finish_background_job(
-                    job_id,
-                    worker_id=self.worker_id,
-                    status="cancelled",
-                    error="用户取消",
-                )
+                self._finish_cancelled_claim(job_id, current)
             elif self._stopping:
                 if run_id:
                     self.run_service.finish(run_id, disconnected=True)
@@ -285,6 +409,9 @@ class AutomationService:
                 error=error,
             )
         finally:
+            if dispatch_handle is not None:
+                await dispatch_handle.release(cancelled=dispatch_cancelled)
+            self._dispatch_handles.pop(job_id, None)
             heartbeat.cancel()
             await asyncio.gather(heartbeat, return_exceptions=True)
 

@@ -23,11 +23,19 @@ const { launchWindowsInstaller } = require('./update-launcher.cjs');
 const { buildContextMenuTemplate } = require('./context-menu.cjs');
 const { openExternalNavigation } = require('./external-navigation.cjs');
 const { launchIntentFromArgv, quickEntryIntent } = require('./launch-intent.cjs');
+const {
+  probeBackendLiveness,
+  waitForBackendReadiness,
+} = require('./backend-readiness.cjs');
+const { sanitizeBackendProxyEnv } = require('./backend-env.cjs');
+const { registerTerminationHandlers, terminateChildProcess } = require('./lifecycle.cjs');
 
 const isDev = !app.isPackaged;
 let backendProcess = null;
 let backendPort = Number(process.env.AETHERCHAT_PORT || 8000);
 let backendStatus = 'starting';
+let backendErrorCode = '';
+let backendRequestId = '';
 const desktopBridgeToken = process.env.AETHERCHAT_DESKTOP_TOKEN || randomBytes(32).toString('hex');
 const apiAccessToken = process.env.AETHERCHAT_API_TOKEN || randomBytes(32).toString('hex');
 const computerConsentToken = randomBytes(32).toString('hex');
@@ -49,6 +57,11 @@ let quitRequested = false;
 let trayNoticeShown = false;
 let automationPollTimer = null;
 let knownReviewItems = null;
+
+const unregisterTerminationHandlers = registerTerminationHandlers(process, () => {
+  quitRequested = true;
+  app.quit();
+});
 
 const TRAY_ICON_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAACXBIWXMAAAABAAAAAQBPJcTWAAABXElEQVR4nGPQ01CmKWIYtWDUguFjQUZS3MSeFgia0N1sqq9FZQuuXzzz+d0zOCrMSaemBVFhvsimA9HOzeuoacHCuVPQLHj/8qmtuTF1LDDUUX9y/zrE3NPH9sHtaKwpoY4F2akJcEMLclKuXDgBYZ84vJs6Fmxasxxi4rsXT8wNdadP6oLb5+ViT6kFFsZ6b58/Qo7YiGBvuAUTuloptaC6LA9uXFVJPkTw3o3LEJHrl07paSpSZMGhvVshZn148wsebBbOng63Fegh8i1wtrX49PYpxKBH967Bc/LmdcvgFiyYPZl8C7pa6tGSPyYCWmygpUaWBZqKF88cgZhy8/L5id1tyGjFktlwO4DFFDkWBPu74UktpgYab188gMiuX7mUHAtmTeuFWxDk44GpAJhqIbJvnj0E5g+SLairKoREaXdbHVYFseFB0GjvbsOT4wZNhTNqwagFA2gBAOhI7ghBmJHOAAAAAElFTkSuQmCC';
 
@@ -427,59 +440,43 @@ function startBackend(port) {
     if (!noProxyEntries.includes(localHost)) noProxyEntries.push(localHost);
   }
   const noProxy = noProxyEntries.join(',');
-  backendProcess = spawn(exePath, [], {
+  const backendEnv = sanitizeBackendProxyEnv({
+    ...process.env,
+    AETHERCHAT_DATA_DIR: dataDir,
+    AETHERCHAT_PORT: String(port),
+    AETHERCHAT_APP_VERSION: app.getVersion(),
+    AETHERCHAT_BUILD_CHANNEL: app.isPackaged ? 'packaged' : 'development',
+    AETHERCHAT_DESKTOP_TOKEN: desktopBridgeToken,
+    AETHERCHAT_API_TOKEN: apiAccessToken,
+    AETHERCHAT_COMPUTER_CONSENT_URL: computerConsentUrl,
+    AETHERCHAT_COMPUTER_CONSENT_TOKEN: computerConsentToken,
+    NO_PROXY: noProxy,
+    no_proxy: noProxy,
+  });
+  const spawnedBackend = spawn(exePath, [], {
     cwd: path.dirname(exePath),
     windowsHide: true,
-    env: {
-      ...process.env,
-      AETHERCHAT_DATA_DIR: dataDir,
-      AETHERCHAT_PORT: String(port),
-      AETHERCHAT_DESKTOP_TOKEN: desktopBridgeToken,
-      AETHERCHAT_API_TOKEN: apiAccessToken,
-      AETHERCHAT_COMPUTER_CONSENT_URL: computerConsentUrl,
-      AETHERCHAT_COMPUTER_CONSENT_TOKEN: computerConsentToken,
-      NO_PROXY: noProxy,
-      no_proxy: noProxy,
-    },
+    env: backendEnv,
     stdio: 'ignore',
   });
-  backendProcess.on('error', (error) => {
+  backendProcess = spawnedBackend;
+  spawnedBackend.on('error', (error) => {
     backendStatus = 'unavailable';
+    backendErrorCode = 'backend_process_failed';
+    backendRequestId = '';
     console.error('AetherChat backend failed to start:', error);
   });
-  backendProcess.on('exit', () => {
-    backendProcess = null;
+  spawnedBackend.on('exit', () => {
+    if (backendProcess === spawnedBackend) backendProcess = null;
   });
   return true;
 }
 
-function stopBackend() {
-  if (backendProcess && !backendProcess.killed) {
-    backendProcess.kill();
-  }
-  backendProcess = null;
-}
-
-function probeBackend(port, timeoutMs = 1000) {
-  return new Promise((resolve) => {
-    const req = http.get(`http://127.0.0.1:${port}/health`, (res) => {
-      const chunks = [];
-      res.on('data', (chunk) => chunks.push(chunk));
-      res.on('end', () => {
-        try {
-          const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-          resolve(Boolean(res.statusCode === 200 && payload.status === 'ok' && payload.service === 'aetherchat'));
-        } catch {
-          resolve(false);
-        }
-      });
-    });
-    req.on('error', () => resolve(false));
-    req.setTimeout(timeoutMs, () => {
-      req.destroy();
-      resolve(false);
-    });
-  });
+async function stopBackend() {
+  const processToStop = backendProcess;
+  if (!processToStop) return;
+  await terminateChildProcess(processToStop);
+  if (backendProcess === processToStop) backendProcess = null;
 }
 
 function backendRequest(endpoint, { method = 'GET', body, timeoutMs = 15000 } = {}) {
@@ -549,38 +546,23 @@ function isPortFree(port) {
 }
 
 async function selectBackendPort(preferredPort = 8000) {
-  if (await probeBackend(preferredPort) && await probeDesktopBackend(preferredPort)) {
+  const liveness = await probeBackendLiveness(preferredPort);
+  if (liveness.alive && await probeDesktopBackend(preferredPort)) {
     return { port: preferredPort, reuse: true };
   }
   if (await isPortFree(preferredPort)) return { port: preferredPort, reuse: false };
   for (let port = preferredPort + 1; port <= preferredPort + 20; port += 1) {
     if (await isPortFree(port)) return { port, reuse: false };
   }
-  throw new Error('No available local port for the AetherChat backend');
+  const error = new Error('No available local port for the AetherChat backend');
+  error.code = 'backend_port_unavailable';
+  throw error;
 }
 
-function waitForBackend(port, timeoutMs = 15000) {
-  const startedAt = Date.now();
-
-  return new Promise((resolve) => {
-    const check = async () => {
-      if (await probeBackend(port)) {
-        resolve(true);
-        return;
-      }
-      retry();
-    };
-
-    const retry = () => {
-      if (Date.now() - startedAt >= timeoutMs) {
-        resolve(false);
-        return;
-      }
-      setTimeout(check, 300);
-    };
-
-    check();
-  });
+function applyBackendReadiness(result) {
+  backendStatus = result?.ready ? 'ready' : 'unavailable';
+  backendErrorCode = result?.ready ? '' : String(result?.code || 'backend_not_ready');
+  backendRequestId = result?.ready ? '' : String(result?.requestId || '');
 }
 
 function createWindow() {
@@ -606,6 +588,8 @@ function createWindow() {
       additionalArguments: [
         `--aether-api-base=http://127.0.0.1:${backendPort}`,
         `--aether-backend-status=${backendStatus}`,
+        `--aether-backend-error-code=${backendErrorCode}`,
+        `--aether-backend-request-id=${backendRequestId}`,
         `--aether-app-version=${app.getVersion()}`,
         `--aether-platform=${process.platform}`,
         `--aether-quick-entry-shortcut=${quickEntryShortcut}`,
@@ -987,14 +971,19 @@ app.whenReady().then(async () => {
     const selected = await selectBackendPort(backendPort);
     backendPort = selected.port;
     if (selected.reuse) {
-      backendStatus = 'ready';
+      applyBackendReadiness(await waitForBackendReadiness({ port: backendPort }));
     } else if (startBackend(backendPort)) {
-      backendStatus = await waitForBackend(backendPort) ? 'ready' : 'unavailable';
+      applyBackendReadiness(await waitForBackendReadiness({ port: backendPort }));
     } else {
-      backendStatus = 'unavailable';
+      applyBackendReadiness({ ready: false, code: 'backend_executable_missing' });
     }
   } catch (error) {
-    backendStatus = 'unavailable';
+    applyBackendReadiness({
+      ready: false,
+      code: error?.code === 'backend_port_unavailable'
+        ? 'backend_port_unavailable'
+        : 'backend_start_failed',
+    });
     console.error('Unable to prepare the AetherChat backend:', error);
   }
   Menu.setApplicationMenu(menu);
@@ -1025,6 +1014,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('will-quit', () => {
+  unregisterTerminationHandlers();
   globalShortcut.unregisterAll();
   stopAutomationReviewPolling();
   if (tray) tray.destroy();
@@ -1050,7 +1040,7 @@ app.on('before-quit', (event) => {
     desktopHandleOwners.clear();
     stopAutomationReviewPolling();
     stopComputerConsentServer();
-    stopBackend();
+    await stopBackend();
     gracefulShutdownComplete = true;
     app.quit();
   })();

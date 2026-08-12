@@ -356,12 +356,23 @@ BUILTIN_PLUGINS = [
             _action(
                 "generate_video",
                 "生成视频",
-                "使用 wan-i2v 把本机图片转为视频，或使用 ltx-t2v 文生视频；用户在插件中心保存的管线选择优先。",
+                (
+                    "使用 wan-i2v 把本机图片转为视频，或使用 ltx-t2v 文生视频；"
+                    "wan-i2v 可直接使用本条消息的图片附件，未提供图片时会自动生成起始图；"
+                    "用户明确指定的视频模型优先。"
+                ),
                 "comfyui_generate_video",
                 properties={
                     "prompt": {"type": "string", "description": "主体动作、镜头运动与画面描述"},
                     "pipeline": {"type": "string", "enum": ["wan-i2v", "ltx-t2v"]},
-                    "input_image": {"type": "string", "description": "wan-i2v 所需本机图片绝对路径"},
+                    "model": {
+                        "type": "string",
+                        "description": "可选；status 返回的视频模型文件名",
+                    },
+                    "input_image": {
+                        "type": "string",
+                        "description": "可选；wan-i2v 的本机图片绝对路径，有聊天图片附件时由后端自动注入",
+                    },
                     "width": {"type": "integer", "minimum": 256, "maximum": 2048},
                     "height": {"type": "integer", "minimum": 256, "maximum": 2048},
                     "frames": {"type": "integer", "minimum": 1, "maximum": 161},
@@ -882,12 +893,18 @@ class PluginRegistry:
                     lora_strength=arguments.get("lora_strength", 1.0),
                 )
             if handler == "comfyui_generate_video":
+                user_requested_model = str(
+                    arguments.get("_user_requested_model") or ""
+                ).strip() or None
                 return await comfyui_service.generate_video(
                     arguments["prompt"],
-                    pipeline=selection["video_pipeline"] or arguments.get(
-                        "pipeline",
-                        "wan-i2v",
+                    pipeline=(
+                        arguments.get("pipeline", "wan-i2v")
+                        if user_requested_model
+                        else selection["video_pipeline"]
+                        or arguments.get("pipeline", "wan-i2v")
                     ),
+                    model=user_requested_model or arguments.get("model"),
                     input_image=arguments.get("input_image"),
                     width=arguments.get("width", 480),
                     height=arguments.get("height", 832),

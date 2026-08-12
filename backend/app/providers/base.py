@@ -299,6 +299,25 @@ class OpenAICompatProvider(LLMProvider):
             return {"chat_template_kwargs": {"enable_thinking": False}}
         return None
 
+    def _is_moonshot_kimi(self) -> bool:
+        """Moonshot/Kimi coding models currently require temperature=1 only."""
+        name = (self.config.name or "").lower()
+        model = (self.config.model or "").lower()
+        base = (self.config.base_url or self._base_url() or "").lower()
+        return (
+            name in {"kimi", "moonshot"}
+            or model.startswith(("kimi", "moonshot"))
+            or "moonshot." in base
+            or "api.kimi.com" in base
+        )
+
+    def _effective_temperature(self, requested: float | None = None) -> float:
+        if self._is_moonshot_kimi():
+            return 1.0
+        if requested is None:
+            return 0.7
+        return float(requested)
+
     def _max_output_tokens(self) -> int:
         configured = max(256, int(self.config.max_tokens or 4096))
         if self.config.type != "local":
@@ -340,7 +359,7 @@ class OpenAICompatProvider(LLMProvider):
             client.chat.completions.create(
                 model=self.config.model,
                 messages=[{"role": "user", "content": "请只回复 OK，用于连接测试。"}],
-                temperature=0,
+                temperature=self._effective_temperature(0),
                 max_tokens=512,
                 **({"extra_body": extra_body} if extra_body else {}),
             ),
@@ -383,7 +402,7 @@ class OpenAICompatProvider(LLMProvider):
             request: dict[str, Any] = {
                 "model": self.config.model,
                 "messages": openai_messages,
-                "temperature": temperature,
+                "temperature": self._effective_temperature(temperature),
                 "max_tokens": self._max_output_tokens(),
                 "stream": True,
                 "stream_options": {"include_usage": True},

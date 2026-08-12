@@ -16,7 +16,34 @@ env:
   SOURCE_DATE_EPOCH: '1784160000'
 
 jobs:
+  release-preflight:
+    name: release-preflight
+    runs-on: ubuntu-24.04
+    env:
+      WINDOWS_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+      WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+      RELEASE_PRIVATE_KEY: ${{ secrets.AETHERCHAT_RELEASE_PRIVATE_KEY_B64 }}
+      RELEASE_PUBLIC_KEY: ${{ secrets.AETHERCHAT_RELEASE_PUBLIC_KEY_B64 }}
+    steps:
+      - name: Validate stable/RC signing configuration
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          missing=()
+          for name in WINDOWS_CSC_LINK WINDOWS_CSC_KEY_PASSWORD RELEASE_PRIVATE_KEY RELEASE_PUBLIC_KEY; do
+            if [ -z "${!name}" ]; then missing+=("$name"); fi
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            printf 'Signed release is blocked; missing secret(s): %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+          echo "All Authenticode and Ed25519 release secrets are configured."
+      - name: Record unsigned validation mode
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: echo "Branch/PR validation does not publish release artifacts."
+
   build:
+    needs: release-preflight
     name: ${{ matrix.target }}
     strategy:
       fail-fast: false
@@ -81,9 +108,18 @@ jobs:
         run: mypy
       - name: Backend tests
         run: python -m pytest -q
+      - name: Knowledge RAG Recall@K gate
+        if: matrix.target == 'linux-x64'
+        run: python scripts/run_knowledge_rag_eval.py
+      - name: Public RC preflight (secrets checklist)
+        if: matrix.target == 'linux-x64'
+        run: python scripts/public_rc_preflight.py
       - name: Electron supply-chain tests
         working-directory: frontend
         run: npm run test:electron
+      - name: Frontend unit and component tests
+        working-directory: frontend
+        run: npm run test:unit
       - name: Frontend production build
         working-directory: frontend
         run: npm run build

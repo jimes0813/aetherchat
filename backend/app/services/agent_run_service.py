@@ -2,22 +2,32 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from typing import Any
 
+from ..request_context import current_request_id
 from .chat_database import ChatDatabase, chat_database
+from .execution_strategy import (
+    ExecutionStrategyResolution,
+)
+from .execution_strategy import (
+    resolve_execution_strategy as resolve_execution_strategy_contract,
+)
+from .execution_verification import (
+    IDEMPOTENT_FILE_WRITE_TOOLS,
+    ExecutionVerificationService,
+    execution_verification_service,
+)
 from .git_workspace_service import (
     WORKSPACE_TOOL_NAMES,
     GitWorkspaceService,
     git_workspace_service,
 )
+from .structured_logging import diagnostic_ref
 
 RETRYABLE_STATUSES = {"failed", "interrupted", "recoverable"}
 TERMINAL_STEP_STATUSES = {"completed", "failed", "interrupted"}
-IDEMPOTENT_FILE_WRITE_TOOLS = {
-    "write_artifact",
-    "plugin__documents__export_to_local",
-    "plugin__desktop_control__write_document",
-}
+logger = logging.getLogger(__name__)
 
 
 class AgentRunService:
@@ -27,10 +37,14 @@ class AgentRunService:
         self,
         database: ChatDatabase | None = None,
         workspace_service: GitWorkspaceService | None = None,
+        verification_service: ExecutionVerificationService | None = None,
     ):
         self.database = database or chat_database
         self.workspace_service = workspace_service or (
             git_workspace_service if self.database is chat_database else None
+        )
+        self.verification_service = (
+            verification_service or execution_verification_service
         )
         self._approval_models: dict[str, str] = {}
 
@@ -101,6 +115,14 @@ class AgentRunService:
 
     def is_side_effecting_tool(self, tool_name: str) -> bool:
         return self._is_side_effecting_tool(tool_name)
+
+    @staticmethod
+    def resolve_execution_strategy(
+        action: dict[str, Any],
+    ) -> ExecutionStrategyResolution:
+        """Compatibility entry point for the extracted pure resolver."""
+
+        return resolve_execution_strategy_contract(action)
 
     @staticmethod
     def _targets(action: dict[str, Any]) -> list[str]:
@@ -774,6 +796,13 @@ class AgentRunService:
         return updated
 
     def create(self, session_id: str, action: dict[str, Any]) -> dict[str, Any]:
+        for derived_key in (
+            "requested_execution_strategy",
+            "effective_execution_strategy",
+            "execution_strategy_source",
+        ):
+            action.pop(derived_key, None)
+        execution_contract = self.resolve_execution_strategy(action)
         repository_id = str(action.get("repository_id") or "").strip()
         if repository_id:
             if self.workspace_service is None:
@@ -786,8 +815,48 @@ class AgentRunService:
             action.update(snapshot)
         run = self.database.create_agent_run(session_id, action, self._targets(action))
         self.database.update_agent_run(run["id"], "running")
+        request_id = str(action.get("_request_id") or current_request_id() or "").strip()
+        if request_id:
+            self.record_trace_context(run["id"], request_id)
+        self.database.append_agent_event(
+            run["id"],
+            "execution_strategy_resolved",
+            dict(execution_contract),
+        )
+        if execution_contract["source"] == "compatibility_default":
+            self.database.append_agent_event(
+                run["id"],
+                "legacy_contract_deprecated",
+                {
+                    "code": "execution_strategy_required_in_v1",
+                    "effective_execution_strategy": execution_contract["effective"],
+                },
+            )
+            logger.warning(
+                "Agent run %s omitted execution_strategy; resolved to direct "
+                "under the legacy compatibility contract",
+                run["id"],
+            )
         self.database.append_agent_event(run["id"], "run_started", {})
+        logger.info(
+            "Agent run started",
+            extra={
+                "event": "agent_run_started",
+                "trace_id": diagnostic_ref("run", run["id"]),
+                "run_status": "running",
+            },
+        )
         return self.database.get_agent_run(run["id"], include_events=False) or run
+
+    def record_trace_context(self, run_id: str, request_id: str) -> None:
+        normalized = str(request_id or "").strip()[:128]
+        if not normalized:
+            return
+        self.database.append_agent_event(
+            run_id,
+            "trace_context",
+            {"request_ref": diagnostic_ref("request", normalized)},
+        )
 
     def observe(self, run_id: str, event: dict[str, Any]) -> None:
         event_type = str(event.get("type") or "unknown")
@@ -812,6 +881,9 @@ class AgentRunService:
                 "message_id": message.get("id"),
                 "partial": partial,
                 "content_preview": str(message.get("content") or "")[:1000],
+                "tokens_in": max(0, int(message.get("tokens_in") or 0)),
+                "tokens_out": max(0, int(message.get("tokens_out") or 0)),
+                "cost_usd": max(0.0, float(message.get("cost_usd") or 0.0)),
             })
             if role == "assistant" and author and not partial:
                 self.database.update_agent_step(run_id, author, "completed")
@@ -857,7 +929,7 @@ class AgentRunService:
             for key in (
                 "phase", "detail", "context_messages", "context_tokens",
                 "tool_count", "tool_schema_tokens", "round_index",
-                "first_token_ms", "elapsed_ms",
+                "first_token_ms", "elapsed_ms", "provider_type",
             ):
                 if key in event:
                     payload[key] = event[key]
@@ -945,6 +1017,21 @@ class AgentRunService:
             error=error,
         )
 
+    @classmethod
+    def _effect_verification(
+        cls,
+        *,
+        tool_call: dict[str, Any],
+        payload: dict[str, Any],
+        tool_run_id: str | None,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        return execution_verification_service.verify_effect(
+            tool_call=tool_call,
+            payload=payload,
+            tool_run_id=tool_run_id,
+            digest=cls._digest,
+        )
+
     def finish_tool_call(
         self,
         call_record_id: str,
@@ -952,19 +1039,43 @@ class AgentRunService:
         *,
         tool_run_id: str | None = None,
     ) -> dict[str, Any] | None:
+        tool_call = self.database.get_agent_tool_call(call_record_id)
+        if tool_call is None:
+            return None
         result = self._sanitize_persisted_value(payload)
         payload_status = str(payload.get("status") or "error")
         status = "completed" if payload_status == "success" else (
             "denied" if payload_status == "denied" else "failed"
         )
-        return self.database.finish_agent_tool_call(
+        verification_status, evidence = self.verification_service.verify_effect(
+            tool_call=tool_call,
+            payload=payload,
+            tool_run_id=tool_run_id,
+            digest=self._digest,
+        )
+        completed = self.database.finish_agent_tool_call(
             call_record_id,
             status=status,
             result=result,
             result_sha256=self._digest(payload),
+            verification_status=verification_status,
+            evidence=evidence,
             tool_run_id=tool_run_id,
             error=str(payload.get("error") or "")[:2000] or None,
         )
+        if completed is not None and bool(completed.get("side_effect")):
+            self.database.append_agent_event(
+                str(completed["run_id"]),
+                "effect_verification_recorded",
+                {
+                    "tool_call_id": completed["id"],
+                    "tool_name": completed["tool_name"],
+                    "verification_status": verification_status,
+                    "evidence_kinds": [item["kind"] for item in evidence],
+                },
+                step_id=completed.get("step_id"),
+            )
+        return completed
 
     def save_checkpoint(
         self,
@@ -1064,6 +1175,14 @@ class AgentRunService:
         if disconnected and current["status"] not in {"completed", "failed", "interrupted"}:
             updated = self.database.update_agent_run(run_id, "recoverable", error="连接中断，运行结果未确认")
             self.database.append_agent_event(run_id, "recovery_required", {"reason": "connection_lost"})
+            logger.info(
+                "Agent run finished",
+                extra={
+                    "event": "agent_run_finished",
+                    "trace_id": diagnostic_ref("run", run_id),
+                    "run_status": "recoverable",
+                },
+            )
             return updated
         plan_steps = current.get("plan_steps") or []
         synthesizer = next(
@@ -1076,6 +1195,14 @@ class AgentRunService:
                 updated = self.database.update_agent_run(run_id, "completed", error=None)
                 self.database.update_agent_goal_status(run_id, "completed")
                 self.database.append_agent_event(run_id, "run_completed", {})
+                logger.info(
+                    "Agent run finished",
+                    extra={
+                        "event": "agent_run_finished",
+                        "trace_id": diagnostic_ref("run", run_id),
+                        "run_status": "completed",
+                    },
+                )
                 return updated
             failed_step = next(
                 (
@@ -1094,6 +1221,14 @@ class AgentRunService:
                 updated = self.database.update_agent_run(run_id, "failed", error=error)
                 self.database.update_agent_goal_status(run_id, "failed")
                 self.database.append_agent_event(run_id, "run_failed", {"error": error})
+                logger.info(
+                    "Agent run finished",
+                    extra={
+                        "event": "agent_run_finished",
+                        "trace_id": diagnostic_ref("run", run_id),
+                        "run_status": "failed",
+                    },
+                )
                 return updated
             if interrupted_step is not None:
                 self.database.set_agent_plan_status(run_id, "interrupted")
@@ -1104,12 +1239,28 @@ class AgentRunService:
                 self.database.append_agent_event(
                     run_id, "run_interrupted", {"error": "计划执行被中断"}
                 )
+                logger.info(
+                    "Agent run finished",
+                    extra={
+                        "event": "agent_run_finished",
+                        "trace_id": diagnostic_ref("run", run_id),
+                        "run_status": "interrupted",
+                    },
+                )
                 return updated
             error = "计划尚未完成最终综合步骤"
             self.database.set_agent_plan_status(run_id, "failed")
             updated = self.database.update_agent_run(run_id, "failed", error=error)
             self.database.update_agent_goal_status(run_id, "failed")
             self.database.append_agent_event(run_id, "run_failed", {"error": error})
+            logger.info(
+                "Agent run finished",
+                extra={
+                    "event": "agent_run_finished",
+                    "trace_id": diagnostic_ref("run", run_id),
+                    "run_status": "failed",
+                },
+            )
             return updated
         steps = current.get("steps") or []
         statuses = {step["status"] for step in steps}
@@ -1127,6 +1278,14 @@ class AgentRunService:
             self.database.update_agent_goal_status(run_id, status)
         updated = self.database.update_agent_run(run_id, status, error=error)
         self.database.append_agent_event(run_id, f"run_{status}", {"error": error} if error else {})
+        logger.info(
+            "Agent run finished",
+            extra={
+                "event": "agent_run_finished",
+                "trace_id": diagnostic_ref("run", run_id),
+                "run_status": status,
+            },
+        )
         return updated
 
     def prepare_retry(self, run_id: str, session_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1149,6 +1308,7 @@ class AgentRunService:
         if not retry_targets:
             raise ValueError("没有可重试的步骤")
         action = dict(run["input"])
+        self.resolve_execution_strategy(action)
         action["targets"] = retry_targets
         action["_aether_retry"] = True
         action["_resume_checkpoints"] = {

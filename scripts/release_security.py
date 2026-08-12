@@ -183,6 +183,77 @@ def command_verify(args: argparse.Namespace) -> None:
     print("Release manifest signature verified")
 
 
+def generate_ed25519_keypair_b64() -> tuple[str, str]:
+    """Return (private_b64, public_b64) PKCS8 / SubjectPublicKeyInfo PEMs as Base64."""
+    private = Ed25519PrivateKey.generate()
+    private_pem = private.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    public_pem = private.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    return (
+        base64.b64encode(private_pem).decode("ascii"),
+        base64.b64encode(public_pem).decode("ascii"),
+    )
+
+
+def validate_ed25519_pair_b64(private_b64: str, public_b64: str) -> None:
+    """Raise ValueError if the Base64 PEMs are not a matching Ed25519 pair."""
+    private = serialization.load_pem_private_key(
+        base64.b64decode(private_b64, validate=True),
+        password=None,
+    )
+    public = serialization.load_pem_public_key(base64.b64decode(public_b64, validate=True))
+    if not isinstance(private, Ed25519PrivateKey) or not isinstance(public, Ed25519PublicKey):
+        raise ValueError("keys must be Ed25519")
+    probe = b"aetherchat-release-key-check"
+    public.verify(private.sign(probe), probe)
+    # Also ensure provided public matches private-derived public
+    derived = private.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    provided = public.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    if derived != provided:
+        raise ValueError("public key does not match private key")
+
+
+def command_generate_keys(args: argparse.Namespace) -> None:
+    private_b64, public_b64 = generate_ed25519_keypair_b64()
+    validate_ed25519_pair_b64(private_b64, public_b64)
+    if args.output_dir:
+        out = Path(args.output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        priv_path = out / "AETHERCHAT_RELEASE_PRIVATE_KEY_B64.txt"
+        pub_path = out / "AETHERCHAT_RELEASE_PUBLIC_KEY_B64.txt"
+        priv_path.write_text(private_b64 + "\n", encoding="utf-8")
+        pub_path.write_text(public_b64 + "\n", encoding="utf-8")
+        try:
+            priv_path.chmod(0o600)
+        except OSError:
+            pass
+        print(f"Wrote {priv_path} (mode 600 preferred)")
+        print(f"Wrote {pub_path}")
+        print("Configure GitHub Secrets with these values. Do NOT commit the private key.")
+        return
+    print("# Paste into GitHub repository secrets (Settings → Secrets and variables → Actions)")
+    print("# NEVER commit the private key or paste it into issues/PRs.")
+    print()
+    print(f"AETHERCHAT_RELEASE_PRIVATE_KEY_B64={private_b64}")
+    print(f"AETHERCHAT_RELEASE_PUBLIC_KEY_B64={public_b64}")
+    print()
+    print("Also configure Windows Authenticode (electron-builder):")
+    print("  WINDOWS_CSC_LINK=<certificate file or base64>")
+    print("  WINDOWS_CSC_KEY_PASSWORD=<certificate password>")
+
+
 def parser() -> argparse.ArgumentParser:
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     root = argparse.ArgumentParser()
@@ -205,6 +276,16 @@ def parser() -> argparse.ArgumentParser:
     verify = commands.add_parser("verify")
     verify.add_argument("--envelope", required=True); verify.add_argument("--key-env", default="AETHERCHAT_RELEASE_PUBLIC_KEY_B64")
     verify.set_defaults(run=command_verify)
+    generate_keys = commands.add_parser(
+        "generate-keys",
+        help="Generate Ed25519 release keypair as Base64 for GitHub secrets",
+    )
+    generate_keys.add_argument(
+        "--output-dir",
+        default="",
+        help="If set, write key files there instead of printing to stdout",
+    )
+    generate_keys.set_defaults(run=command_generate_keys)
     return root
 
 

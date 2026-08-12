@@ -38,6 +38,13 @@
           },
           "priority": {
             "type": "integer"
+          },
+          "depends_on": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "当前会话内的前置任务 ID；完成前本任务不可认领或执行"
           }
         }
       },
@@ -46,7 +53,7 @@
       "session_id": null,
       "id": "171d3a87-4b64-5b92-bde3-a02546edf442",
       "created_at": "2026-07-15T04:15:17.646285+00:00",
-      "updated_at": "2026-07-15T04:15:17.646285+00:00"
+      "updated_at": "2026-08-11T14:35:42.719064+00:00"
     },
     {
       "name": "claim_task",
@@ -146,7 +153,7 @@
     },
     {
       "name": "write_artifact",
-      "description": "写入当前会话工件并保存完整版本",
+      "description": "写入当前会话工件。短内容用 overwrite；长文档必须把 content 拆成不超过 1200 个汉字的块，首块 overwrite/sequence=0，后续用 append 且 sequence 递增。",
       "category": "artifact",
       "owner": "system",
       "kind": "internal",
@@ -163,8 +170,24 @@
           "content": {
             "type": "string"
           },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "overwrite",
+              "append"
+            ],
+            "description": "默认 overwrite；长文档后续分块使用 append"
+          },
+          "sequence": {
+            "type": "integer",
+            "description": "分块序号；overwrite 为 0，append 从 1 递增"
+          },
           "commit_message": {
             "type": "string"
+          },
+          "task_id": {
+            "type": "string",
+            "description": "可选：关联任务；成功后自动推进到 review"
           }
         }
       },
@@ -173,7 +196,7 @@
       "session_id": null,
       "id": "1c64b029-0979-58c3-96e1-db8be776e377",
       "created_at": "2026-07-15T04:15:17.646311+00:00",
-      "updated_at": "2026-07-15T04:15:17.646311+00:00"
+      "updated_at": "2026-08-11T14:35:42.719130+00:00"
     },
     {
       "name": "run_command",
@@ -195,6 +218,10 @@
           },
           "timeout": {
             "type": "integer"
+          },
+          "task_id": {
+            "type": "string",
+            "description": "可选：关联任务；成功后自动推进到 review"
           }
         }
       },
@@ -203,7 +230,7 @@
       "session_id": null,
       "id": "35fcf9ce-52ab-5097-b041-d2f5cd008637",
       "created_at": "2026-07-15T04:15:17.646319+00:00",
-      "updated_at": "2026-07-15T04:15:17.646319+00:00"
+      "updated_at": "2026-08-11T14:35:42.719134+00:00"
     },
     {
       "name": "create_merge_proposal",
@@ -320,6 +347,195 @@
       "id": "b201900e-6650-512b-9077-e5146d0401eb",
       "created_at": "2026-07-15T04:15:17.646337+00:00",
       "updated_at": "2026-07-15T04:15:17.646337+00:00"
+    },
+    {
+      "name": "upsert_memory_entity",
+      "description": "把需要跨 Agent 复用的稳定实体写入当前会话共享记忆；同一 key 会更新",
+      "category": "memory",
+      "owner": "system",
+      "kind": "internal",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "key",
+          "value"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "稳定键，例如 character:lin-xia 或 url:project-home"
+          },
+          "value": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "例如 character、url、fact、generated_asset"
+          },
+          "metadata": {
+            "type": "object",
+            "description": "可选的简单标量元数据"
+          }
+        }
+      },
+      "output_template": "工具 ${name} 已执行，输入：${input}",
+      "enabled": true,
+      "session_id": null,
+      "id": "b312d892-d800-5bd9-94f7-5130f8a6b389",
+      "created_at": "2026-08-11T14:35:42.719120+00:00",
+      "updated_at": "2026-08-11T14:35:42.719120+00:00"
+    },
+    {
+      "name": "workspace_list_files",
+      "description": "列出当前 Worker 独立 Git worktree 中的文件",
+      "category": "agent_workspace",
+      "owner": "system",
+      "kind": "internal",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_template": "工具 ${name} 已执行，输入：${input}",
+      "enabled": true,
+      "session_id": null,
+      "id": "36e2b6af-47ef-59eb-912a-f407cb19d6a3",
+      "created_at": "2026-08-11T14:35:42.719141+00:00",
+      "updated_at": "2026-08-11T14:35:42.719141+00:00"
+    },
+    {
+      "name": "workspace_read_file",
+      "description": "读取当前 Worker 独立 Git worktree 中的 UTF-8 文本文件",
+      "category": "agent_workspace",
+      "owner": "system",
+      "kind": "internal",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "output_template": "工具 ${name} 已执行，输入：${input}",
+      "enabled": true,
+      "session_id": null,
+      "id": "e468528b-430b-5742-9feb-85334b501727",
+      "created_at": "2026-08-11T14:35:42.719147+00:00",
+      "updated_at": "2026-08-11T14:35:42.719147+00:00"
+    },
+    {
+      "name": "workspace_write_file",
+      "description": "写入当前 Worker 独立 Git worktree；不会修改用户主仓库",
+      "category": "agent_workspace",
+      "owner": "system",
+      "kind": "internal",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "path",
+          "content"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string",
+            "description": "可选：关联任务；成功后自动推进到 review"
+          }
+        }
+      },
+      "output_template": "工具 ${name} 已执行，输入：${input}",
+      "enabled": true,
+      "session_id": null,
+      "id": "6009d575-156a-5c61-a608-739cb1890e14",
+      "created_at": "2026-08-11T14:35:42.719153+00:00",
+      "updated_at": "2026-08-11T14:35:42.719153+00:00"
+    },
+    {
+      "name": "workspace_delete_file",
+      "description": "删除当前 Worker 独立 Git worktree 中的普通文件",
+      "category": "agent_workspace",
+      "owner": "system",
+      "kind": "internal",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string",
+            "description": "可选：关联任务；成功后自动推进到 review"
+          }
+        }
+      },
+      "output_template": "工具 ${name} 已执行，输入：${input}",
+      "enabled": true,
+      "session_id": null,
+      "id": "b7f316f0-058e-5878-a7a2-fee60daaf0d3",
+      "created_at": "2026-08-11T14:35:42.719158+00:00",
+      "updated_at": "2026-08-11T14:35:42.719158+00:00"
+    },
+    {
+      "name": "workspace_run_command",
+      "description": "在当前 Worker worktree 的断网 Docker 沙箱中运行命令",
+      "category": "agent_workspace",
+      "owner": "system",
+      "kind": "internal",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "cmd"
+        ],
+        "properties": {
+          "cmd": {
+            "type": "string"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "timeout": {
+            "type": "integer"
+          },
+          "task_id": {
+            "type": "string",
+            "description": "可选：关联任务；成功后自动推进到 review"
+          }
+        }
+      },
+      "output_template": "工具 ${name} 已执行，输入：${input}",
+      "enabled": true,
+      "session_id": null,
+      "id": "f3e85f5c-1eb1-5718-bd4e-4c2554afab6c",
+      "created_at": "2026-08-11T14:35:42.719168+00:00",
+      "updated_at": "2026-08-11T14:35:42.719168+00:00"
+    },
+    {
+      "name": "workspace_status",
+      "description": "读取当前 Worker 独立 Git worktree 的变更状态",
+      "category": "agent_workspace",
+      "owner": "system",
+      "kind": "internal",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_template": "工具 ${name} 已执行，输入：${input}",
+      "enabled": true,
+      "session_id": null,
+      "id": "f5758830-f067-5ae6-95ab-5cfb27311140",
+      "created_at": "2026-08-11T14:35:42.719172+00:00",
+      "updated_at": "2026-08-11T14:35:42.719172+00:00"
     }
   ]
 }
