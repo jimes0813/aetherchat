@@ -161,9 +161,24 @@ def evaluate_public_rc_preflight() -> dict[str, Any]:
             "done_hint": "local_dev_ready=true",
         },
         {
-            "id": "tag_rc",
-            "title": "Push signed RC tag (vX.Y.Z-rc.N)",
-            "command": "git tag v0.2.0-rc.1 && git push origin v0.2.0-rc.1",
+            "id": "tag_linux_rc",
+            "title": "Push Linux-first RC tag (vX.Y.Z-rc.N) — Ed25519 only",
+            "command": "git tag -a v0.2.0-rc.2 -m 'Linux RC' && git push origin v0.2.0-rc.2",
+            "done_hint": "release-preflight green; linux-x64 + linux-arm64 green; prerelease published",
+        },
+        {
+            "id": "configure_windows_csc",
+            "title": "Configure Windows CSC for full multi-platform RC/stable",
+            "command": (
+                "gh secret set WINDOWS_CSC_LINK < cert.p12.b64 && "
+                "gh secret set WINDOWS_CSC_KEY_PASSWORD --body '…'"
+            ),
+            "done_hint": "gh secret list shows WINDOWS_CSC_* ; full_rc/stable path enabled",
+        },
+        {
+            "id": "tag_stable",
+            "title": "Push stable tag (vX.Y.Z) — requires all four secrets",
+            "command": "git tag -a v0.2.0 -m 'stable' && git push origin v0.2.0",
             "done_hint": "release-preflight green; three platform jobs green",
         },
         {
@@ -186,16 +201,18 @@ def evaluate_public_rc_preflight() -> dict[str, Any]:
         "github_ed25519_ready": bool(gh_status.get("ed25519_ready")),
         "github_windows_csc_ready": bool(gh_status.get("windows_csc_ready")),
         "local_dev_ready": local_ready,
+        # Linux-first RC: Ed25519 + local evidence (Windows CSC optional).
+        "linux_rc_ready": False,
+        # Full multi-platform signed RC / stable: all four secrets.
         "tag_ready": False,
         "public_1_0_go_no_go": "No-Go",
         "blockers": [],
     }
-    # Linux-oriented RC can proceed for tag preflight with Ed25519 only if Windows
-    # is allowed to fail-fast; full signed multi-platform RC still needs CSC.
+    checklist["linux_rc_ready"] = bool(
+        checklist["local_dev_ready"] and checklist["github_ed25519_ready"]
+    )
     checklist["tag_ready"] = bool(
-        checklist["local_dev_ready"]
-        and checklist["github_ed25519_ready"]
-        and checklist["github_windows_csc_ready"]
+        checklist["linux_rc_ready"] and checklist["github_windows_csc_ready"]
     )
     if not checklist["local_dev_ready"]:
         checklist["blockers"].append("local_dev evidence not ready — run release_evidence.py check")
@@ -203,17 +220,22 @@ def evaluate_public_rc_preflight() -> dict[str, Any]:
         checklist["blockers"].append("GitHub Ed25519 secrets incomplete or gh unavailable")
     if not checklist["github_windows_csc_ready"]:
         checklist["blockers"].append(
-            "Windows CSC secrets missing (WINDOWS_CSC_LINK / WINDOWS_CSC_KEY_PASSWORD) — tag release will fail preflight"
+            "Windows CSC secrets missing — Linux-first RC (v*-rc*) still allowed; "
+            "stable tags and full multi-platform RC need WINDOWS_CSC_LINK / WINDOWS_CSC_KEY_PASSWORD"
         )
     if not pair_ok and env_ed25519:
         checklist["blockers"].append("Ed25519 key pair failed validation")
     if checklist["tag_ready"]:
         checklist["blockers"].append(
-            "Ready to cut RC tag; still need three-platform CI green + signed manifest for public 1.0"
+            "Ready for full signed RC/stable; still need three-platform CI green + signed manifest for public 1.0"
+        )
+    elif checklist["linux_rc_ready"]:
+        checklist["blockers"].append(
+            "Ready for Linux-first RC tag (v*-rc*); add Windows CSC for full multi-platform"
         )
     elif not checklist["blockers"]:
         checklist["blockers"].append(
-            "CI three-platform green + signed manifest publication still required for public 1.0"
+            "CI green + signed manifest publication still required for public 1.0"
         )
 
     return {
@@ -244,7 +266,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- GitHub secrets ready (all four): **{report['checklist']['github_secrets_ready']}**",
         f"- GitHub Ed25519 ready: **{report['checklist'].get('github_ed25519_ready')}**",
         f"- GitHub Windows CSC ready: **{report['checklist'].get('github_windows_csc_ready')}**",
-        f"- tag_ready (full signed RC): **{report['checklist'].get('tag_ready')}**",
+        f"- linux_rc_ready (Ed25519 + Linux packages): **{report['checklist'].get('linux_rc_ready')}**",
+        f"- tag_ready (full multi-platform signed): **{report['checklist'].get('tag_ready')}**",
         f"- public_1.0: **{report['checklist']['public_1_0_go_no_go']}**",
         "",
         "### Blockers",
@@ -277,7 +300,8 @@ def render_markdown(report: dict[str, Any]) -> str:
             "## Notes",
             "",
             "- Never commit private keys or certificate material.",
-            "- Tag (`v*`) builds fail fast if secrets are missing (release-preflight).",
+            "- RC tags (`v*-rc*`) need Ed25519 only; Windows CSC optional (Linux-first path).",
+            "- Stable tags (`vX.Y.Z`) require all four secrets and fail fast without CSC.",
             "- Branch/PR builds stay unsigned by design.",
             "",
         ]
@@ -312,6 +336,7 @@ def main() -> int:
     print(f"  github_ed25519_ready: {report['checklist'].get('github_ed25519_ready')}")
     print(f"  github_windows_csc_ready: {report['checklist'].get('github_windows_csc_ready')}")
     print(f"  github_all_four_ready: {report['checklist']['github_secrets_ready']}")
+    print(f"  linux_rc_ready: {report['checklist'].get('linux_rc_ready')}")
     print(f"  tag_ready: {report['checklist'].get('tag_ready')}")
     print(f"  ed25519: {report['ed25519_pair']['detail']}")
     print(f"  github: {report['github_secrets']['detail']}")

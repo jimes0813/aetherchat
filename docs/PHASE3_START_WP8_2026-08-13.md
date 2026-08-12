@@ -66,8 +66,17 @@
 | 设置 | `WorkspaceSettings.preferredProjectId` 持久化 |
 | 测试 | governance helpers + conversationFromSession |
 
-## 下一步建议（Batch 48+）
+## Batch 48（Linux-first RC 发布路径）
 
-1. 客户触发时再做 SSO 与团队空间
-2. Windows CSC 配齐后签公共 RC
-3. 可选：推送未 push 的 Phase 3 提交
+| 项 | 内容 |
+|---|---|
+| RC 标签 `v*-rc*` | 仅需 Ed25519；无 Windows CSC 时跳过 windows 矩阵，发布 Linux prerelease |
+| 稳定标签 `vX.Y.Z` | 仍强制四 secrets（含 CSC），缺则 fail-fast |
+| 清单 | `linux_rc_ready` vs `tag_ready`（全平台） |
+| 工作流 | 动态 matrix；signed-release 可仅含 Linux 产物 |
+
+## 下一步建议（Batch 49+）
+
+1. 移动/重打 `v0.2.0-rc.2` 走 Linux-first 路径验证 CI
+2. 配置 Windows CSC 后切 full_rc / stable
+3. SSO / 团队空间（有客户需求时）

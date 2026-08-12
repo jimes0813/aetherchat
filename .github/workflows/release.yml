@@ -19,28 +19,99 @@ jobs:
   release-preflight:
     name: release-preflight
     runs-on: ubuntu-24.04
+    outputs:
+      is_rc: ${{ steps.classify.outputs.is_rc }}
+      include_windows: ${{ steps.classify.outputs.include_windows }}
+      release_mode: ${{ steps.classify.outputs.release_mode }}
+      matrix: ${{ steps.classify.outputs.matrix }}
     env:
       WINDOWS_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
       WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
       RELEASE_PRIVATE_KEY: ${{ secrets.AETHERCHAT_RELEASE_PRIVATE_KEY_B64 }}
       RELEASE_PUBLIC_KEY: ${{ secrets.AETHERCHAT_RELEASE_PUBLIC_KEY_B64 }}
     steps:
-      - name: Validate stable/RC signing configuration
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Classify tag and validate signing secrets
+        id: classify
         shell: bash
         run: |
-          missing=()
-          for name in WINDOWS_CSC_LINK WINDOWS_CSC_KEY_PASSWORD RELEASE_PRIVATE_KEY RELEASE_PUBLIC_KEY; do
-            if [ -z "${!name}" ]; then missing+=("$name"); fi
+          set -euo pipefail
+          is_tag=false
+          is_rc=false
+          include_windows=true
+          release_mode=branch
+
+          linux_matrix='[{"target":"linux-x64","os":"ubuntu-24.04","platform":"linux","arch":"x64"},{"target":"linux-arm64","os":"ubuntu-24.04-arm","platform":"linux","arch":"arm64"}]'
+          windows_leg='{"target":"windows-x64","os":"windows-2025","platform":"windows","arch":"x64"}'
+          full_matrix=$(python3 -c "import json,sys; a=json.loads(sys.argv[1]); a.append(json.loads(sys.argv[2])); print(json.dumps(a))" "$linux_matrix" "$windows_leg")
+
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            is_tag=true
+            tag="${GITHUB_REF_NAME}"
+            # Prerelease / RC: v0.2.0-rc.1, v1.0.0-rc.2, etc.
+            if [[ "$tag" == *-rc* ]] || [[ "$tag" == *rc.[0-9]* ]]; then
+              is_rc=true
+              release_mode=linux_rc
+            else
+              release_mode=stable
+            fi
+          fi
+
+          if [[ "$is_tag" != "true" ]]; then
+            echo "Branch/PR validation does not publish release artifacts."
+            echo "is_rc=false" >> "$GITHUB_OUTPUT"
+            echo "include_windows=true" >> "$GITHUB_OUTPUT"
+            echo "release_mode=branch" >> "$GITHUB_OUTPUT"
+            echo "matrix=${full_matrix}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # All tag releases need Ed25519 update-signing keys.
+          missing_ed=()
+          for name in RELEASE_PRIVATE_KEY RELEASE_PUBLIC_KEY; do
+            if [ -z "${!name}" ]; then missing_ed+=("$name"); fi
           done
-          if [ "${#missing[@]}" -ne 0 ]; then
-            printf 'Signed release is blocked; missing secret(s): %s\n' "${missing[*]}" >&2
+          if [ "${#missing_ed[@]}" -ne 0 ]; then
+            printf 'Signed release is blocked; missing Ed25519 secret(s): %s\n' "${missing_ed[*]}" >&2
             exit 1
           fi
-          echo "All Authenticode and Ed25519 release secrets are configured."
-      - name: Record unsigned validation mode
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
-        run: echo "Branch/PR validation does not publish release artifacts."
+
+          has_windows=false
+          if [ -n "${WINDOWS_CSC_LINK:-}" ] && [ -n "${WINDOWS_CSC_KEY_PASSWORD:-}" ]; then
+            has_windows=true
+          fi
+
+          if [[ "$is_rc" == "true" ]]; then
+            if [[ "$has_windows" == "true" ]]; then
+              include_windows=true
+              release_mode=full_rc
+              matrix_json="$full_matrix"
+              echo "RC tag with Windows CSC: full multi-platform signed release."
+            else
+              include_windows=false
+              release_mode=linux_rc
+              matrix_json="$linux_matrix"
+              echo "RC tag without Windows CSC: Linux-first Ed25519-signed release (Windows skipped)."
+            fi
+          else
+            # Stable tags always require Authenticode + Ed25519.
+            missing_win=()
+            for name in WINDOWS_CSC_LINK WINDOWS_CSC_KEY_PASSWORD; do
+              if [ -z "${!name}" ]; then missing_win+=("$name"); fi
+            done
+            if [ "${#missing_win[@]}" -ne 0 ]; then
+              printf 'Stable signed release is blocked; missing secret(s): %s\n' "${missing_win[*]}" >&2
+              exit 1
+            fi
+            include_windows=true
+            release_mode=stable
+            matrix_json="$full_matrix"
+            echo "Stable tag: all Authenticode and Ed25519 secrets configured."
+          fi
+
+          echo "is_rc=${is_rc}" >> "$GITHUB_OUTPUT"
+          echo "include_windows=${include_windows}" >> "$GITHUB_OUTPUT"
+          echo "release_mode=${release_mode}" >> "$GITHUB_OUTPUT"
+          echo "matrix=${matrix_json}" >> "$GITHUB_OUTPUT"
 
   build:
     needs: release-preflight
@@ -48,25 +119,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - target: linux-x64
-            os: ubuntu-24.04
-            platform: linux
-            arch: x64
-          - target: linux-arm64
-            os: ubuntu-24.04-arm
-            platform: linux
-            arch: arm64
-          - target: windows-x64
-            os: windows-2025
-            platform: windows
-            arch: x64
+        include: ${{ fromJSON(needs.release-preflight.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     env:
       AETHERCHAT_ALLOW_UNAUTHENTICATED: '1'
       CSC_LINK: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.WINDOWS_CSC_LINK || '' }}
       CSC_KEY_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.WINDOWS_CSC_KEY_PASSWORD || '' }}
-      AETHERCHAT_REQUIRE_CODE_SIGNING: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '0' }}
+      # Code-sign Windows only when CSC is present (stable always; RC when secrets set).
+      AETHERCHAT_REQUIRE_CODE_SIGNING: ${{ startsWith(github.ref, 'refs/tags/v') && needs.release-preflight.outputs.include_windows == 'true' && '1' || '0' }}
       AETHERCHAT_RELEASE_PUBLIC_KEY_B64: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.AETHERCHAT_RELEASE_PUBLIC_KEY_B64 || '' }}
 
     steps:
@@ -201,7 +261,7 @@ jobs:
 
   signed-release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [release-preflight, build]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -209,6 +269,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       AETHERCHAT_RELEASE_PRIVATE_KEY_B64: ${{ secrets.AETHERCHAT_RELEASE_PRIVATE_KEY_B64 }}
       AETHERCHAT_RELEASE_PUBLIC_KEY_B64: ${{ secrets.AETHERCHAT_RELEASE_PUBLIC_KEY_B64 }}
+      INCLUDE_WINDOWS: ${{ needs.release-preflight.outputs.include_windows }}
+      RELEASE_MODE: ${{ needs.release-preflight.outputs.release_mode }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v5
@@ -222,24 +284,50 @@ jobs:
       - name: Create and verify signed update manifest
         shell: bash
         run: |
+          set -euo pipefail
           test -n "$AETHERCHAT_RELEASE_PRIVATE_KEY_B64"
           test -n "$AETHERCHAT_RELEASE_PUBLIC_KEY_B64"
           version="${GITHUB_REF_NAME#v}"
-          linux_x64=$(find release-assets -name '*linux-x86_64.AppImage' -o -name '*linux-x64.AppImage' | head -n1)
+          linux_x64=$(find release-assets \( -name '*linux-x86_64.AppImage' -o -name '*linux-x64.AppImage' \) | head -n1)
           linux_arm64=$(find release-assets -name '*linux-arm64.AppImage' | head -n1)
-          windows_x64=$(find release-assets -name 'AetherChat-Setup-*.exe' | head -n1)
-          test -f "$linux_x64" && test -f "$linux_arm64" && test -f "$windows_x64"
+          windows_x64=$(find release-assets -name 'AetherChat-Setup-*.exe' | head -n1 || true)
+          test -n "$linux_x64" && test -f "$linux_x64"
+          test -n "$linux_arm64" && test -f "$linux_arm64"
           base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
-          python scripts/release_security.py manifest --version "$version" \
-            --release "linux,x64,$linux_x64,$base/$(basename "$linux_x64")" \
-            --release "linux,arm64,$linux_arm64,$base/$(basename "$linux_arm64")" \
-            --release "windows,x64,$windows_x64,$base/$(basename "$windows_x64")" \
-            --output release-assets/update-manifest.json
+          args=(
+            --version "$version"
+            --release "linux,x64,$linux_x64,$base/$(basename "$linux_x64")"
+            --release "linux,arm64,$linux_arm64,$base/$(basename "$linux_arm64")"
+          )
+          if [[ "${INCLUDE_WINDOWS}" == "true" ]]; then
+            test -n "$windows_x64" && test -f "$windows_x64"
+            args+=(--release "windows,x64,$windows_x64,$base/$(basename "$windows_x64")")
+          else
+            echo "Linux-first RC: omitting Windows from update manifest (mode=${RELEASE_MODE})."
+          fi
+          python scripts/release_security.py manifest "${args[@]}" --output release-assets/update-manifest.json
           python scripts/release_security.py sign --manifest release-assets/update-manifest.json --output release-assets/update-manifest.signed.json
           python scripts/release_security.py verify --envelope release-assets/update-manifest.signed.json
           find release-assets -maxdepth 1 -type f ! -name 'SHA256SUMS' -print0 | sort -z | xargs -0 sha256sum > release-assets/SHA256SUMS
       - name: Publish release assets
         shell: bash
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --verify-tag --title "AetherChat $GITHUB_REF_NAME" --generate-notes
-          gh release upload "$GITHUB_REF_NAME" release-assets/* --clobber
+          set -euo pipefail
+          title="AetherChat $GITHUB_REF_NAME"
+          notes_flag=(--generate-notes)
+          if [[ "${RELEASE_MODE}" == "linux_rc" ]]; then
+            title="AetherChat $GITHUB_REF_NAME (Linux RC)"
+          fi
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            true
+          else
+            # RC tags are prereleases; stable tags are full releases.
+            if [[ "${{ needs.release-preflight.outputs.is_rc }}" == "true" ]]; then
+              gh release create "$GITHUB_REF_NAME" --verify-tag --prerelease --title "$title" "${notes_flag[@]}"
+            else
+              gh release create "$GITHUB_REF_NAME" --verify-tag --title "$title" "${notes_flag[@]}"
+            fi
+          fi
+          # Upload artifacts (may live in nested dirs from download-artifact).
+          mapfile -t files < <(find release-assets -type f)
+          gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber

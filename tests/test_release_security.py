@@ -49,7 +49,12 @@ def test_release_workflow_fails_fast_when_signing_secrets_are_missing():
         "AETHERCHAT_RELEASE_PUBLIC_KEY_B64",
     ):
         assert secret_name in workflow
-    assert "Signed release is blocked; missing secret(s)" in workflow
+    # Stable path still fail-fast without CSC; RC can proceed Ed25519-only.
+    assert "Stable signed release is blocked; missing secret(s)" in workflow
+    assert "missing Ed25519 secret(s)" in workflow
+    assert "linux_rc" in workflow
+    assert "fromJSON(needs.release-preflight.outputs.matrix)" in workflow
+    assert "INCLUDE_WINDOWS" in workflow
 
 
 def _encoded_keys():
