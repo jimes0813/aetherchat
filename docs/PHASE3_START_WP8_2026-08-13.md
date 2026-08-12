@@ -35,9 +35,19 @@
 | 审计 | 拒绝始终记入；运行时允许不记（避免刷屏）；API 试算仍记 allow |
 | 导出 | `GET /platform/audit/export?format=json|jsonl`；治理面板「导出 JSON」 |
 
-## 下一步建议（Batch 45+）
+## Batch 45（项目作用域 + 审计保留）
 
-1. 项目/工作区作用域（tenant → project）
-2. 审计保留策略与 CSV
-3. 客户触发时再做 SSO 与团队空间
-4. Windows CSC 配齐后签公共 RC
+| 项 | 内容 |
+|---|---|
+| 项目 | `projects` 表；默认项目 `default`；`POST/GET /platform/projects`；项目策略覆盖租户 |
+| 生效策略 | `effective_policy(tenant, project)` 合并后用于 authorize |
+| 审计 | `project_id` 字段；`format=csv` 导出；`POST /platform/audit/prune` |
+| 保留 | `audit_retention_days`（默认 90）+ `audit_max_events`（默认 10000）；append 时 best-effort 裁剪 |
+| schema | `schema_version=2`，旧 store 自动 migrate |
+| 单测 | 12 passed |
+
+## 下一步建议（Batch 46+）
+
+1. 会话/Run 绑定 `project_id` 并传入 runtime gate
+2. 客户触发时再做 SSO 与团队空间
+3. Windows CSC 配齐后签公共 RC

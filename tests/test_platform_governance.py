@@ -18,6 +18,7 @@ from app.services.platform_governance import (  # noqa: E402
     AuthorizeRequest,
     PolicyPatch,
     PrincipalCreate,
+    ProjectCreate,
     PlatformGovernanceService,
 )
 
@@ -126,3 +127,68 @@ def test_status_reports_runtime_gate(service: PlatformGovernanceService):
     assert status["runtime_gate"]["enabled"] is True
     assert status["capabilities"]["runtime_policy_gate"] is True
     assert status["capabilities"]["audit_export"] is True
+    assert status["capabilities"]["project_scope"] is True
+    assert status["capabilities"]["audit_export_csv"] is True
+    assert status["project_count"] >= 1
+    assert status["default_project_id"]
+
+
+def test_project_policy_overrides_tenant_allowlist(service: PlatformGovernanceService):
+    service.patch_policy(
+        "local",
+        PolicyPatch(enforce_tool_allowlist=True, allowed_tools=["write_artifact", "create_task"]),
+    )
+    project = service.create_project(
+        ProjectCreate(name="严格项目", slug="strict", tenant_id="local"),
+    )
+    service.patch_project_policy(
+        project["id"],
+        PolicyPatch(allowed_tools=["write_artifact"]),
+    )
+    # Tenant still allows create_task; project override removes it.
+    deny = service.authorize(
+        AuthorizeRequest(
+            tool_name="create_task",
+            action="invoke_tool",
+            project_id=project["id"],
+        )
+    )
+    assert deny["allowed"] is False
+    assert deny["reason"] == "tool_not_allowlisted"
+    allow = service.authorize(
+        AuthorizeRequest(
+            tool_name="write_artifact",
+            action="invoke_tool",
+            project_id=project["id"],
+        )
+    )
+    assert allow["allowed"] is True
+    assert allow["project_id"] == project["id"]
+
+
+def test_export_audit_csv(service: PlatformGovernanceService):
+    service.authorize(AuthorizeRequest(tool_name="create_task", action="invoke_tool"))
+    payload = service.export_audit(limit=10, tenant_id="local", format="csv")
+    assert payload["format"] == "csv"
+    assert payload["count"] >= 1
+    assert "id,ts,action" in payload["body"]
+    assert "authorize." in payload["body"]
+
+
+def test_prune_audit_by_max_events(service: PlatformGovernanceService):
+    for index in range(12):
+        service.append_audit(
+            action=f"test.event.{index}",
+            actor_id=None,
+            tenant_id="local",
+            project_id="default",
+            detail={"i": index},
+            prune=False,
+        )
+    result = service.prune_audit(tenant_id="local", retention_days=3650, max_events=100)
+    # With max_events=100 and few rows, nothing age-based removed; then tighten:
+    result = service.prune_audit(tenant_id="local", retention_days=3650, max_events=5)
+    assert result["kept"] <= 6  # + optional audit.prune line
+    assert result["removed"] >= 1
+    events = service.list_audit(limit=50, tenant_id="local")
+    assert len(events) <= 10
