@@ -124,6 +124,7 @@ class SessionSummary(BaseModel):
     title: str
     summary: str = ""
     mode: str = "project"
+    project_id: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
     last_message_at: str | None = None

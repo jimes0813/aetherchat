@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from ..models.schemas import Message, Task
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 EVENT_STREAM_RETENTION_LIMIT = 4096
 READINESS_TABLES = (
     "agent_runs",
@@ -198,6 +198,44 @@ class ChatDatabase:
                ON event_journal(session_id, stream_id, sequence)"""
         )
 
+    def _migration_4(self, connection: sqlite3.Connection) -> None:
+        """Bind sessions/runs to WP-8 governance project_id (nullable for backfill)."""
+        session_cols = self._table_columns(connection, "sessions")
+        if "project_id" not in session_cols:
+            connection.execute(
+                "ALTER TABLE sessions ADD COLUMN project_id TEXT"
+            )
+        connection.execute(
+            """CREATE INDEX IF NOT EXISTS idx_sessions_project
+               ON sessions(project_id)"""
+        )
+        run_cols = self._table_columns(connection, "agent_runs")
+        if "project_id" not in run_cols:
+            connection.execute(
+                "ALTER TABLE agent_runs ADD COLUMN project_id TEXT"
+            )
+        connection.execute(
+            """CREATE INDEX IF NOT EXISTS idx_agent_runs_project
+               ON agent_runs(project_id)"""
+        )
+        # Backfill agent_runs from session when session already has project_id.
+        connection.execute(
+            """
+            UPDATE agent_runs
+            SET project_id = (
+                SELECT sessions.project_id FROM sessions
+                WHERE sessions.id = agent_runs.session_id
+            )
+            WHERE project_id IS NULL
+              AND EXISTS (
+                SELECT 1 FROM sessions
+                WHERE sessions.id = agent_runs.session_id
+                  AND sessions.project_id IS NOT NULL
+                  AND sessions.project_id != ''
+              )
+            """
+        )
+
     def _run_migrations(self, connection: sqlite3.Connection) -> None:
         row = connection.execute("PRAGMA user_version").fetchone()
         version = int(row[0]) if row else 0
@@ -205,6 +243,7 @@ class ChatDatabase:
             1: self._migration_1,
             2: self._migration_2,
             3: self._migration_3,
+            4: self._migration_4,
         }
         for target_version in range(version + 1, CURRENT_SCHEMA_VERSION + 1):
             migration = migrations[target_version]
@@ -419,10 +458,12 @@ class ChatDatabase:
                     title TEXT NOT NULL,
                     summary TEXT NOT NULL DEFAULT '',
                     mode TEXT NOT NULL DEFAULT 'project',
+                    project_id TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     last_message_at TEXT
                 );
+                CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id);
 
                 CREATE TABLE IF NOT EXISTS messages (
                     id TEXT PRIMARY KEY,
@@ -483,6 +524,7 @@ class ChatDatabase:
                     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
                     status TEXT NOT NULL,
                     mode TEXT NOT NULL DEFAULT 'project',
+                    project_id TEXT,
                     input_json TEXT NOT NULL,
                     targets_json TEXT NOT NULL DEFAULT '[]',
                     retry_count INTEGER NOT NULL DEFAULT 0,
@@ -497,6 +539,7 @@ class ChatDatabase:
                     started_at TEXT,
                     completed_at TEXT
                 );
+                CREATE INDEX IF NOT EXISTS idx_agent_runs_project ON agent_runs(project_id);
                 CREATE INDEX IF NOT EXISTS idx_agent_runs_session_updated
                     ON agent_runs(session_id, updated_at DESC);
 
@@ -829,22 +872,73 @@ class ChatDatabase:
         *,
         title: str = "新会话",
         mode: str = "project",
+        project_id: str | None = None,
     ) -> dict[str, Any]:
         now = _utc_now()
         with self._lock, self._connect() as connection:
             connection.execute(
                 """
-                INSERT INTO sessions (id, title, summary, mode, created_at, updated_at)
-                VALUES (?, ?, '', ?, ?, ?)
+                INSERT INTO sessions (id, title, summary, mode, project_id, created_at, updated_at)
+                VALUES (?, ?, '', ?, ?, ?, ?)
                 ON CONFLICT(id) DO NOTHING
                 """,
-                (str(session_id), title.strip()[:200] or "新会话", mode, now, now),
+                (
+                    str(session_id),
+                    title.strip()[:200] or "新会话",
+                    mode,
+                    (str(project_id).strip() if project_id else None) or None,
+                    now,
+                    now,
+                ),
             )
+            # Fill project_id on existing rows that still lack binding.
+            if project_id:
+                connection.execute(
+                    """
+                    UPDATE sessions
+                    SET project_id = COALESCE(NULLIF(project_id, ''), ?),
+                        updated_at = ?
+                    WHERE id = ? AND (project_id IS NULL OR project_id = '')
+                    """,
+                    (str(project_id).strip(), now, str(session_id)),
+                )
             row = connection.execute("SELECT * FROM sessions WHERE id = ?", (str(session_id),)).fetchone()
         return dict(row) if row else {}
 
-    def create_session(self, session_id: str, title: str, mode: str = "project") -> dict[str, Any]:
-        return self.ensure_session(session_id, title=title, mode=mode)
+    def create_session(
+        self,
+        session_id: str,
+        title: str,
+        mode: str = "project",
+        *,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self.ensure_session(session_id, title=title, mode=mode, project_id=project_id)
+
+    def set_session_project(self, session_id: str, project_id: str | None) -> dict[str, Any] | None:
+        """Bind or clear governance project_id for a session."""
+        now = _utc_now()
+        clean = (str(project_id).strip() if project_id is not None else None) or None
+        with self._lock, self._connect() as connection:
+            existing = connection.execute(
+                "SELECT id FROM sessions WHERE id = ?",
+                (str(session_id),),
+            ).fetchone()
+            if existing is None:
+                return None
+            connection.execute(
+                """
+                UPDATE sessions
+                SET project_id = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (clean, now, str(session_id)),
+            )
+            row = connection.execute(
+                "SELECT * FROM sessions WHERE id = ?",
+                (str(session_id),),
+            ).fetchone()
+        return dict(row) if row else None
 
     def save_message(self, message: Message, *, mode: str = "project") -> None:
         session_id = str(message.session_id)
@@ -1198,8 +1292,8 @@ class ChatDatabase:
     def _ensure_session_in_connection(connection: sqlite3.Connection, session_id: str, now: str) -> None:
         connection.execute(
             """
-            INSERT INTO sessions (id, title, summary, mode, created_at, updated_at)
-            VALUES (?, '新会话', '', 'project', ?, ?)
+            INSERT INTO sessions (id, title, summary, mode, project_id, created_at, updated_at)
+            VALUES (?, '新会话', '', 'project', NULL, ?, ?)
             ON CONFLICT(id) DO NOTHING
             """,
             (session_id, now, now),
@@ -1978,6 +2072,12 @@ class ChatDatabase:
         self.ensure_session(session_id, mode=str(action.get("mode") or "project"))
         now = _utc_now()
         run_id = str(uuid4())
+        session_row = self.get_session(session_id) or {}
+        project_id = (
+            str(action.get("project_id") or "").strip()
+            or str(session_row.get("project_id") or "").strip()
+            or None
+        )
         safe_action = {
             key: value for key, value in action.items()
             if key in {
@@ -1989,20 +2089,26 @@ class ChatDatabase:
                 "repository_id", "repository_name",
                 "repository_base_commit", "repository_branch",
                 "verification_commands",
+                "project_id",
             }
         }
         with self._lock, self._connect() as connection:
             connection.execute(
                 """INSERT INTO agent_runs
-                   (id, session_id, status, mode, input_json, targets_json, created_at, updated_at)
-                   VALUES (?, ?, 'queued', ?, ?, ?, ?, ?)""",
+                   (id, session_id, status, mode, project_id, input_json, targets_json, created_at, updated_at)
+                   VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?)""",
                 (
                     run_id, str(session_id), str(action.get("mode") or "project"),
+                    project_id,
                     json.dumps(safe_action, ensure_ascii=False),
                     json.dumps(list(dict.fromkeys(targets)), ensure_ascii=False), now, now,
                 ),
             )
-        self.append_agent_event(run_id, "run_created", {"targets": targets})
+        self.append_agent_event(
+            run_id,
+            "run_created",
+            {"targets": targets, "project_id": project_id},
+        )
         return self.get_agent_run(run_id, include_events=False) or {}
 
     def list_agent_runs(self, session_id: str, limit: int = 100) -> list[dict[str, Any]]:

@@ -515,7 +515,12 @@ class ToolRegistry:
 
         from .platform_governance import platform_governance
 
-        platform_governance.require_tool_invoke(str(tool.get("name") or tool_id))
+        context = execution_context or {}
+        platform_governance.require_tool_invoke(
+            str(tool.get("name") or tool_id),
+            project_id=context.get("project_id"),
+            session_id=resolved_session,
+        )
 
         if tool.get("kind") == "internal":
             from .tool_executor import execute_tool

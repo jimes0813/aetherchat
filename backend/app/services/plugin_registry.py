@@ -647,13 +647,25 @@ class PluginRegistry:
                 ))
         return definitions
 
-    async def invoke_tool(self, tool_name: str, session_id: str, caller: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    async def invoke_tool(
+        self,
+        tool_name: str,
+        session_id: str,
+        caller: str,
+        arguments: dict[str, Any],
+        *,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
         match = self.resolve_tool_name(tool_name)
         if match is None:
             raise KeyError(tool_name)
         from .platform_governance import platform_governance
 
-        platform_governance.require_tool_invoke(tool_name)
+        platform_governance.require_tool_invoke(
+            tool_name,
+            project_id=project_id,
+            session_id=session_id,
+        )
         plugin_id, action_id = match
         return await self.invoke(
             plugin_id,

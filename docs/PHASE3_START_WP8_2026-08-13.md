@@ -46,8 +46,18 @@
 | schema | `schema_version=2`，旧 store 自动 migrate |
 | 单测 | 12 passed |
 
-## 下一步建议（Batch 46+）
+## Batch 46（会话/Run 绑定 project_id）
 
-1. 会话/Run 绑定 `project_id` 并传入 runtime gate
+| 项 | 内容 |
+|---|---|
+| Schema | SQLite `user_version=4`：`sessions.project_id`、`agent_runs.project_id` |
+| API | `SessionCreate.project_id`；`PATCH /sessions/{id}/project` |
+| Run | `create_agent_run` 从 action/session 继承 `project_id` |
+| Gate | `resolve_project_id`；tool/plugin/MCP/orchestrator 透传 session/project |
+| 测试 | `tests/test_session_project_binding.py` |
+
+## 下一步建议（Batch 47+）
+
+1. 前端创建/切换会话时选择治理项目
 2. 客户触发时再做 SSO 与团队空间
 3. Windows CSC 配齐后签公共 RC

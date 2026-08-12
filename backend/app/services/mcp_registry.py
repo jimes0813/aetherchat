@@ -487,13 +487,24 @@ class MCPRegistry:
     def tool_name(connection_id: str, remote_name: str) -> str:
         return f"mcp__{_tool_segment(connection_id)}__{_tool_segment(remote_name)}"
 
-    async def invoke_tool(self, exposed_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    async def invoke_tool(
+        self,
+        exposed_name: str,
+        arguments: dict[str, Any],
+        *,
+        session_id: str | None = None,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
         match = self.resolve_tool_name(exposed_name)
         if match is None:
             raise KeyError(exposed_name)
         from .platform_governance import platform_governance
 
-        platform_governance.require_tool_invoke(exposed_name)
+        platform_governance.require_tool_invoke(
+            exposed_name,
+            project_id=project_id,
+            session_id=session_id,
+        )
         connection_id, remote_name = match
         connection = self._connection(connection_id)
         allowed = connection.get("allowed_tools")

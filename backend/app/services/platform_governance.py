@@ -323,6 +323,7 @@ class PlatformGovernanceService:
             "capabilities": {
                 "tenant_isolation": True,
                 "project_scope": True,
+                "session_project_binding": True,
                 "rbac": True,
                 "tool_allowlist": True,
                 "model_allowlist": True,
@@ -337,6 +338,7 @@ class PlatformGovernanceService:
             },
             "notes": [
                 "默认单租户本机模式；租户下可建项目并覆盖策略。",
+                "会话/Agent Run 绑定 project_id；工具与模型门禁按项目生效策略。",
                 "运行时门禁已接入工具调用与模型选择（可用 AETHERCHAT_PLATFORM_POLICY_GATE=0 关闭）。",
                 "审计支持 JSON/JSONL/CSV 导出与按天/条数保留裁剪。",
                 "SSO/OIDC/SCIM 未启用，后续按客户需求接入。",
@@ -703,12 +705,35 @@ class PlatformGovernanceService:
             )
         return decision
 
+    def resolve_project_id(
+        self,
+        *,
+        project_id: str | None = None,
+        session_id: str | None = None,
+    ) -> str | None:
+        """Resolve governance project: explicit → session binding → default project."""
+        if project_id and str(project_id).strip():
+            return str(project_id).strip()
+        if session_id:
+            try:
+                from .chat_database import chat_database
+
+                row = chat_database.get_session(str(session_id)) or {}
+                bound = str(row.get("project_id") or "").strip()
+                if bound:
+                    return bound
+            except Exception:
+                pass
+        default = self.state.get("default_project_id")
+        return str(default) if default else None
+
     def require_tool_invoke(
         self,
         tool_name: str,
         *,
         principal_id: str | None = None,
         project_id: str | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         """Runtime gate for tool paths. Raises PermissionError when denied."""
         if not policy_gate_enabled():
@@ -716,10 +741,14 @@ class PlatformGovernanceService:
         clean = str(tool_name or "").strip()
         if not clean:
             raise PermissionError("工具名称为空，平台策略拒绝")
+        resolved_project = self.resolve_project_id(
+            project_id=project_id,
+            session_id=session_id,
+        )
         decision = self.authorize(
             AuthorizeRequest(
                 principal_id=principal_id,
-                project_id=project_id,
+                project_id=resolved_project,
                 tool_name=clean,
                 action="invoke_tool",
             ),
@@ -738,6 +767,7 @@ class PlatformGovernanceService:
         *,
         principal_id: str | None = None,
         project_id: str | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         """Runtime gate for model selection. Raises PermissionError when denied."""
         if not policy_gate_enabled():
@@ -745,10 +775,14 @@ class PlatformGovernanceService:
         clean = str(model_name or "").strip()
         if not clean:
             raise PermissionError("模型名称为空，平台策略拒绝")
+        resolved_project = self.resolve_project_id(
+            project_id=project_id,
+            session_id=session_id,
+        )
         decision = self.authorize(
             AuthorizeRequest(
                 principal_id=principal_id,
-                project_id=project_id,
+                project_id=resolved_project,
                 model_name=clean,
                 action="use_model",
             ),
@@ -766,6 +800,7 @@ class PlatformGovernanceService:
         *,
         principal_id: str | None = None,
         project_id: str | None = None,
+        session_id: str | None = None,
     ) -> list[str]:
         """Keep models that pass the runtime gate (order preserved)."""
         if not policy_gate_enabled():
@@ -777,6 +812,7 @@ class PlatformGovernanceService:
                     str(name),
                     principal_id=principal_id,
                     project_id=project_id,
+                    session_id=session_id,
                 )
             except PermissionError:
                 continue

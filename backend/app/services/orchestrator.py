@@ -127,6 +127,16 @@ class SessionOrchestrator:
         self.desktop_action_handler = desktop_action_handler
         self.context_assembler = context_assembler_service or context_assembler
         self.tool_loop = tool_loop_service or tool_loop
+        self.project_id = self._resolve_project_id()
+
+    def _resolve_project_id(self) -> str | None:
+        try:
+            from .platform_governance import platform_governance
+
+            return platform_governance.resolve_project_id(session_id=self.session_id)
+        except Exception:
+            row = chat_database.get_session(self.session_id) or {}
+            return str(row.get("project_id") or "").strip() or None
 
     def begin_agent_run(self, run_id: str, steers: list[dict] | None = None) -> None:
         self._active_run_id = str(run_id)
@@ -340,7 +350,11 @@ class SessionOrchestrator:
         if selected:
             from .platform_governance import platform_governance
 
-            selected = platform_governance.filter_model_names(selected)
+            selected = platform_governance.filter_model_names(
+                selected,
+                project_id=self.project_id,
+                session_id=self.session_id,
+            )
         if not selected:
             yield {
                 "type": "error",
@@ -1224,11 +1238,19 @@ class SessionOrchestrator:
                                     async with _COMPUTER_USE_LOCK:
                                         with conversation_computer_use_approval():
                                             plugin_result = await plugin_registry.invoke_tool(
-                                                tool_name, self.session_id, f"model:{name}", arguments
+                                                tool_name,
+                                                self.session_id,
+                                                f"model:{name}",
+                                                arguments,
+                                                project_id=self.project_id,
                                             )
                                 else:
                                     plugin_result = await plugin_registry.invoke_tool(
-                                        tool_name, self.session_id, f"model:{name}", arguments
+                                        tool_name,
+                                        self.session_id,
+                                        f"model:{name}",
+                                        arguments,
+                                        project_id=self.project_id,
                                     )
                                 plugin_result = await self._complete_desktop_action(
                                     tool_name,
@@ -1291,7 +1313,12 @@ class SessionOrchestrator:
                         if mcp_match is not None:
                             started_at = datetime.now(UTC).isoformat()
                             try:
-                                mcp_result = await mcp_registry.invoke_tool(tool_name, arguments)
+                                mcp_result = await mcp_registry.invoke_tool(
+                                    tool_name,
+                                    arguments,
+                                    session_id=self.session_id,
+                                    project_id=self.project_id,
+                                )
                                 safe_result, images = self.tool_loop.sanitize_result(
                                     mcp_result
                                 )
@@ -1363,6 +1390,7 @@ class SessionOrchestrator:
                                     "run_id": agent_run_id or None,
                                     "plan_step_id": plan_step_id,
                                     "workspace_id": workspace_id,
+                                    "project_id": self.project_id,
                                 },
                             )
                         except PermissionError as exc:
