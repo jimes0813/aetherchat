@@ -463,7 +463,7 @@ class ChatDatabase:
                     updated_at TEXT NOT NULL,
                     last_message_at TEXT
                 );
-                CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id);
+                -- idx_sessions_project is created in migration 4 after legacy tables gain project_id.
 
                 CREATE TABLE IF NOT EXISTS messages (
                     id TEXT PRIMARY KEY,
@@ -539,7 +539,7 @@ class ChatDatabase:
                     started_at TEXT,
                     completed_at TEXT
                 );
-                CREATE INDEX IF NOT EXISTS idx_agent_runs_project ON agent_runs(project_id);
+                -- idx_agent_runs_project is created in migration 4 after legacy tables gain project_id.
                 CREATE INDEX IF NOT EXISTS idx_agent_runs_session_updated
                     ON agent_runs(session_id, updated_at DESC);
 

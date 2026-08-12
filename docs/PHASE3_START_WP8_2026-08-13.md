@@ -79,13 +79,12 @@
 
 | 项 | 内容 |
 |---|---|
-| 根因 | `v0.2.0-rc.2` linux-x64 在 `ruff check app` 失败（SIM102/105/108/114） |
-| 修复 | skills_rules / instruction_workflow / platform_governance 等 ruff 清理 |
-| 顺带 | mypy 4 处注解/联合类型（knowledge/local_model/platform/dry_run） |
-| 验证 | ruff 全绿、mypy 全绿、预检相关 pytest 20 绿 |
+| ruff/mypy | SIM 清理 + 类型注解（rc.3） |
+| schema v4 | 旧库 bootstrap 不再在迁移前建 `project_id` 索引；测试对齐 `CURRENT_SCHEMA_VERSION` |
+| 插件 mock | `invoke_tool(..., project_id=)` 后测试 fakes 补 `**kwargs` |
+| 标签 | `v0.2.0-rc.4` 验证 Linux-first 全绿 |
 
 ## 下一步建议（Batch 50+）
 
-1. 推送后重打 `v0.2.0-rc.3` 验证 Linux-first 全绿 + prerelease
-2. 配置 Windows CSC 后切 full_rc / stable
-3. SSO / 团队空间（有客户需求时）
+1. 配置 Windows CSC 后切 full_rc / stable
+2. SSO / 团队空间（有客户需求时）

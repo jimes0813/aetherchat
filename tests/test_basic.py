@@ -54,7 +54,11 @@ from app.routers import models as model_router  # noqa: E402
 from app.services.model_registry import ModelRegistry  # noqa: E402
 from app.services import orchestrator as orchestrator_module  # noqa: E402
 from app.services.orchestrator import SessionOrchestrator  # noqa: E402
-from app.services.chat_database import ChatDatabase, chat_database  # noqa: E402
+from app.services.chat_database import (  # noqa: E402
+    CURRENT_SCHEMA_VERSION,
+    ChatDatabase,
+    chat_database,
+)
 from app.services.tool_registry import tool_registry  # noqa: E402
 from app.services.plugin_registry import PluginManifest, plugin_registry  # noqa: E402
 from app.services import vault as vault_module  # noqa: E402
@@ -165,7 +169,9 @@ def test_diagnostic_snapshot_and_bundle_are_redacted(client):
     assert snapshot.status_code == 200
     payload = snapshot.json()
     assert payload["schema"] == "aetherchat-diagnostics-v1"
-    assert payload["database"]["schema_version"] == 3
+    from app.services.chat_database import CURRENT_SCHEMA_VERSION
+
+    assert payload["database"]["schema_version"] == CURRENT_SCHEMA_VERSION
     assert payload["privacy"] == {
         "request_bodies_included": False,
         "query_strings_included": False,
@@ -664,7 +670,7 @@ def test_chat_database_migrates_in_order_with_pre_upgrade_backup(tmp_path):
     assert database.last_migration_backup is not None
     assert database.last_migration_backup.exists()
     with sqlite3.connect(path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == CURRENT_SCHEMA_VERSION
         assert connection.execute(
             "SELECT content FROM messages WHERE id = 'legacy-message'"
         ).fetchone()[0] == "必须保留"
@@ -674,6 +680,10 @@ def test_chat_database_migrates_in_order_with_pre_upgrade_backup(tmp_path):
             ).fetchall()
         }
         assert {"verification_status", "evidence_json", "verified_at"} <= tool_columns
+        session_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(sessions)").fetchall()
+        }
+        assert "project_id" in session_columns
         event_tables = {
             row[0] for row in connection.execute(
                 """SELECT name FROM sqlite_schema
@@ -714,7 +724,9 @@ def test_chat_database_restores_backup_when_migration_fails(tmp_path, monkeypatc
         assert connection.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'agent_tool_calls'"
         ).fetchone()[0] == 0
-    assert len(list(tmp_path.glob("broken-migration.sqlite3.pre-v0-to-v3-*.bak"))) == 1
+    assert len(list(
+        tmp_path.glob(f"broken-migration.sqlite3.pre-v0-to-v{CURRENT_SCHEMA_VERSION}-*.bak")
+    )) == 1
 
 
 def test_chat_database_restores_schema_2_backup_when_event_migration_fails(
@@ -751,7 +763,9 @@ def test_chat_database_restores_schema_2_backup_when_event_migration_fails(
                WHERE type = 'table' AND name = 'migration_3_partial'"""
         ).fetchone()[0] == 0
     assert len(list(
-        tmp_path.glob("broken-event-migration.sqlite3.pre-v2-to-v3-*.bak")
+        tmp_path.glob(
+            f"broken-event-migration.sqlite3.pre-v2-to-v{CURRENT_SCHEMA_VERSION}-*.bak"
+        )
     )) == 1
 
 
@@ -2878,7 +2892,7 @@ async def test_orchestrator_requires_real_comfyui_generation_without_status_roun
                 "usage": {"prompt_tokens": 10, "completion_tokens": 4},
             }
 
-    async def fake_plugin_invoke(tool_name, _session_id, _caller, _arguments):
+    async def fake_plugin_invoke(tool_name, _session_id, _caller, _arguments, **_kwargs):
         return {
             "plugin_id": "comfyui",
             "action": "generate_image",
@@ -3032,7 +3046,7 @@ async def test_orchestrator_injects_attached_image_and_requested_video_model(mon
     expected_path = knowledge_service.image_path(session_id, attachment["id"])
     captured = {}
 
-    async def fake_plugin_invoke(tool_name, received_session, _caller, arguments):
+    async def fake_plugin_invoke(tool_name, received_session, _caller, arguments, **_kwargs):
         captured.update(arguments)
         assert tool_name == "plugin__comfyui__generate_video"
         assert received_session == session_id
@@ -3109,7 +3123,7 @@ async def test_orchestrator_exposes_comfyui_status_only_once_after_success(monke
                 "usage": {"prompt_tokens": 10, "completion_tokens": 4},
             }
 
-    async def fake_plugin_invoke(tool_name, _session_id, _caller, _arguments):
+    async def fake_plugin_invoke(tool_name, _session_id, _caller, _arguments, **_kwargs):
         assert tool_name == "plugin__comfyui__status"
         return {
             "ready": True,
@@ -4290,7 +4304,7 @@ async def test_orchestrator_reenters_model_after_tool_and_attaches_observation_i
     provider = _ToolLoopProvider()
     orchestrator = _orchestrator_with([provider])
 
-    async def fake_invoke(tool_name, session_id, caller, arguments):
+    async def fake_invoke(tool_name, session_id, caller, arguments, **_kwargs):
         return {
             "plugin_id": "desktop-control",
             "status": "success",
@@ -4338,7 +4352,7 @@ async def test_orchestrator_correlates_parallel_tool_results_by_call_id(monkeypa
     provider = _ParallelToolProvider()
     orchestrator = _orchestrator_with([provider])
 
-    async def fake_invoke(tool_name, session_id, caller, arguments):
+    async def fake_invoke(tool_name, session_id, caller, arguments, **_kwargs):
         plugin_id = "documents" if "documents" in tool_name else "desktop-control"
         return {
             "plugin_id": plugin_id,
