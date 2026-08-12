@@ -210,7 +210,9 @@ def dry_run_instructions(
     # Scan full resolved context once
     for entry in _scan_text_for_tools(context, source="resolved_context"):
         existing = permission_map.get(entry["tool"])
-        if not existing or LEVEL_ORDER.get(entry["level"], 0) > LEVEL_ORDER.get(existing.get("level"), 0):
+        entry_level = str(entry.get("level") or "")
+        existing_level = str((existing or {}).get("level") or "")
+        if not existing or LEVEL_ORDER.get(entry_level, 0) > LEVEL_ORDER.get(existing_level, 0):
             permission_map[entry["tool"]] = entry
 
     # Enrich with explicit skill allowed_tools + typed IO from published skills that matched

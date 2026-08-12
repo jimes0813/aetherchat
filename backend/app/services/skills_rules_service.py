@@ -62,9 +62,10 @@ def _validate_json_schema(schema: dict[str, Any] | None, label: str) -> dict[str
     if props is not None and not isinstance(props, dict):
         raise ValueError(f"{label}.properties 必须是对象")
     required = schema.get("required")
-    if required is not None:
-        if not isinstance(required, list) or not all(isinstance(item, str) for item in required):
-            raise ValueError(f"{label}.required 必须是字符串数组")
+    if required is not None and (
+        not isinstance(required, list) or not all(isinstance(item, str) for item in required)
+    ):
+        raise ValueError(f"{label}.required 必须是字符串数组")
     # Keep a compact, serializable subset
     cleaned: dict[str, Any] = {"type": "object"}
     if props:
@@ -275,10 +276,9 @@ class SkillsRulesService:
         item.setdefault("draft_dirty", False)
         # dirty if draft body differs from published snapshot
         published = self._find_version(item["versions"], item["published_version"])
-        if published and str(published.get("body") or "") != body:
-            item["draft_dirty"] = True
-        elif published and (
-            list(published.get("trigger_keywords") or []) != list(item.get("trigger_keywords") or [])
+        if published and (
+            str(published.get("body") or "") != body
+            or list(published.get("trigger_keywords") or []) != list(item.get("trigger_keywords") or [])
             or bool(published.get("always_on")) != bool(item.get("always_on"))
             or (published.get("description") or "") != (item.get("description") or "")
             or published.get("input_schema") != item.get("input_schema")
@@ -603,10 +603,7 @@ class SkillsRulesService:
     @staticmethod
     def read_agents_md(path: str | Path) -> dict[str, Any] | None:
         root = Path(path).expanduser()
-        if root.is_file() and root.name.upper() == "AGENTS.MD":
-            agents = root
-        else:
-            agents = root / "AGENTS.md"
+        agents = root if root.is_file() and root.name.upper() == "AGENTS.MD" else root / "AGENTS.md"
         if not agents.is_file():
             return None
         try:

@@ -212,9 +212,8 @@ class InstructionWorkflowService:
         if not item:
             return None
         data = payload.model_dump(exclude_unset=True)
-        if "skill_id" in data and data["skill_id"]:
-            if not skills_rules_service.get_skill(str(data["skill_id"])):
-                raise ValueError("skill_id 不存在")
+        if "skill_id" in data and data["skill_id"] and not skills_rules_service.get_skill(str(data["skill_id"])):
+            raise ValueError("skill_id 不存在")
         for key in ("name", "prompt_template", "message"):
             if key in data and data[key] is not None:
                 item[key] = str(data[key]).strip()

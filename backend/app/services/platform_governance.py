@@ -6,6 +6,7 @@ Desktop default is a single local tenant; structures are ready for team spaces.
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import io
 import json
@@ -478,7 +479,7 @@ class PlatformGovernanceService:
                 raise ValueError(f"项目 slug 已存在：{slug_value}")
         project_id = str(uuid.uuid4())
         now = _now()
-        project = {
+        project: dict[str, Any] = {
             "id": project_id,
             "tenant_id": tenant_id,
             "name": clean,
@@ -844,10 +845,8 @@ class PlatformGovernanceService:
             handle.write(json.dumps(event, ensure_ascii=False) + "\n")
         if prune and action != "audit.prune":
             # Best-effort retention; ignore prune errors so append never fails.
-            try:
+            with contextlib.suppress(Exception):
                 self.prune_audit(tenant_id=tenant_id)
-            except Exception:
-                pass
         return event
 
     def list_audit(

@@ -355,8 +355,8 @@ class LocalModelRuntimeService:
 
         ready = await self._probe(config)
         process = self._processes.get(config.name)
-        managed = bool(process and process.returncode is None)
-        pid = process.pid if managed else None
+        managed = bool(process is not None and process.returncode is None)
+        pid = process.pid if process is not None and managed else None
         log_path = self._log_path_for(config.name)
         log_path_str = str(log_path) if log_path.is_file() else None
         message: str | None = None

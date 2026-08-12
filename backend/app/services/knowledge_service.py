@@ -462,7 +462,7 @@ class KnowledgeService:
             ranked.append((score, candidate))
         ranked.sort(key=lambda item: item[0], reverse=True)
 
-        results = []
+        results: list[dict[str, Any]] = []
         for score, candidate in ranked[:bounded]:
             row = candidate["row"]
             content = str(row["content"])

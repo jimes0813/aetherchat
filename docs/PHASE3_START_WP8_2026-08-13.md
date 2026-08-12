@@ -75,8 +75,17 @@
 | 清单 | `linux_rc_ready` vs `tag_ready`（全平台） |
 | 工作流 | 动态 matrix；signed-release 可仅含 Linux 产物 |
 
-## 下一步建议（Batch 49+）
+## Batch 49（RC CI 门禁修复）
 
-1. 移动/重打 `v0.2.0-rc.2` 走 Linux-first 路径验证 CI
+| 项 | 内容 |
+|---|---|
+| 根因 | `v0.2.0-rc.2` linux-x64 在 `ruff check app` 失败（SIM102/105/108/114） |
+| 修复 | skills_rules / instruction_workflow / platform_governance 等 ruff 清理 |
+| 顺带 | mypy 4 处注解/联合类型（knowledge/local_model/platform/dry_run） |
+| 验证 | ruff 全绿、mypy 全绿、预检相关 pytest 20 绿 |
+
+## 下一步建议（Batch 50+）
+
+1. 推送后重打 `v0.2.0-rc.3` 验证 Linux-first 全绿 + prerelease
 2. 配置 Windows CSC 后切 full_rc / stable
 3. SSO / 团队空间（有客户需求时）
