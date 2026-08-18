@@ -20,6 +20,9 @@ _RUN_STATUSES = {
     "recoverable",
     "cancelled",
     "completed",
+    "completed_verified",
+    "completed_with_warnings",
+    "uncertain",
     "failed",
     "interrupted",
 }
@@ -66,6 +69,17 @@ _FAILURE_CODES = {
     "unknown_tool",
 }
 _PROVIDER_PHASES = {"requesting", "streaming", "tool", "finalizing"}
+_RECOVERY_SUCCESS_STATUSES = {
+    "completed",
+    "completed_verified",
+    "completed_with_warnings",
+}
+_RECOVERY_UNSUCCESSFUL_STATUSES = {
+    "cancelled",
+    "failed",
+    "interrupted",
+    "uncertain",
+}
 _STEP_ROW_LIMIT = 2000
 _PLAN_STEP_ROW_LIMIT = 2000
 _TOOL_ROW_LIMIT = 5000
@@ -607,6 +621,33 @@ class RunTelemetryService:
             _nonnegative_float(row["cost_usd"]) for row in messages
         )
 
+        recovery_required_ids = {
+            str(row["run_id"])
+            for row in events
+            if str(row["event_type"] or "") == "recovery_required"
+        }
+        recovery_attempts = [
+            row
+            for row in runs
+            if _nonnegative_int(row["retry_count"], maximum=1000) > 0
+        ]
+        recovery_successes = [
+            row
+            for row in recovery_attempts
+            if str(row["status"] or "") in _RECOVERY_SUCCESS_STATUSES
+        ]
+        recovery_unsuccessful = [
+            row
+            for row in recovery_attempts
+            if str(row["status"] or "") in _RECOVERY_UNSUCCESSFUL_STATUSES
+        ]
+        recovery_decided = len(recovery_successes) + len(recovery_unsuccessful)
+        recovery_success_rate = (
+            round(len(recovery_successes) / recovery_decided, 4)
+            if recovery_decided
+            else None
+        )
+
         start_values = [
             timestamp
             for row in runs
@@ -650,6 +691,29 @@ class RunTelemetryService:
                     _nonnegative_int(row["retry_count"], maximum=1000)
                     for row in runs
                 ),
+            },
+            "recovery": {
+                "target_success_rate": 0.95,
+                "eligible_runs": len(
+                    recovery_required_ids
+                    | {str(row["id"]) for row in recovery_attempts}
+                ),
+                "attempted_runs": len(recovery_attempts),
+                "successful_runs": len(recovery_successes),
+                "verified_successful_runs": sum(
+                    1
+                    for row in recovery_successes
+                    if str(row["status"] or "") == "completed_verified"
+                ),
+                "unsuccessful_runs": len(recovery_unsuccessful),
+                "pending_runs": len(recovery_attempts) - recovery_decided,
+                "success_rate": recovery_success_rate,
+                "meets_target": (
+                    recovery_success_rate >= 0.95
+                    if recovery_success_rate is not None
+                    else None
+                ),
+                "sample_sufficient": recovery_decided >= 20,
             },
             "steps": {
                 "status_counts": _counts([

@@ -13,6 +13,7 @@ from ..providers.base import LLMProvider, get_provider
 from .agent_run_service import agent_run_service
 from .approval_service import approval_policy, approval_service
 from .chat_database import chat_database
+from .chat_references import resolve_chat_references
 from .computer_use_consent import conversation_computer_use_approval
 from .context_assembler import (
     BROWSER_OPEN_TOOL_NAME,
@@ -280,9 +281,19 @@ class SessionOrchestrator:
             yield {"type": "error", "code": "invalid_attachments", "message": "单条消息最多附带 10 个有效附件。"}
             return
         attachment_ids = [str(value) for value in raw_attachment_ids]
+        referenced = resolve_chat_references(
+            session_id=self.session_id,
+            user_content=str(action.get("content") or "").strip(),
+            references=action.get("references"),
+            attachment_ids=attachment_ids,
+        )
+        attachment_ids = referenced["attachment_ids"]
+        reference_context = str(referenced.get("context") or "")
         content = str(action.get("content") or "").strip()
         if not content and attachment_ids:
             content = "请阅读并分析我附带的资料。"
+        if not content and reference_context:
+            content = "请根据我引用的内容理解意图并继续。"
         if not content:
             yield {"type": "error", "code": "empty_message", "message": "消息内容不能为空。"}
             return
@@ -301,6 +312,9 @@ class SessionOrchestrator:
                 self.session_id,
                 attachment_ids,
             )
+            for extra_path in referenced.get("image_paths") or []:
+                if extra_path and extra_path not in attachment_image_paths:
+                    attachment_image_paths.append(str(extra_path))
         except (KeyError, KnowledgeError, ValueError) as exc:
             message = exc.args[0] if isinstance(exc, KeyError) and exc.args else str(exc)
             yield {"type": "error", "code": "invalid_attachments", "message": str(message)}
@@ -441,6 +455,7 @@ class SessionOrchestrator:
             memory_context=memory_service.context(self.session_id),
             tool_names=base_tool_names,
             attachment_context=attachment_context,
+            reference_context=reference_context,
             project_knowledge_context=project_knowledge_context,
             instruction_context=str(instruction_bundle.get("context") or ""),
             language=str(action.get("language") or "").strip(),

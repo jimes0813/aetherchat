@@ -588,6 +588,47 @@ class KnowledgeService:
             used += len(section)
         return "".join(parts)
 
+    def explicit_attachment_context(
+        self,
+        session_id: str,
+        attachment_ids: Iterable[str],
+        max_chars: int = 8_000,
+    ) -> str:
+        """Return ordered chunks for files the user explicitly cited."""
+
+        ids: list[str] = []
+        seen: set[str] = set()
+        for attachment_id in attachment_ids:
+            try:
+                item = self.get_attachment(session_id, str(attachment_id))
+            except (KeyError, KnowledgeError, ValueError):
+                continue
+            if item["id"] in seen:
+                continue
+            seen.add(item["id"])
+            ids.append(item["id"])
+        if not ids:
+            return ""
+        placeholders = ",".join("?" for _ in ids)
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                f"""SELECT source_name, locator, content FROM knowledge_chunks
+                    WHERE session_id = ? AND attachment_id IN ({placeholders})
+                    ORDER BY attachment_id, locator LIMIT 40""",
+                (self._session_id(session_id), *ids),
+            ).fetchall()
+        if not rows:
+            return ""
+        parts: list[str] = []
+        used = 0
+        for row in rows:
+            section = f"[来源: {row['source_name']} · {row['locator']}]\n{row['content']}"
+            if used + len(section) + 2 > max_chars:
+                break
+            parts.append(section)
+            used += len(section) + 2
+        return "\n\n".join(parts)
+
     def context_for_query(
         self,
         session_id: str,

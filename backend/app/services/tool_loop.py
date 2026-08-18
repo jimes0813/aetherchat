@@ -412,7 +412,9 @@ class ToolLoop:
                 tool_error=tool_result.get("status") != "success",
                 content=(
                     f"第 {state.tool_round + 1} 轮工具 {tool_call.name} 的结果。"
-                    "如执行了界面动作，请重新调用 get_state 验证，不要凭旧截图继续。\n"
+                    "如执行了界面动作，请先检查返回的 post_action_screenshot；"
+                    "若未提供验证截图，请重新调用 computer.screenshot 或 get_state，"
+                    "不要凭旧截图继续。\n"
                     f"{serialized}"
                 ),
                 images=attached_images,

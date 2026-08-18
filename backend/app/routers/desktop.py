@@ -4,6 +4,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from ..services.computer_use_service import ComputerUseError, computer_use_service
 from ..services.desktop_service import (
     DesktopCapabilityError,
     desktop_token_is_valid,
@@ -37,21 +38,59 @@ class MousePayload(BaseModel):
     button: Literal["left", "right", "middle"] = "left"
 
 
+class ComputerActionPayload(BaseModel):
+    action: Literal[
+        "screenshot",
+        "mouse_move",
+        "left_click",
+        "right_click",
+        "middle_click",
+        "double_click",
+        "triple_click",
+        "left_click_drag",
+        "left_mouse_down",
+        "left_mouse_up",
+        "scroll",
+        "type",
+        "key",
+        "hold_key",
+        "wait",
+        "zoom",
+        "cursor_position",
+    ]
+    coordinate: list[int] | None = None
+    start_coordinate: list[int] | None = None
+    region: list[int] | None = None
+    text: str | None = Field(default=None, max_length=20_000)
+    duration: float | None = Field(default=None, ge=0, le=30)
+    scroll_direction: Literal["up", "down", "left", "right"] | None = None
+    scroll_amount: int | None = Field(default=None, ge=0, le=5_000)
+    delta_x: int | None = Field(default=None, ge=-5_000, le=5_000)
+    delta_y: int | None = Field(default=None, ge=-5_000, le=5_000)
+    modifiers: list[str] = Field(default_factory=list, max_length=4)
+
+
 @router.get("/status")
 async def desktop_status(x_aether_desktop_token: str | None = Header(default=None)):
     _require_token(x_aether_desktop_token)
-    windows_automation = os.name == "nt"
+    computer_automation = mouse_service.available()
     return {
         "available": True,
         "file_read": True,
         "file_write": True,
         "document_formats": ["txt", "md", "json", "csv", "tsv", "docx", "xlsx", "pptx", "pdf"],
-        "platform": "windows" if windows_automation else "linux",
-        "mouse": windows_automation,
-        "keyboard": windows_automation,
-        "window_observation": windows_automation,
-        "accessibility_tree": windows_automation,
-        "model_computer_use": windows_automation,
+        "platform": "windows" if os.name == "nt" else "linux",
+        "session_type": "win32" if os.name == "nt" else os.environ.get("XDG_SESSION_TYPE", "unknown"),
+        "mouse": computer_automation,
+        "keyboard": computer_automation,
+        "window_observation": computer_automation,
+        "accessibility_tree": os.name == "nt",
+        "model_computer_use": computer_automation,
+        "computer_protocol": "computer_20251124",
+        "computer_actions": computer_use_service.supported_actions(),
+        "enable_zoom": True,
+        "post_action_verification": True,
+        "interruptible": True,
         "native_consent": bool(os.environ.get("AETHERCHAT_COMPUTER_CONSENT_URL")),
         "screenshot": "electron",
     }
@@ -92,3 +131,39 @@ async def control_mouse(payload: MousePayload, x_aether_desktop_token: str | Non
         )
     except (DesktopCapabilityError, OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/computer/action")
+async def run_computer_action(
+    payload: ComputerActionPayload,
+    x_aether_desktop_token: str | None = Header(default=None),
+):
+    _require_token(x_aether_desktop_token)
+    try:
+        return await computer_use_service.execute_action(
+            payload.action,
+            payload.model_dump(exclude={"action"}, exclude_none=True),
+        )
+    except (ComputerUseError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/computer/cancel")
+async def cancel_computer_action(x_aether_desktop_token: str | None = Header(default=None)):
+    _require_token(x_aether_desktop_token)
+    from ..services.approval_service import approval_service
+
+    revoked = approval_service.clear_risks({"computer_observation", "computer_control"})
+    return {
+        **(await computer_use_service.cancel_active_action()),
+        "session_grants_revoked": revoked,
+    }
+
+
+@router.get("/computer/history")
+async def computer_action_history(
+    after: int = 0,
+    x_aether_desktop_token: str | None = Header(default=None),
+):
+    _require_token(x_aether_desktop_token)
+    return computer_use_service.action_history(after)

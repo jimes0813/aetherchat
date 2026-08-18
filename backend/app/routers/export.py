@@ -8,14 +8,14 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
-from ..services.artifact_service import ArtifactPathError, ArtifactService, MergeProposalStore
+from ..services.artifact_service import ArtifactPathError
 from ..services.tool_registry import tool_registry
+from .artifacts import artifact_svc, merge_store
 
 router = APIRouter()
 
 
 async def _session_snapshot(session_id: str) -> dict[str, Any]:
-    artifact_svc = ArtifactService()
     artifact_svc.normalize_session_id(session_id)
     files = await artifact_svc.list_files(session_id)
 
@@ -41,7 +41,7 @@ async def _session_snapshot(session_id: str) -> dict[str, Any]:
         for task in fake_tasks
         if str(task.session_id) == str(session_id)
     ]
-    merge_proposals = MergeProposalStore().list(session_id)
+    merge_proposals = merge_store.list(session_id)
     runs = tool_registry.list_runs(session_id=session_id, limit=None)
     used_tool_ids = {run.get("tool_id") for run in runs if run.get("tool_id")}
     tools = [

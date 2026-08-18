@@ -527,6 +527,17 @@ class DesktopDocumentService:
 
 
 class DesktopMouseService:
+    @staticmethod
+    def available() -> bool:
+        if os.name == "nt":
+            return True
+        try:
+            from .x11_desktop import available
+
+            return available()
+        except (ImportError, OSError):
+            return False
+
     async def execute(
         self,
         action: Literal["get", "move", "click"],
@@ -540,7 +551,31 @@ class DesktopMouseService:
     @staticmethod
     def _execute_sync(action: str, x: int | None, y: int | None, button: str) -> dict[str, Any]:
         if os.name != "nt":
-            raise DesktopCapabilityError("Mouse control is unavailable on Linux; document and screenshot tools remain supported")
+            try:
+                from . import x11_desktop
+            except ImportError as exc:
+                raise DesktopCapabilityError("X11 desktop adapter is unavailable") from exc
+            try:
+                if not x11_desktop.available():
+                    raise DesktopCapabilityError(
+                        "Mouse control requires an active X11 display with XTest support"
+                    )
+                bounds = x11_desktop.screen_bounds()
+                if action in {"move", "click"}:
+                    if x is None or y is None:
+                        raise DesktopCapabilityError("Mouse x and y coordinates are required")
+                    x11_desktop.move_cursor(int(x), int(y))
+                if action == "click":
+                    x11_desktop.click(button, 1)
+                current = x11_desktop.cursor_position()
+                return {
+                    "action": action,
+                    "position": current,
+                    "button": button if action == "click" else None,
+                    "virtual_desktop": bounds,
+                }
+            except x11_desktop.X11DesktopError as exc:
+                raise DesktopCapabilityError(str(exc)) from exc
         import win32api
         import win32con
 

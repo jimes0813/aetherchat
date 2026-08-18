@@ -132,6 +132,7 @@ class PlatformGovernanceService:
         if not self._load():
             self._seed()
             self._save()
+        self._bind_unbound_sessions()
 
     def _load(self) -> bool:
         if not self.store_path.is_file():
@@ -203,6 +204,16 @@ class PlatformGovernanceService:
         if changed:
             self.state["updated_at"] = _now()
             self._save()
+
+    def _bind_unbound_sessions(self) -> dict[str, int]:
+        """Attach historical sessions/runs to the default governance project."""
+        default_project_id = str(self.state.get("default_project_id") or "default")
+        try:
+            from .chat_database import chat_database
+
+            return chat_database.backfill_unbound_projects(default_project_id)
+        except Exception:
+            return {"sessions": 0, "runs_from_session": 0, "runs_default": 0}
 
     def _seed(self) -> None:
         tenant_id = "local"

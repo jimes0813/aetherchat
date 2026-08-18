@@ -32,6 +32,7 @@ from .routers import (
     sessions,
     tasks,
     tools,
+    voice,
     workspaces,
     ws,
 )
@@ -44,6 +45,7 @@ from .services.local_model_runtime import local_model_runtime
 from .services.readiness_service import readiness_service
 from .services.run_dispatcher import run_dispatcher
 from .services.structured_logging import configure_structured_logging
+from .services.voice_runtime import voice_runtime
 
 logger = logging.getLogger(__name__)
 structured_log_path = configure_structured_logging()
@@ -72,6 +74,7 @@ async def lifespan(app: FastAPI):
         await redis_client.aclose()
     await comfyui_runtime.shutdown()
     await local_model_runtime.shutdown()
+    await voice_runtime.shutdown()
     tasks.redis_client = None
     tool_executor.redis_client = None
 
@@ -164,6 +167,7 @@ app.include_router(automations.router, prefix="/automations", tags=["automations
 app.include_router(workspaces.router, prefix="/workspaces", tags=["workspaces"], dependencies=protected)
 app.include_router(mcp.router, prefix="/mcp-connections", tags=["mcp"], dependencies=protected)
 app.include_router(mcp.callback_router, prefix="/mcp-connections", tags=["mcp-oauth-callback"])
+app.include_router(voice.router, prefix="/voice", tags=["voice"], dependencies=protected)
 
 
 @app.get("/health", response_model=HealthStatus)
@@ -202,10 +206,15 @@ rate_limit_store: defaultdict[str, list[float]] = defaultdict(list)
 RATE_LIMIT = 60  # requests per minute
 RATE_WINDOW = 60
 RATE_LIMIT_EXEMPT_PATHS = frozenset({"/health", "/health/ready"})
+RATE_LIMIT_EXEMPT_PREFIXES = ("/voice/",)
 
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
-    if request.url.path in RATE_LIMIT_EXEMPT_PATHS or request.method == "OPTIONS":
+    if (
+        request.url.path in RATE_LIMIT_EXEMPT_PATHS
+        or request.url.path.startswith(RATE_LIMIT_EXEMPT_PREFIXES)
+        or request.method == "OPTIONS"
+    ):
         return await call_next(request)
     ip = request.client.host if request.client else "unknown"
     now = time.time()

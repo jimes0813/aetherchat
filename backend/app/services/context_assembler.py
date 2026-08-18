@@ -73,6 +73,7 @@ class ContextAssembler:
         memory_context: str = "",
         tool_names: Collection[str] = (),
         attachment_context: str = "",
+        reference_context: str = "",
         project_knowledge_context: str = "",
         instruction_context: str = "",
         language: str = "",
@@ -88,6 +89,7 @@ class ContextAssembler:
             if content:
                 messages.insert(0, ChatMessage(role="system", content=content))
 
+        prepend(reference_context)
         prepend(memory_context)
         prepend(instruction_context)
         if "upsert_memory_entity" in selected_tools:

@@ -7,6 +7,7 @@ import json
 import os
 import random
 import re
+from collections.abc import Callable, Sequence
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
@@ -35,6 +36,13 @@ WAN22_REMIX_MODELS = frozenset({WAN22_REMIX_HIGH_MODEL, WAN22_REMIX_LOW_MODEL})
 LTX_CHECKPOINT = "ltx-2.3-22b-dev.safetensors"
 LTX_TEXT_ENCODER = "gemma-3-12b-it/model-00001-of-00005.safetensors"
 LTX_MIN_FREE_MEMORY = 96 * 1024**3
+MINIMAX_H3_MODEL = "minimax_h3_fl2va_pruned_int8_convrot.safetensors"
+MINIMAX_H3_TEXT_ENCODER = "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
+MINIMAX_H3_VIDEO_VAE = "minimax_h3_video_vae_fp16.safetensors"
+MINIMAX_H3_AUDIO_VAE = "minimax_h3_audio_vae_fp32.safetensors"
+_MODEL_NAME_TRAILING = re.compile(r"\s*模型$")
+_MODEL_FILE_EXTENSIONS = (".safetensors", ".ckpt", ".pt", ".pth", ".bin")
+_MIN_MODEL_PREFIX_LENGTH = 6
 
 
 class ComfyUIError(RuntimeError):
@@ -207,6 +215,8 @@ class ComfyUIService:
                     "LTXVAudioVAELoader",
                     "LTXVConditioning",
                     "SaveVideo",
+                    "MiniMaxH3ImageToVideo",
+                    "VAEDecodeAudio",
                 )
             },
             "workflows": workflows,
@@ -331,6 +341,17 @@ class ComfyUIService:
             if ltx_installed and not ltx_memory_ready
             else "LTX 2.3 22B 属于高内存管线，生成前请确认没有大型本地模型并行占用内存。"
         )
+        h3_missing = missing_assets([
+            ("diffusion_models", MINIMAX_H3_MODEL),
+            ("text_encoders", MINIMAX_H3_TEXT_ENCODER),
+            ("vae", MINIMAX_H3_VIDEO_VAE),
+            ("vae", MINIMAX_H3_AUDIO_VAE),
+            ("capabilities", "MiniMaxH3ImageToVideo"),
+            ("capabilities", "VAEDecodeAudio"),
+            ("capabilities", "CreateVideo"),
+            ("capabilities", "SaveVideo"),
+        ])
+        h3_installed = not h3_missing
         return {
             "image_models": image_models,
             "video_pipelines": [
@@ -357,6 +378,24 @@ class ComfyUIService:
                     "current_free_memory_bytes": free_memory,
                     "warning": ltx_warning,
                 },
+                {
+                    "id": "minimax-h3",
+                    "label": "MiniMax H3（文生/图生视频）",
+                    "installed": h3_installed,
+                    "available": h3_installed,
+                    "missing": h3_missing,
+                    "requires_input_image": False,
+                    "accepts_input_image": True,
+                    "auto_generates_input_image": False,
+                    "models": [{
+                        "name": MINIMAX_H3_MODEL,
+                        "label": "MiniMax H3",
+                        "installed": h3_installed,
+                        "missing": h3_missing,
+                        "recommended": h3_installed,
+                    }],
+                    "warning": "本地 MiniMax H3 可直接文生视频；附图时作为首帧。",
+                },
             ],
             "assets": {
                 key: inventory.get(key, [])
@@ -380,6 +419,106 @@ class ComfyUIService:
         if not 256 <= width <= 2048 or not 256 <= height <= 2048:
             raise ComfyUIError("Width and height must be between 256 and 2048")
         return width - width % 8, height - height % 8
+
+    @staticmethod
+    def _model_lookup_key(name: str) -> tuple[str, str]:
+        key = _MODEL_NAME_TRAILING.sub("", str(name or "").strip()).casefold()
+        stem = key
+        for extension in _MODEL_FILE_EXTENSIONS:
+            if stem.endswith(extension):
+                stem = stem[: -len(extension)]
+                break
+        return key, stem
+
+    @classmethod
+    def _resolve_installed_model(
+        cls,
+        requested: str,
+        candidates: Sequence[str],
+        *,
+        min_prefix_length: int = _MIN_MODEL_PREFIX_LENGTH,
+        group_of: Callable[[str], str] | None = None,
+    ) -> str | None:
+        """Resolve a user/LLM model alias to exactly one installed filename.
+
+        Accepts a full filename, a stem, or a unique prefix of either. Short
+        or ambiguous prefixes stay unresolved so the caller can raise with the
+        original requested name. ``group_of`` collapses companion files that
+        belong to the same catalog option into one match.
+        """
+        requested_key, requested_stem = cls._model_lookup_key(requested)
+        if not requested_key:
+            return None
+        available = [str(item) for item in candidates if str(item).strip()]
+        for candidate in available:
+            candidate_key, candidate_stem = cls._model_lookup_key(candidate)
+            if candidate_key == requested_key or candidate_stem == requested_stem:
+                return candidate
+        if len(requested_stem) < min_prefix_length:
+            return None
+        prefix_hits = [
+            candidate
+            for candidate in available
+            if (
+                cls._model_lookup_key(candidate)[0].startswith(requested_key)
+                or cls._model_lookup_key(candidate)[1].startswith(requested_stem)
+            )
+        ]
+        if not prefix_hits:
+            return None
+        if group_of is not None:
+            grouped: list[str] = []
+            seen: set[str] = set()
+            for candidate in prefix_hits:
+                group_key = str(group_of(candidate) or candidate)
+                if group_key in seen:
+                    continue
+                seen.add(group_key)
+                grouped.append(candidate)
+            prefix_hits = grouped
+        if len(prefix_hits) == 1:
+            return prefix_hits[0]
+        return None
+
+    @classmethod
+    def _resolve_video_pipeline(
+        cls,
+        catalog: dict[str, Any],
+        requested: str,
+        fallback: str,
+    ) -> str:
+        fallback = fallback or "wan-i2v"
+        requested_model = str(requested or "").strip()
+        if requested_model.casefold() in {"", "auto", "default"}:
+            return fallback
+        names: list[str] = []
+        owner: dict[str, str] = {}
+        for pipe in catalog.get("video_pipelines") or []:
+            pipe_id = str(pipe.get("id") or "").strip()
+            if pipe_id:
+                owner[pipe_id.casefold()] = pipe_id
+            for item in pipe.get("models") or []:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip()
+                if name:
+                    names.append(name)
+                    owner[name.casefold()] = pipe_id
+                for companion in item.get("companion_models") or []:
+                    companion_name = str(companion).strip()
+                    if not companion_name:
+                        continue
+                    names.append(companion_name)
+                    owner[companion_name.casefold()] = pipe_id
+        resolved = cls._resolve_installed_model(requested_model, names)
+        if resolved:
+            return owner.get(resolved.casefold(), fallback)
+        key = requested_model.casefold()
+        if key in owner:
+            return owner[key]
+        if "minimax" in key or re.search(r"(?:^|[^a-z0-9])h3(?:[^a-z0-9]|$)", key):
+            return "minimax-h3"
+        return fallback
 
     async def generate_image(
         self,
@@ -442,22 +581,15 @@ class ComfyUIService:
                     "No supported image checkpoint or Qwen-Image model is installed"
                 )
         else:
-            requested_key = re.sub(r"\s*模型$", "", requested_model).casefold()
-            requested_stem = Path(requested_key).stem
             available_models = [
                 str(item)
                 for group in ("checkpoints", "diffusion_models")
                 for item in inventory.get(group, [])
                 if str(item).strip()
             ]
-            model = next(
-                (
-                    candidate
-                    for candidate in available_models
-                    if candidate.casefold() == requested_key
-                    or Path(candidate).stem.casefold() == requested_stem
-                ),
-                requested_model,
+            model = (
+                self._resolve_installed_model(requested_model, available_models)
+                or requested_model
             )
         is_bigasp_v2 = Path(model).name.casefold() == BIGASP_V2_MODEL.casefold()
         resolved_steps = steps if steps is not None else (40 if is_bigasp_v2 else 6)
@@ -606,6 +738,7 @@ class ComfyUIService:
     ) -> dict[str, Any]:
         await self.ensure_ready()
         catalog = await self.model_catalog(_ensure_runtime=False)
+        pipeline = self._resolve_video_pipeline(catalog, str(model or ""), pipeline)
         pipeline_option = next(
             (
                 item
@@ -615,7 +748,7 @@ class ComfyUIService:
             None,
         )
         if pipeline_option is None:
-            raise ComfyUIError("pipeline must be wan-i2v or ltx-t2v")
+            raise ComfyUIError("pipeline must be wan-i2v, ltx-t2v, or minimax-h3")
         if not pipeline_option["installed"]:
             raise ComfyUIError(
                 f"ComfyUI pipeline {pipeline} is missing required models or nodes: "
@@ -633,17 +766,34 @@ class ComfyUIService:
                 for item in pipeline_option.get("models") or []
                 if isinstance(item, dict)
             ]
-            model_by_name = {
-                str(item.get("name") or "").casefold(): item
-                for item in model_options
-                if str(item.get("name") or "").strip()
-            }
-            remix_option = model_by_name.get(WAN22_REMIX_HIGH_MODEL.casefold())
-            if remix_option is not None:
-                model_by_name[WAN22_REMIX_LOW_MODEL.casefold()] = remix_option
+            model_by_name: dict[str, dict[str, Any]] = {}
+            lookup_names: list[str] = []
+            for item in model_options:
+                option_name = str(item.get("name") or "").strip()
+                if not option_name:
+                    continue
+                lookup_names.append(option_name)
+                model_by_name[option_name.casefold()] = item
+                for companion in item.get("companion_models") or []:
+                    companion_name = str(companion).strip()
+                    if not companion_name:
+                        continue
+                    lookup_names.append(companion_name)
+                    model_by_name[companion_name.casefold()] = item
             requested_model = str(model or "").strip()
             if requested_model and requested_model.casefold() != "auto":
-                selected_model = model_by_name.get(requested_model.casefold())
+                resolved_name = self._resolve_installed_model(
+                    requested_model,
+                    lookup_names,
+                    group_of=lambda name: str(
+                        model_by_name.get(name.casefold(), {}).get("name") or name
+                    ),
+                )
+                selected_model = (
+                    model_by_name.get(resolved_name.casefold())
+                    if resolved_name
+                    else None
+                )
                 if selected_model is None:
                     available = ", ".join(
                         str(item.get("name") or "")
@@ -723,6 +873,21 @@ class ComfyUIService:
             resolved_model = LTX_CHECKPOINT
             input_image_source = None
             graph = self._ltx_t2v_graph(prompt, width, height, frames, fps, steps, cfg, seed)
+        elif pipeline == "minimax-h3":
+            width, height = max(32, width - width % 32), max(32, height - height % 32)
+            frames = max(5, frames)
+            resolved_model = MINIMAX_H3_MODEL
+            image_name = None
+            input_image_source = None
+            if input_image:
+                image_name = await self._upload_image(input_image)
+                input_image_source = "local-file"
+            graph = self._minimax_h3_graph(
+                prompt, image_name, width, height, frames, steps, seed,
+            )
+            fps = 24
+        else:
+            raise ComfyUIError("pipeline must be wan-i2v, ltx-t2v, or minimax-h3")
         return await self._submit_and_wait(
             graph,
             timeout=3600,
@@ -997,6 +1162,63 @@ class ComfyUIService:
                 "video": ["18", 0], "filename_prefix": "AetherChat/ltx_t2v", "format": "auto", "codec": "auto",
             }},
         }
+
+    @staticmethod
+    def _minimax_h3_graph(
+        prompt: str,
+        start_image: str | None,
+        width: int,
+        height: int,
+        frames: int,
+        steps: int,
+        seed: int | None,
+    ) -> dict[str, Any]:
+        graph: dict[str, Any] = {
+            "1": {"class_type": "UNETLoader", "inputs": {
+                "unet_name": MINIMAX_H3_MODEL, "weight_dtype": "default",
+            }},
+            "2": {"class_type": "CLIPLoader", "inputs": {
+                "clip_name": MINIMAX_H3_TEXT_ENCODER, "type": "minimax", "device": "default",
+            }},
+            "3": {"class_type": "VAELoader", "inputs": {"vae_name": MINIMAX_H3_VIDEO_VAE}},
+            "4": {"class_type": "VAELoader", "inputs": {"vae_name": MINIMAX_H3_AUDIO_VAE}},
+            "5": {"class_type": "MiniMaxH3ImageToVideo", "inputs": {
+                "clip": ["2", 0], "vae": ["3", 0], "prompt": prompt,
+                "width": width, "height": height, "length": max(5, frames),
+            }},
+            "6": {"class_type": "RandomNoise", "inputs": {
+                "noise_seed": seed if seed is not None else random.getrandbits(63),
+            }},
+            "7": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": "res_multistep"}},
+            "8": {"class_type": "BasicScheduler", "inputs": {
+                "model": ["1", 0], "scheduler": "simple",
+                "steps": max(1, min(100, steps)), "denoise": 1.0,
+            }},
+            "9": {"class_type": "BasicGuider", "inputs": {
+                "model": ["1", 0], "conditioning": ["5", 0],
+            }},
+            "10": {"class_type": "SamplerCustomAdvanced", "inputs": {
+                "noise": ["6", 0], "guider": ["9", 0], "sampler": ["7", 0],
+                "sigmas": ["8", 0], "latent_image": ["5", 1],
+            }},
+            "11": {"class_type": "VAEDecode", "inputs": {
+                "samples": ["10", 0], "vae": ["3", 0],
+            }},
+            "12": {"class_type": "VAEDecodeAudio", "inputs": {
+                "samples": ["10", 0], "vae": ["4", 0],
+            }},
+            "13": {"class_type": "CreateVideo", "inputs": {
+                "images": ["11", 0], "audio": ["12", 0], "fps": 24.0,
+            }},
+            "14": {"class_type": "SaveVideo", "inputs": {
+                "video": ["13", 0], "filename_prefix": "AetherChat/minimax_h3",
+                "format": "auto", "codec": "auto",
+            }},
+        }
+        if start_image:
+            graph["15"] = {"class_type": "LoadImage", "inputs": {"image": start_image}}
+            graph["5"]["inputs"]["first_frame"] = ["15", 0]
+        return graph
 
     async def run_workflow(self, name: str, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
         await self.ensure_ready()

@@ -22,6 +22,17 @@ READINESS_TABLES = (
     "sessions",
     "tasks",
 )
+AGENT_RUN_COMPLETION_STATUSES = {
+    "completed",
+    "completed_verified",
+    "completed_with_warnings",
+    "uncertain",
+}
+AGENT_RUN_TERMINAL_STATUSES = {
+    *AGENT_RUN_COMPLETION_STATUSES,
+    "failed",
+    "interrupted",
+}
 
 
 def _utc_now() -> str:
@@ -59,6 +70,9 @@ class ChatDatabase:
             )
         try:
             self._initialize()
+            # Schema 4 already-migrated DBs still need a one-shot bind of
+            # historical NULL project_id rows. Idempotent.
+            self.backfill_unbound_projects()
         except Exception:
             if self.last_migration_backup is not None:
                 self._restore_migration_backup(self.last_migration_backup)
@@ -218,23 +232,7 @@ class ChatDatabase:
             """CREATE INDEX IF NOT EXISTS idx_agent_runs_project
                ON agent_runs(project_id)"""
         )
-        # Backfill agent_runs from session when session already has project_id.
-        connection.execute(
-            """
-            UPDATE agent_runs
-            SET project_id = (
-                SELECT sessions.project_id FROM sessions
-                WHERE sessions.id = agent_runs.session_id
-            )
-            WHERE project_id IS NULL
-              AND EXISTS (
-                SELECT 1 FROM sessions
-                WHERE sessions.id = agent_runs.session_id
-                  AND sessions.project_id IS NOT NULL
-                  AND sessions.project_id != ''
-              )
-            """
-        )
+        self._backfill_unbound_projects(connection, "default")
 
     def _run_migrations(self, connection: sqlite3.Connection) -> None:
         row = connection.execute("PRAGMA user_version").fetchone()
@@ -256,6 +254,58 @@ class ChatDatabase:
                 raise
             else:
                 connection.commit()
+
+    @staticmethod
+    def _backfill_unbound_projects(
+        connection: sqlite3.Connection,
+        default_project_id: str,
+    ) -> dict[str, int]:
+        """Bind leftover NULL/empty project_id rows to the default project."""
+        clean = (default_project_id or "default").strip() or "default"
+        sessions_updated = connection.execute(
+            """
+            UPDATE sessions
+            SET project_id = ?
+            WHERE project_id IS NULL OR project_id = ''
+            """,
+            (clean,),
+        ).rowcount
+        runs_from_session = connection.execute(
+            """
+            UPDATE agent_runs
+            SET project_id = (
+                SELECT sessions.project_id FROM sessions
+                WHERE sessions.id = agent_runs.session_id
+            )
+            WHERE (project_id IS NULL OR project_id = '')
+              AND EXISTS (
+                SELECT 1 FROM sessions
+                WHERE sessions.id = agent_runs.session_id
+                  AND sessions.project_id IS NOT NULL
+                  AND sessions.project_id != ''
+              )
+            """
+        ).rowcount
+        runs_default = connection.execute(
+            """
+            UPDATE agent_runs
+            SET project_id = ?
+            WHERE project_id IS NULL OR project_id = ''
+            """,
+            (clean,),
+        ).rowcount
+        return {
+            "sessions": int(sessions_updated or 0),
+            "runs_from_session": int(runs_from_session or 0),
+            "runs_default": int(runs_default or 0),
+        }
+
+    def backfill_unbound_projects(self, default_project_id: str = "default") -> dict[str, int]:
+        """Idempotent startup backfill for schema 4 DBs that already migrated."""
+        with self._lock, self._connect() as connection:
+            result = self._backfill_unbound_projects(connection, default_project_id)
+            connection.commit()
+        return result
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=15)
@@ -1013,6 +1063,29 @@ class ChatDatabase:
                 item["reasoning_summary"] = []
             result.append(item)
         return result
+
+    def get_message(self, message_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM messages WHERE id = ?",
+                (str(message_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        try:
+            item["attachments"] = json.loads(item.pop("attachments_json", "[]"))
+        except (json.JSONDecodeError, TypeError):
+            item["attachments"] = []
+        try:
+            item["generated_files"] = json.loads(item.pop("generated_files_json", "[]"))
+        except (json.JSONDecodeError, TypeError):
+            item["generated_files"] = []
+        try:
+            item["reasoning_summary"] = json.loads(item.pop("reasoning_summary_json", "[]"))
+        except (json.JSONDecodeError, TypeError):
+            item["reasoning_summary"] = []
+        return item
 
     def chat_history(self, session_id: str, limit: int = 1000) -> list[dict[str, Any]]:
         return self.list_messages(session_id, limit)
@@ -2051,6 +2124,9 @@ class ChatDatabase:
         verified_effect_count = int(item.get("verified_effect_count") or 0)
         failed_effect_count = int(item.get("failed_effect_count") or 0)
         uncertain_effect_count = int(item.get("uncertain_effect_count") or 0)
+        unverified_effect_count = int(item.get("unverified_effect_count") or 0)
+        problem_tool_count = int(item.get("problem_tool_count") or 0)
+        pending_tool_count = int(item.get("pending_tool_count") or 0)
         if effect_count == 0:
             effect_verification_status = "not_applicable"
         elif uncertain_effect_count:
@@ -2065,8 +2141,56 @@ class ChatDatabase:
         item["verified_effect_count"] = verified_effect_count
         item["failed_effect_count"] = failed_effect_count
         item["uncertain_effect_count"] = uncertain_effect_count
+        item["unverified_effect_count"] = unverified_effect_count
+        item["problem_tool_count"] = problem_tool_count
+        item["pending_tool_count"] = pending_tool_count
         item["effect_verification_status"] = effect_verification_status
+        stored_status = str(item.get("status") or "")
+        item["outcome_status"] = (
+            ChatDatabase.completion_status_for_evidence(item)
+            if stored_status == "completed"
+            else stored_status
+        )
+        item["completion_summary"] = ChatDatabase.completion_summary(item)
         return item
+
+    @staticmethod
+    def completion_status_for_evidence(run: dict[str, Any]) -> str:
+        """Classify a structurally complete run from deterministic execution evidence."""
+        effect_count = int(run.get("effect_count") or 0)
+        verified_effect_count = int(run.get("verified_effect_count") or 0)
+        failed_effect_count = int(run.get("failed_effect_count") or 0)
+        uncertain_effect_count = int(run.get("uncertain_effect_count") or 0)
+        unverified_effect_count = int(run.get("unverified_effect_count") or 0)
+        problem_tool_count = int(run.get("problem_tool_count") or 0)
+        pending_tool_count = int(run.get("pending_tool_count") or 0)
+        tool_call_count = int(run.get("tool_call_count") or 0)
+
+        if uncertain_effect_count or unverified_effect_count or pending_tool_count:
+            return "uncertain"
+        if failed_effect_count or problem_tool_count:
+            return "completed_with_warnings"
+        if tool_call_count == 0:
+            return "completed_with_warnings"
+        if effect_count and verified_effect_count != effect_count:
+            return "uncertain"
+        return "completed_verified"
+
+    @staticmethod
+    def completion_summary(run: dict[str, Any]) -> str | None:
+        stored_status = str(run.get("status") or "")
+        outcome_status = str(run.get("outcome_status") or stored_status)
+        if stored_status not in AGENT_RUN_COMPLETION_STATUSES:
+            return None
+        if outcome_status == "completed_verified":
+            return "工具执行证据完整；所有副作用均已核验。"
+        if outcome_status == "uncertain":
+            return "输出已生成，但仍有未核验、不确定或尚未结束的执行副作用。"
+        if int(run.get("problem_tool_count") or 0) or int(
+            run.get("failed_effect_count") or 0
+        ):
+            return "输出已生成，但存在失败、拒绝或核验失败的工具结果。"
+        return "回答已生成，但没有形成可独立核验的工具执行证据。"
 
     def create_agent_run(self, session_id: str, action: dict[str, Any], targets: list[str]) -> dict[str, Any]:
         self.ensure_session(session_id, mode=str(action.get("mode") or "project"))
@@ -2133,6 +2257,19 @@ class ChatDatabase:
                            WHERE agent_tool_calls.run_id = agent_runs.id
                              AND agent_tool_calls.side_effect = 1
                              AND agent_tool_calls.verification_status = 'uncertain') AS uncertain_effect_count,
+                          (SELECT COUNT(*) FROM agent_tool_calls
+                           WHERE agent_tool_calls.run_id = agent_runs.id
+                             AND agent_tool_calls.side_effect = 1
+                             AND agent_tool_calls.verification_status IN ('pending', 'unverified')) AS unverified_effect_count,
+                          (SELECT COUNT(*) FROM agent_tool_calls
+                           WHERE agent_tool_calls.run_id = agent_runs.id
+                             AND (
+                               agent_tool_calls.status IN ('failed', 'denied', 'uncertain')
+                               OR agent_tool_calls.verification_status = 'failed'
+                             )) AS problem_tool_count,
+                          (SELECT COUNT(*) FROM agent_tool_calls
+                           WHERE agent_tool_calls.run_id = agent_runs.id
+                             AND agent_tool_calls.status IN ('pending', 'waiting_approval', 'running')) AS pending_tool_count,
                           (SELECT COUNT(*) FROM agent_checkpoints
                            WHERE agent_checkpoints.run_id = agent_runs.id) AS checkpoint_count,
                           (SELECT COUNT(*) FROM agent_steers
@@ -2201,6 +2338,19 @@ class ChatDatabase:
                            WHERE agent_tool_calls.run_id = agent_runs.id
                              AND agent_tool_calls.side_effect = 1
                              AND agent_tool_calls.verification_status = 'uncertain') AS uncertain_effect_count,
+                          (SELECT COUNT(*) FROM agent_tool_calls
+                           WHERE agent_tool_calls.run_id = agent_runs.id
+                             AND agent_tool_calls.side_effect = 1
+                             AND agent_tool_calls.verification_status IN ('pending', 'unverified')) AS unverified_effect_count,
+                          (SELECT COUNT(*) FROM agent_tool_calls
+                           WHERE agent_tool_calls.run_id = agent_runs.id
+                             AND (
+                               agent_tool_calls.status IN ('failed', 'denied', 'uncertain')
+                               OR agent_tool_calls.verification_status = 'failed'
+                             )) AS problem_tool_count,
+                          (SELECT COUNT(*) FROM agent_tool_calls
+                           WHERE agent_tool_calls.run_id = agent_runs.id
+                             AND agent_tool_calls.status IN ('pending', 'waiting_approval', 'running')) AS pending_tool_count,
                           (SELECT COUNT(*) FROM agent_checkpoints
                            WHERE agent_checkpoints.run_id = agent_runs.id) AS checkpoint_count,
                           (SELECT COUNT(*) FROM agent_steers
@@ -2242,7 +2392,7 @@ class ChatDatabase:
     def update_agent_run(self, run_id: str, status: str, *, error: str | None = None, increment_retry: bool = False) -> dict[str, Any] | None:
         now = _utc_now()
         started_at = now if status == "running" else None
-        completed_at = now if status in {"completed", "failed", "interrupted"} else None
+        completed_at = now if status in AGENT_RUN_TERMINAL_STATUSES else None
         with self._lock, self._connect() as connection:
             connection.execute(
                 """UPDATE agent_runs SET status = ?, error = ?, updated_at = ?,

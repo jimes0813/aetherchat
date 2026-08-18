@@ -161,6 +161,24 @@ class ApprovalService:
                     "deny",
                 )
 
+    def clear_risks(self, risks: set[str]) -> int:
+        """Revoke grants and reject pending prompts for selected risk classes."""
+        normalized = {str(value) for value in risks}
+        with self._lock:
+            previous = len(self._session_grants)
+            self._session_grants = {
+                grant for grant in self._session_grants if grant[1] not in normalized
+            }
+            pending = [item for item in self._pending.values() if item.risk in normalized]
+        for item in pending:
+            if not item.future.done():
+                item.future.get_loop().call_soon_threadsafe(
+                    _resolve_future,
+                    item.future,
+                    "deny",
+                )
+        return previous - len(self._session_grants)
+
 
 approval_service = ApprovalService()
 
@@ -200,12 +218,20 @@ def approval_policy(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         action = name.rsplit("__", 1)[-1]
         if action == "capabilities":
             return None
-        observing = action in {"list_apps", "list_windows", "get_state", "read_document"}
+        requested_action = (
+            str(arguments.get("action") or "").strip().lower()
+            if action == "computer"
+            else action
+        )
+        observing = requested_action in {
+            "list_apps", "list_windows", "get_state", "read_document",
+            "screenshot", "zoom", "cursor_position", "wait",
+        }
         return {
             "risk": "computer_observation" if observing else "computer_control",
             "title": "允许模型观察电脑？" if observing else "允许模型操作电脑？",
-            "detail": f"电脑操作：{action}",
-            "allow_session": observing,
+            "detail": f"电脑操作：{requested_action}",
+            "allow_session": True,
         }
     if name == "plugin__documents__export_to_local" or name.endswith("__write_document"):
         return {

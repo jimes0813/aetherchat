@@ -6,7 +6,11 @@ import logging
 from typing import Any
 
 from ..request_context import current_request_id
-from .chat_database import ChatDatabase, chat_database
+from .chat_database import (
+    AGENT_RUN_TERMINAL_STATUSES,
+    ChatDatabase,
+    chat_database,
+)
 from .execution_strategy import (
     ExecutionStrategyResolution,
 )
@@ -895,12 +899,23 @@ class AgentRunService:
         elif event_type == "error":
             error = str(event.get("message") or "运行失败")[:2000]
             payload["message"] = error
-            if model:
+            uncertain_effect = event.get("code") == "tool_result_uncertain"
+            if model and uncertain_effect:
+                self.database.update_agent_step(
+                    run_id,
+                    model,
+                    "interrupted",
+                    error=error,
+                )
+                self.database.update_agent_run(run_id, "uncertain", error=error)
+            elif model:
                 self.database.update_agent_step(run_id, model, "failed", error=error)
-                if event.get("code") == "tool_result_uncertain":
-                    self.database.update_agent_run(run_id, "failed", error=error)
             else:
-                self.database.update_agent_run(run_id, "failed", error=error)
+                self.database.update_agent_run(
+                    run_id,
+                    "uncertain" if uncertain_effect else "failed",
+                    error=error,
+                )
         elif event_type == "interrupted" and model:
             self.database.update_agent_step(run_id, model, "interrupted", error="用户中断")
         elif event_type == "approval_required":
@@ -1163,6 +1178,48 @@ class AgentRunService:
     def mark_steer_applied(self, run_id: str, steer_id: str, model: str) -> dict[str, Any] | None:
         return self.database.mark_agent_steer_applied(steer_id, model)
 
+    def _finalize_structural_completion(
+        self,
+        run_id: str,
+        current: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        status = self.database.completion_status_for_evidence(current)
+        summary = self.database.completion_summary({
+            **current,
+            "status": status,
+            "outcome_status": status,
+        })
+        updated = self.database.update_agent_run(
+            run_id,
+            status,
+            error=None if status == "completed_verified" else summary,
+        )
+        event_type = "run_completed" if status.startswith("completed_") else "run_uncertain"
+        self.database.append_agent_event(
+            run_id,
+            event_type,
+            {
+                "completion_status": status,
+                "summary": summary,
+                "tool_call_count": int(current.get("tool_call_count") or 0),
+                "effect_count": int(current.get("effect_count") or 0),
+                "verified_effect_count": int(current.get("verified_effect_count") or 0),
+                "problem_tool_count": int(current.get("problem_tool_count") or 0),
+                "unverified_effect_count": int(
+                    current.get("unverified_effect_count") or 0
+                ),
+            },
+        )
+        logger.info(
+            "Agent run finished",
+            extra={
+                "event": "agent_run_finished",
+                "trace_id": diagnostic_ref("run", run_id),
+                "run_status": status,
+            },
+        )
+        return updated
+
     def finish(self, run_id: str, *, disconnected: bool = False) -> dict[str, Any] | None:
         current = self.database.get_agent_run(run_id, include_events=False)
         if current is None:
@@ -1172,7 +1229,9 @@ class AgentRunService:
             or current.get("plan_status") == "cancelled"
         ):
             return current
-        if disconnected and current["status"] not in {"completed", "failed", "interrupted"}:
+        if current["status"] == "uncertain":
+            return current
+        if disconnected and current["status"] not in AGENT_RUN_TERMINAL_STATUSES:
             updated = self.database.update_agent_run(run_id, "recoverable", error="连接中断，运行结果未确认")
             self.database.append_agent_event(run_id, "recovery_required", {"reason": "connection_lost"})
             logger.info(
@@ -1192,18 +1251,8 @@ class AgentRunService:
         if plan_steps and current["status"] != "failed":
             if synthesizer and synthesizer["status"] == "completed":
                 self.database.set_agent_plan_status(run_id, "completed")
-                updated = self.database.update_agent_run(run_id, "completed", error=None)
                 self.database.update_agent_goal_status(run_id, "completed")
-                self.database.append_agent_event(run_id, "run_completed", {})
-                logger.info(
-                    "Agent run finished",
-                    extra={
-                        "event": "agent_run_finished",
-                        "trace_id": diagnostic_ref("run", run_id),
-                        "run_status": "completed",
-                    },
-                )
-                return updated
+                return self._finalize_structural_completion(run_id, current)
             failed_step = next(
                 (
                     step for step in plan_steps
@@ -1270,7 +1319,7 @@ class AgentRunService:
         elif "interrupted" in statuses:
             status, error = "interrupted", "运行被中断"
         elif steps and statuses == {"completed"}:
-            status, error = "completed", None
+            return self._finalize_structural_completion(run_id, current)
         else:
             status, error = "failed", current.get("error") or "运行未产生可确认的完成步骤"
         if plan_steps:

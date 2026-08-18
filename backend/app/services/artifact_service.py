@@ -286,6 +286,15 @@ class ArtifactService:
     async def list_files(self, session_id: str) -> list[dict[str, Any]]:
         repo_path = Path(await self.prepare_checkout(session_id))
         files: list[dict[str, Any]] = []
+        history_rows = self._read_history(repo_path)
+        history_by_path: dict[str, list[dict[str, Any]]] = {}
+        for item in history_rows:
+            try:
+                history_path = self.normalize_path(str(item.get("path") or ""))
+            except ArtifactPathError:
+                continue
+            history_by_path.setdefault(history_path, []).append(item)
+        current_paths: set[str] = set()
         for full_path in repo_path.rglob("*"):
             if (
                 not full_path.is_file()
@@ -298,6 +307,7 @@ class ArtifactService:
             except ValueError:
                 continue
             file_path = full_path.relative_to(repo_path).as_posix()
+            current_paths.add(file_path)
             files.append(
                 {
                     "id": str(uuid5(NAMESPACE_URL, f"aetherchat:{session_id}:{file_path}")),
@@ -309,9 +319,11 @@ class ArtifactService:
                     "mime_type": self._mime_for(file_path),
                     "size_bytes": full_path.stat().st_size,
                     "updated_at": full_path.stat().st_mtime,
+                    "availability": "current",
+                    "recoverable": True,
                 }
             )
-            matching = [item for item in self._read_history(repo_path) if item.get("path") == file_path]
+            matching = history_by_path.get(file_path, [])
             if matching:
                 latest = matching[-1]
                 files[-1].update({
@@ -322,13 +334,75 @@ class ArtifactService:
                 })
             else:
                 files[-1].update({"current_version": 1, "status": "ready", "source_model": None, "parent_version": None})
+
+        # Keep deleted/moved files discoverable when a safe snapshot still
+        # exists in the append-only history. This turns a stale 404 into an
+        # explicit, user-controlled restore path.
+        for file_path, matching in history_by_path.items():
+            if file_path in current_paths or not matching:
+                continue
+            latest = matching[-1]
+            files.append({
+                "id": str(uuid5(NAMESPACE_URL, f"aetherchat:{session_id}:{file_path}")),
+                "session_id": str(session_id),
+                "path": file_path,
+                "kind": self._kind_for(file_path),
+                "current_hash": str(latest.get("hash") or ""),
+                "content_hash": str(latest.get("hash") or ""),
+                "mime_type": self._mime_for(file_path),
+                "size_bytes": int(latest.get("size_bytes") or 0),
+                "updated_at": latest.get("created_at"),
+                "current_version": int(latest.get("version") or len(matching)),
+                "status": latest.get("status", "archived"),
+                "source_model": latest.get("source_model"),
+                "parent_version": latest.get("parent_version"),
+                "availability": "history_only",
+                "recoverable": latest.get("content_encoding") == "utf-8",
+            })
         return sorted(files, key=lambda item: item["path"])
 
     async def preview(self, session_id: str, path: str) -> dict[str, Any]:
         await self.prepare_checkout(session_id)
         full_path, normalized, _ = self._artifact_path(session_id, path)
         if not full_path.is_file():
-            raise FileNotFoundError(path)
+            versions = await self.history(session_id, normalized, limit=1)
+            if not versions:
+                raise FileNotFoundError(path)
+            latest = versions[0]
+            suffix = Path(normalized).suffix.lower()
+            mime_type = self._mime_for(normalized)
+            recoverable_version = (
+                int(latest.get("version") or 0)
+                if latest.get("content_encoding") == "utf-8"
+                else None
+            )
+            if recoverable_version is None or suffix not in EDITABLE_SUFFIXES:
+                return self._preview_result(
+                    normalized,
+                    mime_type,
+                    "download_only",
+                    "",
+                    availability="history_only",
+                    recoverable_version=recoverable_version,
+                )
+            content = self._history_text(latest)
+            mode = (
+                "markdown"
+                if suffix in {".md", ".markdown"}
+                else "isolated_html"
+                if suffix in {".html", ".htm", ".svg"}
+                else "code"
+            )
+            if mode == "isolated_html":
+                content = self._isolate_markup(content)
+            return self._preview_result(
+                normalized,
+                mime_type,
+                mode,
+                content,
+                availability="history_only",
+                recoverable_version=recoverable_version,
+            )
         suffix = full_path.suffix.lower()
         mime_type = self._mime_for(normalized)
         if suffix in OFFICE_SUFFIXES:
@@ -379,7 +453,16 @@ class ArtifactService:
         except zipfile.BadZipFile as exc:
             raise ArtifactPathError("Office artifact is not a valid package") from exc
 
-    def _preview_result(self, path: str, mime_type: str, mode: str, content: str) -> dict[str, Any]:
+    def _preview_result(
+        self,
+        path: str,
+        mime_type: str,
+        mode: str,
+        content: str,
+        *,
+        availability: str = "current",
+        recoverable_version: int | None = None,
+    ) -> dict[str, Any]:
         truncated = len(content) > MAX_PREVIEW_CHARS
         return {
             "path": path,
@@ -388,6 +471,8 @@ class ArtifactService:
             "content": content[:MAX_PREVIEW_CHARS],
             "truncated": truncated,
             "sandbox": "allow-none" if mode == "isolated_html" else None,
+            "availability": availability,
+            "recoverable_version": recoverable_version,
         }
 
     async def diff(self, session_id: str, path: str, from_version: int, to_version: int | None = None) -> dict[str, Any]:

@@ -78,7 +78,10 @@ class DiagnosticService:
         now: Any = _utc_now,
     ) -> None:
         self.database = database if database is not None else chat_database
-        self.log_path = Path(log_path).expanduser().absolute() if log_path else None
+        # Pin the log file at construction so later env mutations (tests or
+        # process wrappers) cannot silently read a different diagnostics path.
+        resolved_log = log_path if log_path is not None else structured_log_path()
+        self.log_path = Path(resolved_log).expanduser().absolute()
         self.telemetry_service = telemetry_service
         telemetry_path = getattr(self.database, "path", None)
         if telemetry_service is None and telemetry_path is not None:
@@ -178,10 +181,7 @@ class DiagnosticService:
                 "run_dispatcher": self._dispatcher_snapshot(run_dispatcher),
             },
             "telemetry": telemetry,
-            "recent_logs": read_recent_log_entries(
-                self.log_path if self.log_path is not None else structured_log_path(),
-                limit=200,
-            ),
+            "recent_logs": read_recent_log_entries(self.log_path, limit=200),
             "privacy": {
                 "request_bodies_included": False,
                 "query_strings_included": False,

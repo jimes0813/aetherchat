@@ -234,6 +234,7 @@ class ClientAction(BaseModel):
     task_id: str | None = None
     proposal_id: str | None = None
     attachment_ids: list[str] = Field(default_factory=list)
+    references: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ProjectPostMessageActionV1(ClientAction):

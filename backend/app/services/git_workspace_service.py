@@ -923,7 +923,14 @@ class GitWorkspaceService:
         if (
             run is None
             or run["session_id"] != str(session_id)
-            or run["status"] not in {"completed", "failed", "interrupted"}
+            or run["status"] not in {
+                "completed",
+                "completed_verified",
+                "completed_with_warnings",
+                "uncertain",
+                "failed",
+                "interrupted",
+            }
         ):
             raise GitWorkspaceError("Agent Run 尚未结束，不能应用候选")
         repository = self.database.get_workspace_repository(

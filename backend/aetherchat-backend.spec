@@ -11,6 +11,8 @@ hiddenimports = [
     'uvicorn.protocols.websockets.auto',
     'uvicorn.lifespan.on',
     'app.main',
+    'app.routers.voice',
+    'app.services.voice_runtime',
     'mcp_servers.aetherchat_local_audit',
 ]
 if sys.platform == 'win32':

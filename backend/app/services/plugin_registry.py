@@ -101,8 +101,8 @@ BUILTIN_PLUGINS = [
     PluginManifest(
         id="desktop-control",
         name="本地电脑控制",
-        version="2.0.0",
-        description="Codex 式模型电脑控制：观察屏幕与无障碍树，并在本机授权后点击、输入、滚动、拖拽、启动应用和编辑文档。",
+        version="3.0.0",
+        description="Claude Computer Use 兼容桌面循环：观察、操作、截图复核，并在本机授权后控制键鼠、启动应用和编辑文档。",
         category="Desktop",
         icon="Laptop",
         permissions=[
@@ -116,6 +116,52 @@ BUILTIN_PLUGINS = [
         ],
         actions=[
             _action("capabilities", "查看能力", "返回模型在当前平台可用的 Computer Use 动作。", "desktop_capabilities"),
+            _action(
+                "computer",
+                "Computer Use",
+                (
+                    "统一 computer_20251124 动作协议。先 screenshot，再用截图坐标操作；"
+                    "每次写操作自动返回新的验证截图。支持移动、单/双/三击、右/中键、"
+                    "拖拽、滚动、文本、组合键、按键保持、等待和区域放大。"
+                ),
+                "computer_action",
+                properties={
+                    "action": {
+                        "type": "string",
+                        "enum": [
+                            "screenshot", "mouse_move", "left_click", "right_click",
+                            "middle_click", "double_click", "triple_click",
+                            "left_click_drag", "left_mouse_down", "left_mouse_up",
+                            "scroll", "type", "key", "hold_key", "wait", "zoom",
+                            "cursor_position",
+                        ],
+                    },
+                    "coordinate": {
+                        "type": "array", "items": {"type": "integer"},
+                        "minItems": 2, "maxItems": 2,
+                        "description": "最新截图坐标 [x, y]",
+                    },
+                    "start_coordinate": {
+                        "type": "array", "items": {"type": "integer"},
+                        "minItems": 2, "maxItems": 2,
+                    },
+                    "region": {
+                        "type": "array", "items": {"type": "integer"},
+                        "minItems": 4, "maxItems": 4,
+                        "description": "放大区域 [x1, y1, x2, y2]",
+                    },
+                    "text": {"type": "string", "description": "type 文本或 key/hold_key 按键组合"},
+                    "duration": {"type": "number", "minimum": 0, "maximum": 30},
+                    "scroll_direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
+                    "scroll_amount": {"type": "integer", "minimum": 0, "maximum": 5000},
+                    "delta_x": {"type": "integer", "minimum": -5000, "maximum": 5000},
+                    "delta_y": {"type": "integer", "minimum": -5000, "maximum": 5000},
+                    "modifiers": {
+                        "type": "array", "items": {"type": "string"}, "maxItems": 4,
+                    },
+                },
+                required=["action"],
+            ),
             _action("list_apps", "列出应用", "列出当前带可见窗口的本机应用。", "computer_list_apps"),
             _action("list_windows", "列出窗口", "列出可见窗口、窗口 ID、进程与屏幕边界。", "computer_list_windows"),
             _action(
@@ -232,7 +278,7 @@ BUILTIN_PLUGINS = [
             _action(
                 "launch_app",
                 "启动应用",
-                "启动一个已存在的 .exe 或 .lnk，不接受命令行参数。",
+                "启动一个已存在的应用程序，不接受命令行参数。",
                 "computer_launch_app",
                 properties={"executable": {"type": "string"}},
                 required=["executable"],
@@ -357,14 +403,15 @@ BUILTIN_PLUGINS = [
                 "generate_video",
                 "生成视频",
                 (
-                    "使用 wan-i2v 把本机图片转为视频，或使用 ltx-t2v 文生视频；"
+                    "使用 wan-i2v 把本机图片转为视频，ltx-t2v 文生视频，"
+                    "或 MiniMax H3 文生/图生视频；"
                     "wan-i2v 可直接使用本条消息的图片附件，未提供图片时会自动生成起始图；"
                     "用户明确指定的视频模型优先。"
                 ),
                 "comfyui_generate_video",
                 properties={
                     "prompt": {"type": "string", "description": "主体动作、镜头运动与画面描述"},
-                    "pipeline": {"type": "string", "enum": ["wan-i2v", "ltx-t2v"]},
+                    "pipeline": {"type": "string", "enum": ["wan-i2v", "ltx-t2v", "minimax-h3"]},
                     "model": {
                         "type": "string",
                         "description": "可选；status 返回的视频模型文件名",
@@ -853,17 +900,26 @@ class PluginRegistry:
         if handler == "list_windows":
             return {"windows": self._visible_windows()}
         if handler == "desktop_capabilities":
+            from .computer_use_service import computer_use_service
+
+            runtime = await computer_use_service.capabilities()
             return {
                 "file_read": True,
                 "file_write": True,
                 "document_formats": ["txt", "md", "json", "csv", "tsv", "docx", "xlsx", "pptx", "pdf"],
-                "observation": ["desktop_screenshot", "window_screenshot", "uia_accessibility_tree"],
-                "actions": ["activate", "click", "type_text", "press_key", "set_value", "scroll", "drag", "launch_app"],
+                "observation": ["desktop_screenshot", "window_screenshot", "zoom", "post_action_screenshot"],
+                "actions": runtime["actions"],
+                "protocol": runtime["type"],
+                "platform": runtime["platform"],
+                "available": runtime["available"],
+                "enable_zoom": runtime["enable_zoom"],
+                "post_action_verification": runtime["post_action_verification"],
+                "interruptible": runtime["interruptible"],
                 "mouse": "model_with_native_consent",
                 "keyboard": "model_with_native_consent",
                 "screenshot": "model_with_native_consent",
                 "model_callable": True,
-                "safety": "首次使用需在 Electron 原生对话框授权；文件写入和启动应用始终逐次确认。",
+                "safety": "聊天内支持单次/会话授权；本机可随时中断接管，文件写入和启动应用始终逐次确认。",
             }
         if handler.startswith("comfyui_"):
             from .comfyui_service import comfyui_service
@@ -1044,6 +1100,21 @@ class PluginRegistry:
                 "source": "session_workspace",
                 "entries": sorted(entries.values(), key=lambda item: (item["type"] != "directory", item["name"])),
             }
+
+        if handler == "computer_action":
+            computer_action = str(arguments.get("action") or "").strip().lower()
+            observing_actions = {"screenshot", "zoom", "cursor_position", "wait"}
+            detail_parts = [f"动作：{computer_action or '未指定'}"]
+            if isinstance(arguments.get("coordinate"), list):
+                detail_parts.append(f"截图坐标：{arguments['coordinate'][:2]}")
+            if computer_action in {"type", "key", "hold_key"}:
+                detail_parts.append(f"输入长度：{len(str(arguments.get('text') or ''))}")
+            await require_computer_use_consent(
+                "观察当前桌面" if computer_action in observing_actions else "控制当前桌面",
+                "；".join(detail_parts),
+                risk="screen_read" if computer_action in observing_actions else "computer_control",
+            )
+            return await computer_use_service.execute_action(computer_action, arguments)
 
         labels = {
             "computer_list_apps": "列出当前应用",

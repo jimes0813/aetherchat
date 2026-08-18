@@ -17,7 +17,7 @@ router = APIRouter()
 
 class ComfyUISelection(BaseModel):
     image_model: str | None = Field(default=None, max_length=500)
-    video_pipeline: Literal["wan-i2v", "ltx-t2v"] | None = None
+    video_pipeline: Literal["wan-i2v", "ltx-t2v", "minimax-h3"] | None = None
 
 
 def _comfyui_selection() -> dict[str, str | None]:
