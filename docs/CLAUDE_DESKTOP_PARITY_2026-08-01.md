@@ -1,5 +1,7 @@
 # AetherChat 对标 Claude Desktop 的复制完善分析
 
+> **历史报告，仅供参考。** 本文记录 2026-08-01 时点状态，不代表当前 HEAD。当前能力、架构与门禁以仓库根 `README.md` 和最新 `docs/P0_P1_REMEDIATION_REPORT_*.md` 为准。
+
 评估与实施日期：2026-08-01
 
 对象：AetherChat 0.2.0 Linux 桌面工作副本

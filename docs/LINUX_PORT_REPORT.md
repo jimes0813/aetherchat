@@ -1,5 +1,7 @@
 # AetherChat Linux 迁移记录
 
+> **历史报告，仅供参考。** 本文记录 Linux 移植当时的基线与验证，不代表当前 HEAD。构建与安装以 `frontend/LINUX_PACKAGING.md` 和仓库根 `README.md` 为准。
+
 ## 源码基线
 
 源目录不包含 Git 元数据，因此无法通过提交记录计算差异。本次以文件修改时间和 Windows 0.2.0 构建产物确认基线：
