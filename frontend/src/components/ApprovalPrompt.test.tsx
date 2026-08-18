@@ -29,9 +29,10 @@ describe('ApprovalPrompt', () => {
       />,
     );
     expect(screen.getByText('执行删除文件命令')).toBeInTheDocument();
-    expect(screen.getByText('gpt-test 请求调用 shell_exec')).toBeInTheDocument();
-    expect(screen.getByText('风险：high')).toBeInTheDocument();
-    expect(screen.getByText('另有 2 个授权请求排队')).toBeInTheDocument();
+    expect(screen.getByText('允许使用 shell_exec？')).toBeInTheDocument();
+    expect(screen.getByText('gpt-test · shell_exec')).toBeInTheDocument();
+    expect(screen.getByText('high')).toBeInTheDocument();
+    expect(screen.getByText('另有 2 个待处理')).toBeInTheDocument();
     expect(screen.getByText('rm -rf /tmp/x')).toBeInTheDocument();
   });
 
@@ -39,15 +40,15 @@ describe('ApprovalPrompt', () => {
     render(
       <ApprovalPrompt approval={makeApproval({ allow_session: false })} onDecision={vi.fn()} />,
     );
-    expect(screen.getByText('是，仅允许这一次')).toBeInTheDocument();
-    expect(screen.queryByText(/不再询问/)).toBeNull();
+    expect(screen.getByText('允许')).toBeInTheDocument();
+    expect(screen.queryByText('本会话允许')).toBeNull();
   });
 
   it('点击“仅允许这一次”触发 allow_once 回调', async () => {
     const onDecision = vi.fn().mockResolvedValue(undefined);
     const approval = makeApproval();
     render(<ApprovalPrompt approval={approval} onDecision={onDecision} />);
-    fireEvent.click(screen.getByText('是，仅允许这一次'));
+    fireEvent.click(screen.getByRole('option', { name: '允许' }));
     await waitFor(() => {
       expect(onDecision).toHaveBeenCalledWith(approval, 'allow_once', undefined);
     });
@@ -57,7 +58,7 @@ describe('ApprovalPrompt', () => {
     const onDecision = vi.fn().mockResolvedValue(undefined);
     const approval = makeApproval();
     render(<ApprovalPrompt approval={approval} onDecision={onDecision} />);
-    fireEvent.click(screen.getByText(/并在本会话中不再询问 shell_exec/));
+    fireEvent.click(screen.getByRole('option', { name: '本会话允许' }));
     await waitFor(() => {
       expect(onDecision).toHaveBeenCalledWith(approval, 'allow_session', undefined);
     });
@@ -67,12 +68,11 @@ describe('ApprovalPrompt', () => {
     const onDecision = vi.fn().mockResolvedValue(undefined);
     const approval = makeApproval();
     render(<ApprovalPrompt approval={approval} onDecision={onDecision} />);
-    fireEvent.click(screen.getByText('否，并告诉 AetherChat 应如何调整'));
-    // 尚未提交
+    fireEvent.click(screen.getByRole('option', { name: '拒绝' }));
     expect(onDecision).not.toHaveBeenCalled();
     const input = screen.getByPlaceholderText('输入反馈；留空将直接拒绝');
     fireEvent.change(input, { target: { value: '  请先列出将删除的文件  ' } });
-    fireEvent.click(screen.getByText('拒绝并发送'));
+    fireEvent.click(screen.getByRole('button', { name: '拒绝' }));
     await waitFor(() => {
       expect(onDecision).toHaveBeenCalledWith(approval, 'deny', '请先列出将删除的文件');
     });
@@ -82,8 +82,8 @@ describe('ApprovalPrompt', () => {
     const onDecision = vi.fn().mockResolvedValue(undefined);
     const approval = makeApproval();
     render(<ApprovalPrompt approval={approval} onDecision={onDecision} />);
-    fireEvent.click(screen.getByText('否，并告诉 AetherChat 应如何调整'));
-    fireEvent.click(screen.getByText('拒绝并发送'));
+    fireEvent.click(screen.getByRole('option', { name: '拒绝' }));
+    fireEvent.click(screen.getByRole('button', { name: '拒绝' }));
     await waitFor(() => {
       expect(onDecision).toHaveBeenCalledWith(approval, 'deny', '');
     });
@@ -104,9 +104,9 @@ describe('ApprovalPrompt', () => {
 
   it('反馈模式下按返回回到选项菜单', () => {
     render(<ApprovalPrompt approval={makeApproval()} onDecision={vi.fn()} />);
-    fireEvent.click(screen.getByText('否，并告诉 AetherChat 应如何调整'));
+    fireEvent.click(screen.getByRole('option', { name: '拒绝' }));
     expect(screen.getByPlaceholderText('输入反馈；留空将直接拒绝')).toBeInTheDocument();
     fireEvent.click(screen.getByText('返回'));
-    expect(screen.getByText('请选择如何继续：')).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: '允许' })).toBeInTheDocument();
   });
 });

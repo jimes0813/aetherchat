@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Bot, Brain, CheckCircle2, Clock3, ExternalLink, Eye, FileText, FolderOpen, ListChecks, ShieldAlert, User, Wrench } from 'lucide-react';
+import { ChevronRight, ExternalLink, Eye, FileText, FolderOpen } from 'lucide-react';
 import { useSessionStore } from '../stores/sessionStore';
 import type { ApprovalRequest, GeneratedFile, GeneratedFileView, Message, ReasoningStep } from '../types';
 import { SafeMarkdown } from './SafeMarkdown';
 import { useI18n } from '../i18n';
+import { ApprovalPrompt } from './ApprovalPrompt';
 import { ChatEmptyState } from './ChatEmptyState';
+import { parseToolActivity } from './toolDisplay';
 
 interface UnifiedFeedProps {
   approvals?: ApprovalRequest[];
@@ -15,7 +17,11 @@ interface UnifiedFeedProps {
   onOpenGeneratedFile?: (file: GeneratedFile, action: 'open' | 'reveal') => void;
   onOpenRunHistory?: () => void;
   onPickExample?: (prompt: string) => void;
-  onOpenModels?: () => void;
+  onApprovalDecision?: (
+    approval: ApprovalRequest,
+    decision: NonNullable<ApprovalRequest['decision']>,
+    feedback?: string,
+  ) => void | Promise<void>;
 }
 
 const fileSize = (value?: number) => {
@@ -65,6 +71,7 @@ const GeneratedFileCard = ({
   onResolve?: (file: GeneratedFile, includePreview?: boolean) => Promise<GeneratedFileView>;
   onOpen?: (file: GeneratedFile, action: 'open' | 'reveal') => void;
 }) => {
+  const { ui } = useI18n();
   const [resolved, setResolved] = useState<GeneratedFileView>({
     location: file.path || file.url || null,
     mime_type: file.mime_type,
@@ -152,43 +159,43 @@ const GeneratedFileCard = ({
           {file.path && (
             <button
               type="button"
-              title={canPreviewInline(mimeType) ? '在聊天中直接预览' : '在工件面板中查看'}
-              aria-label={`预览文件 ${file.name}`}
+              title={canPreviewInline(mimeType) ? ui('在聊天中直接预览') : ui('在工件面板中查看')}
+              aria-label={ui('预览文件 {name}', { name: file.name })}
               onClick={() => void togglePreview()}
               disabled={previewLoading}
               className="flex h-8 items-center gap-1 rounded-md border border-[#cdbca9] bg-white px-2 text-xs text-[#62462e] hover:bg-[#fffaf4] disabled:opacity-50"
             >
               <Eye size={13} />
-              {resolved.preview_url ? '收起' : previewLoading ? '加载中' : '预览'}
+              {resolved.preview_url ? ui('收起') : previewLoading ? ui('加载中') : ui('预览')}
             </button>
           )}
           <button
             type="button"
-            title="用默认应用打开"
-            aria-label={`打开文件 ${file.name}`}
+            title={ui('用默认应用打开')}
+            aria-label={ui('打开文件 {name}', { name: file.name })}
             onClick={() => onOpen?.(file, 'open')}
             className="flex h-8 items-center gap-1 rounded-md border border-[#cdbca9] bg-white px-2 text-xs text-[#62462e] hover:bg-[#fffaf4]"
           >
             <ExternalLink size={13} />
-            打开
+            {ui('打开')}
           </button>
           {file.path && (
             <button
               type="button"
-              title="在文件管理器中显示"
-              aria-label={`打开文件所在目录 ${file.name}`}
+              title={ui('在文件管理器中显示')}
+              aria-label={ui('打开文件所在目录 {name}', { name: file.name })}
               onClick={() => onOpen?.(file, 'reveal')}
               className="flex h-8 items-center gap-1 rounded-md border border-[#cdbca9] bg-white px-2 text-xs text-[#62462e] hover:bg-[#fffaf4]"
             >
               <FolderOpen size={13} />
-              目录
+              {ui('目录')}
             </button>
           )}
         </div>
       </div>
       <div className="mt-2 break-all rounded-md bg-white/70 px-2 py-1.5 font-mono text-[11px] leading-4 text-[#67584c]">
-        <span className="font-sans font-semibold">保存位置：</span>
-        {locationLoading ? '正在读取本机路径…' : (resolved.location || '未返回保存位置')}
+        <span className="font-sans font-semibold">{ui('保存位置：')}</span>
+        {locationLoading ? ui('正在读取本机路径…') : (resolved.location || ui('未返回保存位置'))}
       </div>
       {previewError && (
         <div className="mt-2 text-xs text-[#9a3e32]">{previewError}</div>
@@ -224,11 +231,13 @@ const ExecutionReceipt = ({
   onOpenRunHistory?: () => void;
 }) => {
   const { ui } = useI18n();
-  const toolSteps = steps.filter((step) => step.phase === 'tool');
+  const [open, setOpen] = useState(false);
+  const toolRows = parseToolActivity(steps);
   const resultSteps = steps.filter((step) => step.phase === 'result');
-  const hasFailure = resultSteps.some((step) => /未成功|失败|拒绝|错误|blocked|failed|denied/i.test(step.detail));
-  const requestedBrowserNavigation = toolSteps.some((step) => (
-    /plugin__browser_links__open_url/i.test(step.detail)
+  const hasFailure = resultSteps.some((step) => /未成功|失败|拒绝|错误|blocked|failed|denied/i.test(step.detail))
+    || toolRows.some((row) => row.status === 'failed' || row.status === 'denied');
+  const requestedBrowserNavigation = steps.some((step) => (
+    step.phase === 'tool' && /plugin__browser_links__open_url/i.test(step.detail)
   ));
   const hasBrowserLaunchReceipt = resultSteps.some((step) => (
     /桌面启动器已确认|launcher_accepted|execution_receipt/i.test(step.detail)
@@ -238,16 +247,22 @@ const ExecutionReceipt = ({
     && !hasBrowserLaunchReceipt
     && !hasFailure
   );
-  const needsReview = hasFailure || unverifiedLegacyNavigation;
   const finalized = steps.some((step) => step.phase === 'final');
+  const verifiedExecution = hasBrowserLaunchReceipt && !hasFailure;
+  const needsReview = hasFailure || unverifiedLegacyNavigation || (finalized && !verifiedExecution);
   if (!steps.length && !files.length) return null;
 
-  const facts = [
-    { icon: Brain, label: ui('处理摘要'), value: steps.filter((step) => step.phase === 'analysis').length },
-    { icon: Wrench, label: ui('工具请求'), value: toolSteps.length },
-    { icon: ListChecks, label: ui('结果核对'), value: resultSteps.length },
-    { icon: FileText, label: ui('交付文件'), value: files.length },
-  ].filter((item) => item.value > 0);
+  const summary = unverifiedLegacyNavigation
+    ? ui('历史外部导航缺少桌面执行凭证')
+    : hasFailure
+      ? ui('执行已结束，存在需检查的结果')
+      : verifiedExecution
+        ? ui('外部操作已核验完成')
+        : toolRows.length
+          ? ui('已记录工具结果；请在运行审计中确认核验状态')
+          : finalized
+            ? ui('回答已生成，尚未获得外部执行核验')
+            : ui('已记录本次处理结果');
 
   return (
     <section
@@ -257,55 +272,52 @@ const ExecutionReceipt = ({
           ? 'unverified'
           : hasFailure
             ? 'failed'
-            : finalized
-              ? 'completed'
-              : 'recorded'
-      }
-      className={`mt-4 rounded-lg border p-3 ${
-        needsReview
-          ? 'border-[#d7a98b] bg-[#fff4ec]'
-          : 'border-[#b9d4c2] bg-[#f1f8f3]'
-      }`}
-    >
-      <div className="flex items-start gap-3">
-        <div className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${
-          needsReview ? 'bg-[#9a4c32] text-white' : 'bg-[#2f7250] text-white'
-        }`}>
-          {needsReview ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="text-sm font-semibold text-[#3f463f]">
-            {unverifiedLegacyNavigation
-              ? ui('历史外部导航缺少桌面执行凭证')
-              : hasFailure
-              ? ui('执行已结束，存在需检查的结果')
+            : verifiedExecution
+              ? 'verified'
               : finalized
-                ? ui('本次处理已完成')
-                : ui('已记录本次处理结果')}
-          </div>
-          <div className="mt-1 text-[11px] leading-5 text-[#647067]">
-            {unverifiedLegacyNavigation
-              ? ui('该历史记录只证明生成了打开链接意图，不能证明浏览器已启动；请重新发起该操作。')
-              : ui('这里只汇总 AetherChat 实际观察到的编排事件、工具结果和已保存文件；模型文字本身不视为执行凭证。')}
-          </div>
-        </div>
+                ? 'unverified'
+                : 'recorded'
+      }
+      className="mt-3"
+    >
+      <div className={`flex items-center gap-2 px-1 py-1 text-[13px] ${needsReview ? 'text-[#8a4b2a]' : 'text-[#6b6259]'}`}>
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+        >
+          <ChevronRight size={14} className={`shrink-0 transition ${open ? 'rotate-90' : ''}`} />
+          <span className="min-w-0 flex-1 truncate">{summary}</span>
+          {files.length > 0 && (
+            <span className="shrink-0 text-[11px] text-[#8b8176]">{ui('交付文件')} {files.length}</span>
+          )}
+          {resultSteps.length > 0 && (
+            <span className="sr-only">{ui('结果核对')} {resultSteps.length}</span>
+          )}
+        </button>
         {onOpenRunHistory && (
           <button
             type="button"
             onClick={onOpenRunHistory}
-            className="shrink-0 rounded-md border border-[#afc7b6] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#365f46] hover:bg-[#f8fcf9]"
+            className="shrink-0 text-[12px] text-[#8d5f35] hover:underline"
           >
             {ui('查看运行审计')}
           </button>
         )}
       </div>
-      {facts.length > 0 && (
-        <div className="mt-3 flex flex-wrap gap-2">
-          {facts.map(({ icon: Icon, label, value }) => (
-            <span key={label} className="inline-flex items-center gap-1.5 rounded-md border border-black/10 bg-white/80 px-2 py-1 text-[11px] text-[#4e5a51]">
-              <Icon size={12} />
-              {label} {value}
-            </span>
+      {unverifiedLegacyNavigation && (
+        <p className="mt-1 pl-6 text-[12px] leading-5 text-[#8a4b2a]">
+          {ui('该历史记录只证明生成了打开链接意图，不能证明浏览器已启动；请重新发起该操作。')}
+        </p>
+      )}
+      {open && (
+        <div className="mt-1 space-y-1 pl-6">
+          {toolRows.map((row) => (
+            <div key={`${row.name}-${row.status}`} className="text-[12px] text-[#5b5147]">
+              <span className="text-[#8b8176]">{row.status === 'failed' ? 'Failed' : row.status === 'denied' ? 'Denied' : 'Used'}</span>
+              {' '}
+              <span className="font-medium">{row.label}</span>
+            </div>
           ))}
         </div>
       )}
@@ -322,7 +334,7 @@ export const UnifiedFeed = ({
   onOpenGeneratedFile,
   onOpenRunHistory,
   onPickExample,
-  onOpenModels,
+  onApprovalDecision,
 }: UnifiedFeedProps) => {
   const {
     messages,
@@ -340,88 +352,90 @@ export const UnifiedFeed = ({
       )
     )), [messages]);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const { locale, t } = useI18n();
+  const { t, ui } = useI18n();
 
   useEffect(() => {
     const scroller = scrollRef.current;
     if (scroller) scroller.scrollTop = scroller.scrollHeight;
   }, [approvals.length, visibleMessages.length]);
 
-  return (
-    <div ref={scrollRef} className="aether-chat-scroll flex-1 overflow-auto px-6 py-5">
-      <div className="mx-auto max-w-3xl space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-semibold tracking-normal">{t('feedTitle')}</h1>
-            <p className="mt-1 text-sm text-[#6b6259]">{t('feedDescription')}</p>
-          </div>
-          <div className="flex items-center gap-2 rounded-lg border border-[#e1d9cd] bg-white px-3 py-2 text-xs text-[#7a7065]">
-            <Clock3 size={14} />
-            {t('live')}
-          </div>
-        </div>
+  const isEmpty = visibleMessages.length === 0;
 
-        {visibleMessages.length === 0 && (
+  return (
+    <div ref={scrollRef} className={`aether-chat-scroll flex-1 overflow-auto px-4 ${isEmpty ? 'flex flex-col' : 'py-6'}`}>
+      <h1 className="sr-only">{t('feedTitle')}</h1>
+      <p className="sr-only">{t('feedDescription')}</p>
+      <div className={`mx-auto w-full max-w-2xl ${isEmpty ? 'm-auto' : 'space-y-6'}`}>
+        {isEmpty && (
           <ChatEmptyState
             hasConfiguredModel={hasConfiguredModel}
             hasLocalModel={hasLocalModel}
             onPickExample={(prompt) => onPickExample?.(prompt)}
-            onOpenModels={onOpenModels}
-            onOpenRuns={onOpenRunHistory}
           />
         )}
 
-        {visibleMessages.map((msg) => (
-          <article key={msg.id} className="rounded-lg border border-[#e1d9cd] bg-[#fffdf9] p-4 shadow-sm">
-            <div className="mb-3 flex items-center gap-3">
-              <div className={`flex h-8 w-8 items-center justify-center rounded-lg ${msg.author_model === 'user' ? 'bg-[#2f2a24] text-white' : 'bg-[#ebe3d8] text-[#5b4532]'}`}>
-                {msg.author_model === 'user' ? <User size={16} /> : <Bot size={16} />}
+        {visibleMessages.map((msg) => {
+          const isUser = msg.role === 'user' || msg.author_model === 'user';
+          return (
+          <article key={msg.id} className={isUser ? 'flex justify-end' : 'block'}>
+            {isUser ? (
+              <div className="max-w-[min(36rem,85%)] rounded-2xl bg-[#ece4d8] px-4 py-2.5 text-[15px] leading-6 text-[#2f2a24]">
+                <SafeMarkdown content={msg.content} />
+                {msg.attachments && msg.attachments.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {msg.attachments.map((attachment) => (
+                      <span key={attachment.id} className="inline-flex max-w-48 items-center gap-1 rounded-md bg-white/70 px-1.5 py-0.5 text-[11px] text-[#5b4532]" title={t('chunks', { count: attachment.chunk_count })}>
+                        <FileText size={12} className="shrink-0" />
+                        <span className="truncate">{attachment.name}</span>
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
+            ) : (
               <div>
-                <div className="text-sm font-semibold">{msg.author_model === 'user' ? t('you') : msg.author_model}</div>
-                <div className="text-xs text-[#70675e]">{new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(msg.created_at))}</div>
-              </div>
-              {typeof msg.cost_usd === 'number' && msg.cost_usd > 0 && (
-                <div className="ml-auto rounded-md bg-[#eee6db] px-2 py-1 text-xs text-[#7a552f]">
-                  ${msg.cost_usd.toFixed(4)}
+                <div className="mb-1.5 text-[12px] text-[#8b8176]">{msg.author_model}</div>
+                <div className="text-[15px] leading-7 text-[#2f2a24]">
+                  <SafeMarkdown content={msg.content} />
                 </div>
-              )}
-            </div>
-            <SafeMarkdown content={msg.content} />
-            {msg.author_model !== 'user' && (
-              <ExecutionReceipt
-                steps={msg.reasoning_summary || []}
-                files={msg.generated_files || []}
-                onOpenRunHistory={onOpenRunHistory}
-              />
-            )}
-            {msg.attachments && msg.attachments.length > 0 && (
-              <div className="mt-3 flex flex-wrap gap-2">
-                {msg.attachments.map((attachment) => (
-                  <span key={attachment.id} className="inline-flex max-w-64 items-center gap-1.5 rounded-md border border-[#d9cbbc] bg-[#f4ece2] px-2 py-1 text-xs text-[#5b4532]" title={t('chunks', { count: attachment.chunk_count })}>
-                    <FileText size={13} className="shrink-0" />
-                    <span className="truncate">{attachment.name}</span>
-                  </span>
-                ))}
-              </div>
-            )}
-            {msg.generated_files && msg.generated_files.length > 0 && (
-              <div className="mt-4 space-y-2" aria-label="本次生成的文件">
-                <div className="text-[11px] font-semibold uppercase tracking-wide text-[#796b5e]">
-                  本次生成的文件
-                </div>
-                {msg.generated_files.map((file, index) => (
-                  <GeneratedFileCard
-                    key={`${file.path || file.url || file.name}-${index}`}
-                    file={file}
-                    onInspect={onInspectGeneratedFile}
-                    onResolve={onResolveGeneratedFile}
-                    onOpen={onOpenGeneratedFile}
-                  />
-                ))}
+                <ExecutionReceipt
+                  steps={msg.reasoning_summary || []}
+                  files={msg.generated_files || []}
+                  onOpenRunHistory={onOpenRunHistory}
+                />
+                {msg.generated_files && msg.generated_files.length > 0 && (
+                  <div className="mt-3 space-y-2" aria-label={ui('本次生成的文件')}>
+                    <div className="text-[11px] font-semibold text-[#796b5e]">
+                      {ui('本次生成的文件')}
+                    </div>
+                    {msg.generated_files.map((file, index) => (
+                      <GeneratedFileCard
+                        key={`${file.path || file.url || file.name}-${index}`}
+                        file={file}
+                        onInspect={onInspectGeneratedFile}
+                        onResolve={onResolveGeneratedFile}
+                        onOpen={onOpenGeneratedFile}
+                      />
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </article>
+          );
+        })}
+
+        {approvals.filter((item) => !item.decision).slice(0, 1).map((approval) => (
+          onApprovalDecision
+            ? (
+              <ApprovalPrompt
+                key={approval.id}
+                approval={approval}
+                queuedCount={Math.max(0, approvals.filter((item) => !item.decision).length - 1)}
+                onDecision={onApprovalDecision}
+              />
+            )
+            : null
         ))}
 
         {approvals.map((approval) => {
@@ -436,36 +450,20 @@ export const UnifiedFeed = ({
           return (
             <article
               key={approval.id}
-              className={`rounded-lg border p-3 shadow-sm ${
-                approval.decision === 'deny'
-                  ? 'border-[#d7b1aa] bg-[#fff7f5]'
-                  : 'border-[#b8ccb9] bg-[#f6fbf6]'
-              }`}
+              className="px-1 py-1"
               aria-label={t('approvalLabel')}
             >
-              <div className="flex items-start gap-3">
-                <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-white ${
-                  approval.decision === 'deny' ? 'bg-[#97382c]' : 'bg-[#356b46]'
-                }`}>
-                  {approval.decision === 'deny' ? <ShieldAlert size={16} /> : <CheckCircle2 size={16} />}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                    <div className="text-sm font-semibold text-[#4a4037]">{approval.title}</div>
-                    <div aria-live="polite" className={`text-xs font-semibold ${approval.decision === 'deny' ? 'text-[#97382c]' : 'text-[#24613c]'}`}>
-                      {decisionLabel}
-                    </div>
-                  </div>
-                  <div className="mt-1 text-xs text-[#684a2e]">
-                    {t('approvalRequest', { model: approval.model, tool: approval.tool_name })}
-                  </div>
-                  {approval.feedback && (
-                    <div className="mt-2 rounded-md border border-[#e1c7c0] bg-white/80 px-2.5 py-2 text-xs leading-5 text-[#6f3029]">
-                      {t('approvalFeedbackSummary', { feedback: approval.feedback })}
-                    </div>
-                  )}
-                </div>
+              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[13px]">
+                <span className={approval.decision === 'deny' ? 'text-[#8f352c]' : 'text-[#3d6b4a]'}>
+                  {decisionLabel}
+                </span>
+                <span className="text-[#6b6259]">{approval.tool_name}</span>
               </div>
+              {approval.feedback && (
+                <div className="mt-1 text-[12px] text-[#6f3029]">
+                  {t('approvalFeedbackSummary', { feedback: approval.feedback })}
+                </div>
+              )}
             </article>
           );
         })}

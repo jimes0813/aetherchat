@@ -26,6 +26,7 @@ describe('knowledgeUi helpers', () => {
       coverage: 0.5,
       exact: 1,
     })).toContain('精确命中');
+    expect(formatLayerLabel(['全文', '语义'])).toBe('全文 · 向量');
   });
 
   it('builds composer citation blocks', () => {

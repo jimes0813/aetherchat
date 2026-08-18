@@ -9,8 +9,6 @@ describe('ChatEmptyState', () => {
       <ChatEmptyState
         hasConfiguredModel
         onPickExample={onPickExample}
-        onOpenModels={vi.fn()}
-        onOpenRuns={vi.fn()}
       />,
     );
 

@@ -1,36 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   Activity,
-  AlarmClock,
   Archive,
-  BookMarked,
-  Building2,
-  Bot,
-  Brain,
-  Cable,
   ChevronRight,
   CircleDollarSign,
-  Cpu,
-  FileCode2,
   FolderOpen,
-  GitBranch,
-  GitMerge,
-  Laptop,
-  LayoutList,
+  FolderPlus,
   ListTodo,
-  Maximize2,
   MessageSquare,
-  Minus,
-  Plus,
-  Puzzle,
-  Radio,
   Search,
   Settings,
-  SquareTerminal,
+  SquarePen,
   Trash2,
   Users,
-  Wrench,
-  X,
 } from 'lucide-react';
 import { useDialogFocus } from './useDialogFocus';
 import { API_BASE, formatDateTime, taskStatusLabel } from './shared';
@@ -58,142 +40,50 @@ type SessionSearchHit = {
   updated_at: string;
 };
 
-export function DesktopTitleBar() {
-  const platformLabel = window.aetherRuntime?.platform === 'linux'
-    ? 'Linux'
-    : window.aetherRuntime?.platform === 'darwin'
-      ? 'macOS'
-      : window.aetherRuntime?.platform === 'win32'
-        ? 'Windows'
-        : '浏览器';
-  const windowActions = [
-    { label: '最小化', icon: Minus, action: () => window.aetherWindow?.minimize() },
-    { label: '最大化', icon: Maximize2, action: () => window.aetherWindow?.toggleMaximize() },
-    {
-      label: '关闭',
-      icon: X,
-      action: () => {
-        if (window.aetherWindow) window.aetherWindow.close();
-        else window.close();
-      },
-    },
-  ];
-
-  return (
-    <header className="grid h-10 grid-cols-[auto_minmax(0,1fr)_auto] items-center bg-[#f5efe7] text-[#4a4037]">
-      <div className="flex h-full items-center gap-2 px-3">
-        <div className="flex h-6 w-6 items-center justify-center rounded-md bg-[#2f2a24] text-white">
-          <Radio size={13} />
-        </div>
-        <span className="text-xs font-semibold">AetherChat Desktop</span>
-        <span className="ml-2 text-[11px] text-[#8b8176]">{platformLabel}</span>
-      </div>
-      <div className="flex h-full items-center text-[12px] text-[#6d6258]">
-        前端 + 本机后端一体运行
-      </div>
-      <div className="flex h-full items-center">
-        {windowActions.map(({ label, icon: Icon, action }) => (
-          <button key={label} title={label} onClick={action} className="flex h-10 w-11 items-center justify-center text-[#6d6258] hover:bg-[#e2d9ce]">
-            <Icon size={14} />
-          </button>
-        ))}
-      </div>
-    </header>
-  );
-}
-
 export const ACTIVITY_RAIL_ADVANCED_KEY = 'aetherchat.activity_rail.advanced.v1';
 
 interface ActivityRailProps {
+  settingsOpen?: boolean;
+  onOpenChat?: () => void;
+  onOpenSettings?: () => void;
   activePanel: ReturnType<typeof useSessionStore.getState>['activePanel'];
   setActivePanel: ReturnType<typeof useSessionStore.getState>['setActivePanel'];
 }
 
-type RailItem = {
-  label: string;
-  icon: typeof MessageSquare;
-  panel: ReturnType<typeof useSessionStore.getState>['activePanel'];
-  group: 'primary' | 'advanced';
-};
-
-export function ActivityRail({ activePanel, setActivePanel }: ActivityRailProps) {
-  const { t, ui } = useI18n();
-  const [showAdvanced, setShowAdvanced] = useState(() => {
-    try {
-      return globalThis.localStorage?.getItem(ACTIVITY_RAIL_ADVANCED_KEY) === '1';
-    } catch {
-      return false;
-    }
-  });
-
-  const items: RailItem[] = [
-    { label: t('chat'), icon: MessageSquare, panel: null, group: 'primary' },
-    { label: t('models'), icon: Cpu, panel: '模型', group: 'primary' },
-    { label: t('runs'), icon: SquareTerminal, panel: '运行', group: 'primary' },
-    { label: t('settings'), icon: Settings, panel: '设置', group: 'primary' },
-    { label: t('memory'), icon: Brain, panel: '记忆', group: 'advanced' },
-    { label: t('knowledge'), icon: FolderOpen, panel: '资料', group: 'advanced' },
-    { label: t('tasks'), icon: LayoutList, panel: '任务', group: 'advanced' },
-    { label: t('automations'), icon: AlarmClock, panel: '自动化', group: 'advanced' },
-    { label: t('artifacts'), icon: FileCode2, panel: '工件', group: 'advanced' },
-    { label: t('changes'), icon: GitMerge, panel: '合并', group: 'advanced' },
-    { label: t('tools'), icon: Wrench, panel: '工具', group: 'advanced' },
-    { label: t('plugins'), icon: Puzzle, panel: '插件', group: 'advanced' },
-    { label: t('connections'), icon: Cable, panel: '连接', group: 'advanced' },
-    { label: t('computer'), icon: Laptop, panel: '电脑', group: 'advanced' },
-    { label: t('instructions'), icon: BookMarked, panel: '规范', group: 'advanced' },
-    { label: t('governance'), icon: Building2, panel: '治理', group: 'advanced' },
-  ];
-
-  const primary = items.filter((item) => item.group === 'primary');
-  const advanced = items.filter((item) => item.group === 'advanced');
-  const advancedSelected = advanced.some((item) => item.panel === activePanel);
-  const visible = showAdvanced || advancedSelected
-    ? [...primary, ...advanced]
-    : primary;
-
-  const toggleAdvanced = () => {
-    const next = !showAdvanced;
-    setShowAdvanced(next);
-    try {
-      globalThis.localStorage?.setItem(ACTIVITY_RAIL_ADVANCED_KEY, next ? '1' : '0');
-    } catch {
-      // ignore storage failures in restricted contexts
-    }
-  };
-
+export function ActivityRail({
+  settingsOpen = false,
+  onOpenChat,
+  onOpenSettings,
+  setActivePanel,
+}: ActivityRailProps) {
+  const { t } = useI18n();
   return (
-    <aside className="flex min-h-0 flex-col items-center border-r border-[#d8cfc3] bg-[#2f2a24] py-3 text-[#d8cfc3]">
-      <div className="mb-4 flex h-9 w-9 items-center justify-center rounded-lg bg-[#f5efe7] text-[#2f2a24]">
-        <Bot size={17} />
-      </div>
-      <div className="flex flex-1 flex-col gap-2">
-        {visible.map((item) => {
-          const Icon = item.icon;
-          const selected = item.panel === activePanel;
-          return (
-            <button
-              key={item.label}
-              title={item.label}
-              aria-label={item.label}
-              aria-pressed={selected}
-              onClick={() => setActivePanel(item.panel)}
-              className={`flex h-10 w-10 items-center justify-center rounded-lg transition ${selected ? 'bg-[#8d5f35] text-white' : 'hover:bg-[#443b32]'}`}
-            >
-              <Icon size={18} />
-            </button>
-          );
-        })}
-      </div>
+    <aside className="flex min-h-0 flex-col items-center border-r border-[#d8cfc3] bg-[#2f2a24] py-2 text-[#d8cfc3]">
       <button
         type="button"
-        title={showAdvanced ? ui('收起高级面板') : ui('更多面板')}
-        aria-label={showAdvanced ? ui('收起高级面板') : ui('更多面板')}
-        aria-expanded={showAdvanced || advancedSelected}
-        onClick={toggleAdvanced}
-        className="mt-2 flex h-10 w-10 items-center justify-center rounded-lg text-[10px] font-medium hover:bg-[#443b32]"
+        title={t('chat')}
+        aria-label={t('chat')}
+        aria-pressed={!settingsOpen}
+        onClick={() => {
+          onOpenChat?.();
+          setActivePanel(null);
+        }}
+        className={`flex h-8 w-8 items-center justify-center rounded-md transition ${!settingsOpen ? 'bg-[#8d5f35] text-white' : 'hover:bg-[#443b32]'}`}
       >
-        {showAdvanced || advancedSelected ? '收起' : '更多'}
+        <MessageSquare size={15} />
+      </button>
+      <button
+        type="button"
+        title={t('settings')}
+        aria-label={t('settings')}
+        aria-pressed={settingsOpen}
+        onClick={() => {
+          onOpenSettings?.();
+          setActivePanel('设置');
+        }}
+        className={`mt-auto flex h-8 w-8 items-center justify-center rounded-md transition ${settingsOpen ? 'bg-[#8d5f35] text-white' : 'hover:bg-[#443b32]'}`}
+      >
+        <Settings size={15} />
       </button>
     </aside>
   );
@@ -202,17 +92,21 @@ export function ActivityRail({ activePanel, setActivePanel }: ActivityRailProps)
 interface WorkspaceSidebarProps {
   conversations: ReturnType<typeof useSessionStore.getState>['conversations'];
   currentSessionId: string;
+  projects?: Array<{ id: string; name: string }>;
+  activeProjectId?: string | null;
   /** Map of governance project id → display name. */
   projectNames?: Record<string, string>;
   onNewConversation: () => void;
+  onNewProject?: (name: string) => void | Promise<void>;
+  onSelectProject?: (id: string) => void;
   onOpenSearch: () => void;
   onSelectConversation: (id: string) => void;
   onDeleteConversation: (id: string) => void;
 }
 
 interface MainViewTabsProps {
-  value: 'chat' | 'history' | 'tasks';
-  onChange: (value: MainViewTabsProps['value']) => void;
+  value: 'chat' | 'history' | 'tasks' | 'settings';
+  onChange: (value: 'chat' | 'history' | 'tasks') => void;
 }
 
 export function MainViewTabs({ value, onChange }: MainViewTabsProps) {
@@ -223,7 +117,7 @@ export function MainViewTabs({ value, onChange }: MainViewTabsProps) {
     { id: 'tasks' as const, label: t('taskRecords'), icon: ListTodo },
   ];
   return (
-    <nav role="tablist" aria-label={ui('会话视图')} className="flex h-11 shrink-0 items-end gap-1 border-b border-[#ddd3c7] bg-[#fbfaf7] px-4">
+    <nav role="tablist" aria-label={ui('会话视图')} className="flex items-center gap-0.5">
       {tabs.map((tab) => {
         const Icon = tab.icon;
         const selected = tab.id === value;
@@ -234,9 +128,9 @@ export function MainViewTabs({ value, onChange }: MainViewTabsProps) {
             aria-selected={selected}
             role="tab"
             onClick={() => onChange(tab.id)}
-            className={`flex h-10 items-center gap-2 border-b-2 px-3 text-sm ${selected ? 'border-[#8d5f35] font-medium text-[#5d3b20]' : 'border-transparent text-[#766b60] hover:text-[#2f2a24]'}`}
+            className={`inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs ${selected ? 'bg-[#efe6db] font-medium text-[#5d3b20]' : 'text-[#766b60] hover:bg-[#f3ece3] hover:text-[#2f2a24]'}`}
           >
-            <Icon size={15} />
+            <Icon size={13} />
             {tab.label}
           </button>
         );
@@ -302,10 +196,11 @@ export function ConversationHistory({
           </div>
           <span className="text-xs text-[#8b8176]">{ui('{count} 个会话', { count: conversations.length })}</span>
         </div>
-        <label className="mb-4 flex h-10 items-center gap-2 rounded-lg border border-[#d8cfc3] bg-white px-3">
+        <label data-aether-search-shell className="mb-4 flex h-10 items-center gap-2 rounded-lg border border-[#d8cfc3] bg-white px-3">
           <Search size={15} className="text-[#776b60]" />
           <span className="sr-only">{ui('搜索全部聊天记录')}</span>
           <input
+            data-aether-search
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder={ui('搜索全部聊天内容、会话标题或 Agent')}
@@ -411,8 +306,10 @@ export function TaskHistory({ tasks, events }: TaskHistoryProps) {
                 {task.claimed_by && <div className="mt-2 text-[11px] text-[#93887d]">{ui('执行者：{name}', { name: task.claimed_by })}</div>}
                 {!!task.depends_on?.length && (
                   <div className="mt-1 text-[11px] text-[#93887d]">
-                    依赖 {task.depends_on.length} 项
-                    {task.blocked_by?.length ? ` · 仍阻塞 ${task.blocked_by.length} 项` : ' · 已满足'}
+                    {ui('依赖 {count} 项', { count: task.depends_on.length })}
+                    {task.blocked_by?.length
+                      ? ui(' · 仍阻塞 {count} 项', { count: task.blocked_by.length })
+                      : ui(' · 已满足')}
                   </div>
                 )}
               </div>
@@ -450,75 +347,126 @@ export function TaskHistory({ tasks, events }: TaskHistoryProps) {
 export function WorkspaceSidebar({
   conversations,
   currentSessionId,
+  projects = [],
+  activeProjectId,
   projectNames,
   onNewConversation,
+  onNewProject,
+  onSelectProject,
   onOpenSearch,
   onSelectConversation,
   onDeleteConversation,
 }: WorkspaceSidebarProps) {
   const { ui } = useI18n();
+  const [projectDraft, setProjectDraft] = useState<string | null>(null);
+  const submitProject = () => {
+    const name = projectDraft?.trim();
+    if (!name || !onNewProject) {
+      setProjectDraft(null);
+      return;
+    }
+    void onNewProject(name);
+    setProjectDraft(null);
+  };
+  const rowClass = (active: boolean) =>
+    `flex h-8 w-full items-center gap-1 rounded-md px-2 text-left text-[13px] ${
+      active ? 'bg-[#e4d5c3] text-[#3d2c1c]' : 'text-[#4a4037] hover:bg-[#e8ddd0]'
+    }`;
+
   return (
-    <aside className="flex min-h-0 flex-col bg-[#eee7de]">
-      <div className="border-b border-[#d8cfc3] px-3 py-3">
-        <div className="mb-3 flex items-center justify-between">
-          <div>
-            <div className="text-sm font-semibold">AetherChat</div>
-            <div className="text-xs text-[#7a7065]">{ui('多模型 Agent 工作台')}</div>
-          </div>
-          <button onClick={onNewConversation} aria-label={ui('新建会话')} title={ui('新建会话')} className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#d8cfc3] bg-[#fbfaf7]">
-            <Plus size={15} />
-          </button>
-        </div>
-        <button onClick={onOpenSearch} className="flex h-9 w-full items-center gap-2 rounded-lg border border-[#d8cfc3] bg-[#fbfaf7] px-3 text-left text-sm text-[#7a7065]">
-          <Search size={15} />
-          {ui('搜索会话、文件或命令')}
+    <aside className="flex min-h-0 flex-col bg-[#f3ece3]" data-testid="workspace-sidebar">
+      <div className="flex flex-col gap-0.5 px-2 pt-2">
+        <button
+          type="button"
+          onClick={onNewConversation}
+          aria-label={ui('新建会话')}
+          className={rowClass(false)}
+        >
+          <SquarePen size={14} className="shrink-0 text-[#6d5744]" />
+          {ui('新建对话')}
+        </button>
+        <button
+          type="button"
+          onClick={() => setProjectDraft('')}
+          className={rowClass(false)}
+        >
+          <FolderPlus size={14} className="shrink-0 text-[#6d5744]" />
+          {ui('新建项目')}
+        </button>
+        <button type="button" onClick={onOpenSearch} className={rowClass(false)}>
+          <Search size={14} className="shrink-0 text-[#6d5744]" />
+          {ui('搜索')}
         </button>
       </div>
 
-      <div className="border-b border-[#d8cfc3] p-3">
-        <div className="rounded-lg bg-[#2f2a24] p-3 text-white">
-          <div className="flex items-center gap-2 text-sm font-semibold">
-            <GitBranch size={15} />
-            aetherchat/main
-          </div>
-          <div className="mt-2 text-xs leading-5 text-[#d8cfc3]">{ui('项目协作 · 中文优先 · Docker 严格沙箱')}</div>
-        </div>
-      </div>
+      {projectDraft !== null && (
+        <form
+          className="px-2 pt-1.5"
+          onSubmit={(event) => {
+            event.preventDefault();
+            submitProject();
+          }}
+        >
+          <input
+            autoFocus
+            value={projectDraft}
+            onChange={(event) => setProjectDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                setProjectDraft(null);
+              }
+            }}
+            onBlur={() => {
+              if (!projectDraft?.trim()) setProjectDraft(null);
+            }}
+            placeholder={ui('项目名称')}
+            aria-label={ui('项目名称')}
+            className="h-8 w-full rounded-md border border-[#d8cfc3] bg-white px-2 text-[13px] outline-none"
+          />
+        </form>
+      )}
 
-      <div className="px-3 pt-3 text-xs font-semibold text-[#8b8176]">{ui('最近会话')}</div>
-      <div className="min-h-0 flex-1 overflow-auto p-3">
+      {projects.length > 0 && (
+        <div className="mt-3 min-h-0">
+          <div className="px-3 pb-1 text-[11px] text-[#8b8176]">{ui('项目')}</div>
+          <div className="px-1.5">
+            {projects.map((project) => (
+              <button
+                key={project.id}
+                type="button"
+                aria-current={project.id === activeProjectId ? 'true' : undefined}
+                onClick={() => onSelectProject?.(project.id)}
+                className={rowClass(project.id === activeProjectId)}
+              >
+                <span className="truncate">{project.name}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="mt-3 px-3 pb-1 text-[11px] text-[#8b8176]">{ui('对话')}</div>
+      <div className="min-h-0 flex-1 overflow-auto px-1.5 pb-2">
         {conversations.map((conversation) => (
-          <div
-            key={conversation.id}
-            className={`group relative mb-2 rounded-lg border shadow-sm ${conversation.id === currentSessionId ? 'border-[#8d5f35] bg-white' : 'border-[#ddd3c7] bg-[#fbfaf7]'}`}
-          >
+          <div key={conversation.id} className="group relative">
             <button
+              type="button"
               onClick={() => onSelectConversation(conversation.id)}
               aria-current={conversation.id === currentSessionId ? 'page' : undefined}
-              className="w-full p-3 pr-10 text-left"
+              title={conversation.title}
+              className={`${rowClass(conversation.id === currentSessionId)} pr-7`}
             >
-              <div className="flex items-center justify-between gap-2">
-                <span className="truncate text-sm font-medium">{conversation.title}</span>
-                <ChevronRight size={14} className="text-[#9a9084]" />
-              </div>
-              <div className="mt-1 line-clamp-2 text-xs leading-5 text-[#7a7065]">{conversation.summary}</div>
-              <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[#9a9084]">
-                <span>{conversation.updatedAt}</span>
-                {conversation.projectId && (
-                  <span className="rounded bg-[#e7d8c8] px-1 py-0.5 text-[10px] text-[#6d4828]">
-                    {projectNames?.[conversation.projectId] || conversation.projectId}
-                  </span>
-                )}
-              </div>
+              <span className="min-w-0 flex-1 truncate">{conversation.title}</span>
             </button>
             <button
               type="button"
               aria-label={ui('删除会话 {title}', { title: conversation.title })}
               title={ui('删除会话')}
               onClick={() => onDeleteConversation(conversation.id)}
-              className="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-md bg-white/90 text-[#7b5a42] opacity-0 shadow-sm transition hover:text-[#962f25] focus:opacity-100 group-hover:opacity-100"
+              className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded text-[#7b5a42] opacity-0 transition hover:text-[#962f25] focus:opacity-100 group-hover:opacity-100"
             >
-              <Trash2 size={14} />
+              <Trash2 size={13} />
             </button>
           </div>
         ))}
@@ -550,34 +498,30 @@ export function CommandHeader({
 }: CommandHeaderProps) {
   const { ui } = useI18n();
   return (
-    <header className="flex h-14 items-center gap-3 border-b border-[#e7dfd3] bg-[#fbfaf7] px-4">
+    <header className="flex h-9 shrink-0 items-center gap-2 border-b border-[#e7dfd3] bg-[#fbfaf7] px-3">
       <div className="min-w-0">
-        <div className="truncate text-sm font-semibold">{ui('AetherChat 中文协作工作台')}</div>
-        <div className="truncate text-xs text-[#7a7065]">{ui('模式：{mode} · 合并规则：{rule}', { mode: ui(mode), rule: ui(mergeRule) })}</div>
+        <div className="truncate text-xs font-semibold">
+          <span>AetherChat</span>
+          <span className="hidden sm:inline"> · {ui('中文协作工作台')}</span>
+        </div>
+        <div className="hidden truncate text-[10px] text-[#7a7065] xl:block">{ui('模式：{mode} · 合并规则：{rule}', { mode: ui(mode), rule: ui(mergeRule) })}</div>
       </div>
-      <button onClick={onOpenSearch} className="mx-auto hidden h-9 min-w-[18rem] max-w-xl flex-1 items-center gap-2 rounded-lg border border-[#d8cfc3] bg-white px-3 text-left text-xs text-[#8b8176] lg:flex">
-        <Search size={14} />
+      <button onClick={onOpenSearch} className="mx-auto hidden h-7 min-w-[12rem] max-w-md flex-1 items-center gap-1.5 rounded-md border border-[#d8cfc3] bg-white px-2 text-left text-[11px] text-[#8b8176] lg:flex">
+        <Search size={12} />
         {ui('Ctrl+K 搜索命令、文件、模型或任务')}
       </button>
-      <div className="ml-auto flex items-center gap-2">
-        <div className="flex items-center gap-2 rounded-lg border border-[#e1d9cd] bg-white px-3 py-2 text-xs text-[#6d6258]">
-          <Users size={15} />
+      <div className="ml-auto flex items-center gap-1.5">
+        <div className="hidden items-center gap-1 rounded-md border border-[#e1d9cd] bg-white px-1.5 py-0.5 text-[11px] text-[#6d6258] sm:flex">
+          <Users size={12} />
           {ui('{active}/{total} 个模型已配置', { active: activeProviderCount, total: providerCount })}
         </div>
-        <div className="flex min-w-44 items-center gap-3 rounded-lg border border-[#e1d9cd] bg-white px-3 py-2">
-          <CircleDollarSign size={15} className="text-[#8d5f35]" />
-          <div className="flex-1">
-            <div className="flex justify-between text-[11px] text-[#7a7065]">
-              <span>{ui('预算余额')}</span>
-              <span>${budgetRemaining.toFixed(2)}</span>
-            </div>
-            <div className="mt-1 h-1.5 rounded-full bg-[#e8e1d7]">
-              <div className="h-full rounded-full bg-[#8d5f35]" style={{ width: `${spendPct}%` }} />
-            </div>
-          </div>
+        <div className="flex items-center gap-1.5 rounded-md border border-[#e1d9cd] bg-white px-1.5 py-0.5 text-[11px] text-[#7a7065]">
+          <CircleDollarSign size={12} className="text-[#8d5f35]" />
+          <span>{ui('预算余额')}</span>
+          <span className="tabular-nums">${budgetRemaining.toFixed(2)}</span>
         </div>
-        <div className="flex items-center gap-2 rounded-lg bg-[#2f2a24] px-3 py-2 text-xs font-medium text-white">
-          <Activity size={14} />
+        <div className="flex items-center gap-1 rounded-md bg-[#2f2a24] px-1.5 py-0.5 text-[11px] font-medium text-white">
+          <Activity size={12} />
           {connection === 'online' ? ui('已连接') : connection === 'connecting' ? ui('连接中') : ui('离线')}
         </div>
       </div>
@@ -622,9 +566,10 @@ export function CommandPalette({ items, onClose }: CommandPaletteProps) {
         onKeyDown={dialogFocus.onKeyDown}
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <div className="flex items-center gap-3 border-b border-[#e1d9cd] px-4">
+        <div data-aether-search-shell className="flex items-center gap-3 border-b border-[#e1d9cd] px-4">
           <Search size={17} className="text-[#7a7065]" />
           <input
+            data-aether-search
             data-dialog-initial-focus
             autoFocus
             value={query}
@@ -704,8 +649,8 @@ export function DesktopStatusBar({ connection, budgetRemaining, runQueuePosition
         </button>
       )}
       <span>{t('budget', { value: budgetRemaining.toFixed(2) })}</span>
-      <button onClick={onRefreshToken} title="刷新本地 WebSocket 授权，不显示或复制令牌" className="rounded bg-[#8d5f35] px-1.5 py-0.5 text-[10px] text-white">{tokenStatus}</button>
-      <button onClick={onToggleLanguage} title={t('switchUiLanguage')} aria-label={t('switchUiLanguage')} className="rounded bg-[#8d5f35] px-1.5 py-0.5 text-[10px] text-white">{uiLocale === 'zh-CN' ? 'EN' : '中文'}</button>
+      <button onClick={onRefreshToken} title={ui('刷新本地 WebSocket 授权，不显示或复制令牌')} className="rounded bg-[#8d5f35] px-1.5 py-0.5 text-[10px] text-white">{tokenStatus}</button>
+      <button onClick={onToggleLanguage} title={t('switchUiLanguage')} aria-label={t('switchUiLanguage')} className="rounded bg-[#8d5f35] px-1.5 py-0.5 text-[10px] text-white">{uiLocale === 'zh-CN' ? 'EN' : ui('中文')}</button>
       {window.aetherRuntime?.quickEntryShortcut && (
         <span>{ui('{shortcut} 快速输入', { shortcut: window.aetherRuntime.quickEntryShortcut })}</span>
       )}

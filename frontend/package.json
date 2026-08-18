@@ -19,6 +19,7 @@
     "dist:win": "npm run build && electron-builder --win nsis --x64",
     "dist:linux": "npm run build && electron-builder --linux AppImage",
     "test:electron": "node --test electron/*.test.cjs",
+    "check:i18n": "node ../scripts/check_i18n_coverage.mjs",
     "test:unit": "vitest run",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",

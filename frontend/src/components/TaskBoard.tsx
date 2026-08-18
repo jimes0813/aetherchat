@@ -53,12 +53,15 @@ export const TaskBoard = ({ onPatchTask }: TaskBoardProps) => {
                   {task.description && <div className="mt-1 text-xs leading-5 text-[#7a7065]">{task.description}</div>}
                   {!!task.blocked_by?.length && (
                     <div className="mt-2 rounded bg-[#f5e7d1] px-2 py-1 text-[11px] text-[#7b571e]">
-                      被 {task.blocked_by.length} 个前置任务阻塞
+                      {ui('被 {count} 个前置任务阻塞', { count: task.blocked_by.length })}
                     </div>
                   )}
                   <div className="mt-3 flex items-center justify-between text-xs text-[#7a7065]">
                     <span>{task.claimed_by ? `@${task.claimed_by}` : ui('未分配')}</span>
-                    <span>{task.depends_on?.length ? `依赖 ${task.depends_on.length} · ` : ''}P{task.priority ?? 0}</span>
+                    <span>
+                      {task.depends_on?.length ? ui('依赖 {count} · ', { count: task.depends_on.length }) : ''}
+                      P{task.priority ?? 0}
+                    </span>
                   </div>
                   {onPatchTask && (
                     <div className="mt-3 flex gap-2">

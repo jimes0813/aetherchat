@@ -1,5 +1,5 @@
 import type { Dispatch, SetStateAction } from 'react';
-import { fetchJson } from '../api/client';
+import { asArray, fetchJson } from '../api/client';
 import { API_BASE, formatDateTime } from '../components/shared';
 import { useSessionStore } from '../stores/sessionStore';
 import type { AgentRun, Conversation, GitRepository, MergeProposal, Message, ModelConfig, Task, TaskEvent, ToolItem, ToolRun } from '../types';
@@ -86,13 +86,15 @@ export function useSessionLoaders({
   onModelsHydrated,
 }: UseSessionLoadersParams): SessionLoaders {
   const loadTasks = () => {
-    fetchJson<Task[]>(`${API_BASE}/tasks/?session_id=${sessionId}`).then(setTasks).catch(() => setTasks([]));
+    fetchJson<unknown>(`${API_BASE}/tasks/?session_id=${sessionId}`)
+      .then((value) => setTasks(asArray<Task>(value)))
+      .catch(() => setTasks([]));
   };
 
   const loadConversations = async () => {
     try {
       const activeSessionId = useSessionStore.getState().sessionId;
-      let rows = await fetchJson<StoredSession[]>(`${API_BASE}/sessions/`);
+      let rows = asArray<StoredSession>(await fetchJson<unknown>(`${API_BASE}/sessions/`));
       if (!rows.some((session) => session.id === activeSessionId)) {
         const body: Record<string, unknown> = {
           id: activeSessionId,
@@ -107,7 +109,7 @@ export function useSessionLoaders({
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         });
-        rows = await fetchJson<StoredSession[]>(`${API_BASE}/sessions/`);
+        rows = asArray<StoredSession>(await fetchJson<unknown>(`${API_BASE}/sessions/`));
       }
       setConversations(rows.map(conversationFromSession));
     } catch {
@@ -116,24 +118,29 @@ export function useSessionLoaders({
   };
 
   const loadMessages = () => {
-    fetchJson<Message[]>(`${API_BASE}/sessions/${sessionId}/messages?limit=5000`).then(setMessages).catch(() => setMessages([]));
+    fetchJson<unknown>(`${API_BASE}/sessions/${sessionId}/messages?limit=5000`)
+      .then((value) => setMessages(asArray<Message>(value)))
+      .catch(() => setMessages([]));
   };
 
   const loadTaskEvents = () => {
-    fetchJson<TaskEvent[]>(`${API_BASE}/sessions/${sessionId}/task-events`).then(setTaskEvents).catch(() => setTaskEvents([]));
+    fetchJson<unknown>(`${API_BASE}/sessions/${sessionId}/task-events`)
+      .then((value) => setTaskEvents(asArray<TaskEvent>(value)))
+      .catch(() => setTaskEvents([]));
   };
 
   const loadAgentRuns = () => {
-    fetchJson<AgentRun[]>(`${API_BASE}/agent-runs?session_id=${encodeURIComponent(sessionId)}`)
-      .then(setAgentRuns)
+    fetchJson<unknown>(`${API_BASE}/agent-runs?session_id=${encodeURIComponent(sessionId)}`)
+      .then((value) => setAgentRuns(asArray<AgentRun>(value)))
       .catch(() => setAgentRuns([]));
   };
 
   const loadGitRepositories = () => {
-    fetchJson<GitRepository[]>(
+    fetchJson<unknown>(
       `${API_BASE}/workspaces/repositories?session_id=${encodeURIComponent(sessionId)}`,
     )
-      .then((repositories) => {
+      .then((value) => {
+        const repositories = asArray<GitRepository>(value);
         const repository = repositories[0] || null;
         setGitRepository(repository);
         setVerificationCommands(
@@ -147,22 +154,30 @@ export function useSessionLoaders({
   };
 
   const loadArtifacts = () => {
-    fetchJson<ReturnType<typeof useSessionStore.getState>['artifacts']>(`${API_BASE}/artifacts/?session_id=${sessionId}`).then(setArtifacts).catch(() => setArtifacts([]));
+    fetchJson<unknown>(`${API_BASE}/artifacts/?session_id=${sessionId}`)
+      .then((value) => setArtifacts(asArray<SessionStoreState['artifacts'][number]>(value)))
+      .catch(() => setArtifacts([]));
   };
 
   const loadMerges = () => {
-    fetchJson<MergeProposal[]>(`${API_BASE}/artifacts/merge/proposals?session_id=${sessionId}`).then(setMergeProposals).catch(() => setMergeProposals([]));
+    fetchJson<unknown>(`${API_BASE}/artifacts/merge/proposals?session_id=${sessionId}`)
+      .then((value) => setMergeProposals(asArray<MergeProposal>(value)))
+      .catch(() => setMergeProposals([]));
   };
 
   const loadTools = () => {
-    fetchJson<ToolItem[]>(`${API_BASE}/tools/?session_id=${encodeURIComponent(sessionId)}`).then(setTools).catch(() => setTools([]));
-    fetchJson<ToolRun[]>(`${API_BASE}/tools/runs?session_id=${encodeURIComponent(sessionId)}`).then(setToolRuns).catch(() => setToolRuns([]));
+    fetchJson<unknown>(`${API_BASE}/tools/?session_id=${encodeURIComponent(sessionId)}`)
+      .then((value) => setTools(asArray<ToolItem>(value)))
+      .catch(() => setTools([]));
+    fetchJson<unknown>(`${API_BASE}/tools/runs?session_id=${encodeURIComponent(sessionId)}`)
+      .then((value) => setToolRuns(asArray<ToolRun>(value)))
+      .catch(() => setToolRuns([]));
   };
 
   const loadModels = () => {
-    fetchJson<ModelConfig[]>(`${API_BASE}/models/`)
-      .then((models) => {
-        setModelConfigs(models);
+    fetchJson<unknown>(`${API_BASE}/models/`)
+      .then((value) => {
+        setModelConfigs(asArray<ModelConfig>(value));
       })
       .catch(() => {
         setModelConfigs([]);

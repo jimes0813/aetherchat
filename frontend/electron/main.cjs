@@ -29,6 +29,7 @@ const {
 } = require('./backend-readiness.cjs');
 const { sanitizeBackendProxyEnv } = require('./backend-env.cjs');
 const { registerTerminationHandlers, terminateChildProcess } = require('./lifecycle.cjs');
+const { createMediaPermissionHandlers } = require('./media-permission.cjs');
 
 const isDev = !app.isPackaged;
 let backendProcess = null;
@@ -45,6 +46,7 @@ const MAX_DESKTOP_FILE_HANDLES = 256;
 let computerConsentServer = null;
 let computerConsentUrl = '';
 let computerUseSessionApproved = false;
+let interactiveComputerPermissionMode = 'manual';
 let computerConsentQueue = Promise.resolve();
 let gracefulShutdownPromise = null;
 let gracefulShutdownComplete = false;
@@ -312,6 +314,52 @@ async function confirmDesktopAction(event, message, detail) {
   return result.response === 0;
 }
 
+const COMPUTER_ACTIONS = new Set([
+  'screenshot', 'mouse_move', 'left_click', 'right_click', 'middle_click',
+  'double_click', 'triple_click', 'left_click_drag', 'left_mouse_down',
+  'left_mouse_up', 'scroll', 'type', 'key', 'hold_key', 'wait', 'zoom',
+  'cursor_position',
+]);
+const COMPUTER_OBSERVATION_ACTIONS = new Set(['screenshot', 'zoom', 'cursor_position', 'wait']);
+
+function broadcastComputerEvent(payload) {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) window.webContents.send('aether-desktop:computer-event', payload);
+  }
+}
+
+function computerActionDetail(action, value) {
+  const coordinate = Array.isArray(value?.coordinate) ? value.coordinate.slice(0, 2) : null;
+  const parts = [`动作：${action}`];
+  if (coordinate) parts.push(`截图坐标：(${coordinate[0]}, ${coordinate[1]})`);
+  if (['type', 'key', 'hold_key'].includes(action)) {
+    parts.push(`输入长度：${String(value?.text || '').length} 个字符`);
+  }
+  if (action === 'scroll') {
+    parts.push(`方向：${String(value?.scroll_direction || '自定义')}`);
+  }
+  return parts.join('\n');
+}
+
+async function confirmInteractiveComputerAction(event, action, value) {
+  const observing = COMPUTER_OBSERVATION_ACTIONS.has(action);
+  if (interactiveComputerPermissionMode === 'auto') return true;
+  if (interactiveComputerPermissionMode === 'observe') return observing;
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  const result = await dialog.showMessageBox(owner || undefined, {
+    type: observing ? 'question' : 'warning',
+    title: 'AetherChat Computer Use 权限',
+    message: observing ? '允许观察本机屏幕吗？' : '允许控制本机键盘或鼠标吗？',
+    detail: `${computerActionDetail(action, value)}\n\n会话授权可随时通过“立即接管”撤销。`,
+    buttons: ['允许本次操作', '允许本次会话', '取消'],
+    defaultId: 2,
+    cancelId: 2,
+    noLink: true,
+  });
+  if (result.response === 1) interactiveComputerPermissionMode = 'auto';
+  return result.response === 0 || result.response === 1;
+}
+
 function secureTokenMatches(candidate) {
   const actual = Buffer.from(String(candidate || ''), 'utf8');
   const expected = Buffer.from(computerConsentToken, 'utf8');
@@ -414,6 +462,7 @@ function startComputerConsentServer() {
 
 function stopComputerConsentServer() {
   computerUseSessionApproved = false;
+  interactiveComputerPermissionMode = 'manual';
   computerConsentUrl = '';
   if (computerConsentServer) computerConsentServer.close();
   computerConsentServer = null;
@@ -623,7 +672,9 @@ function createWindow() {
       // Invalid and non-HTTP navigation is denied.
     }
   });
-  win.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+  const mediaPermissions = createMediaPermissionHandlers((webContents) => webContents === win.webContents);
+  win.webContents.session.setPermissionRequestHandler(mediaPermissions.requestHandler);
+  win.webContents.session.setPermissionCheckHandler(mediaPermissions.checkHandler);
   win.webContents.on('context-menu', (_event, params) => {
     Menu.buildFromTemplate(buildContextMenuTemplate(params)).popup({ window: win });
   });
@@ -744,7 +795,10 @@ ipcMain.handle('aether-intent:ready', async (event) => {
 
 ipcMain.handle('aether-desktop:status', async (event) => {
   assertTrustedDesktopSender(event);
-  return backendRequest('/desktop/status');
+  return {
+    ...(await backendRequest('/desktop/status')),
+    permission_mode: interactiveComputerPermissionMode,
+  };
 });
 
 ipcMain.handle('aether-desktop:select-document', async (event) => {
@@ -941,6 +995,97 @@ ipcMain.handle('aether-desktop:mouse', async (_event, value) => {
       button: value?.button || 'left',
     },
   });
+});
+
+ipcMain.handle('aether-desktop:computer-action', async (event, value) => {
+  assertTrustedDesktopSender(event);
+  const action = String(value?.action || '').trim().toLowerCase();
+  if (!COMPUTER_ACTIONS.has(action)) throw new Error('Unsupported Computer Use action');
+  if (!await confirmInteractiveComputerAction(event, action, value)) {
+    throw new Error(
+      interactiveComputerPermissionMode === 'observe' && !COMPUTER_OBSERVATION_ACTIONS.has(action)
+        ? '当前为仅观察模式；切换到逐次授权或会话授权后才能控制电脑'
+        : 'Computer Use action was cancelled',
+    );
+  }
+  const allowedKeys = [
+    'coordinate', 'start_coordinate', 'region', 'text', 'duration',
+    'scroll_direction', 'scroll_amount', 'delta_x', 'delta_y', 'modifiers',
+  ];
+  const body = { action };
+  for (const key of allowedKeys) {
+    if (value?.[key] !== undefined) body[key] = value[key];
+  }
+  broadcastComputerEvent({
+    type: 'action_started',
+    action,
+    permissionMode: interactiveComputerPermissionMode,
+    at: new Date().toISOString(),
+  });
+  try {
+    const result = await backendRequest('/desktop/computer/action', {
+      method: 'POST',
+      body,
+      timeoutMs: 45000,
+    });
+    broadcastComputerEvent({
+      type: 'action_completed',
+      action,
+      actionId: result?.action_id,
+      durationMs: result?.duration_ms,
+      at: new Date().toISOString(),
+    });
+    return result;
+  } catch (error) {
+    broadcastComputerEvent({
+      type: 'action_failed',
+      action,
+      error: String(error?.message || error),
+      at: new Date().toISOString(),
+    });
+    throw error;
+  }
+});
+
+ipcMain.handle('aether-desktop:set-computer-permission', async (event, requestedMode) => {
+  assertTrustedDesktopSender(event);
+  const mode = String(requestedMode || '').trim();
+  if (!['manual', 'observe', 'auto'].includes(mode)) throw new Error('Unsupported permission mode');
+  if (mode === 'auto' && interactiveComputerPermissionMode !== 'auto') {
+    const owner = BrowserWindow.fromWebContents(event.sender);
+    const result = await dialog.showMessageBox(owner || undefined, {
+      type: 'warning',
+      title: '启用 Computer Use 会话授权',
+      message: '允许本次 AetherChat 会话自动执行键鼠操作吗？',
+      detail: '授权仅持续到退出应用或点击“立即接管”。本机文件写入和应用启动仍走独立高风险授权。',
+      buttons: ['启用会话授权', '取消'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    });
+    if (result.response !== 0) return { permissionMode: interactiveComputerPermissionMode };
+  }
+  interactiveComputerPermissionMode = mode;
+  broadcastComputerEvent({ type: 'permission_changed', permissionMode: mode, at: new Date().toISOString() });
+  return { permissionMode: mode };
+});
+
+ipcMain.handle('aether-desktop:cancel-computer', async (event) => {
+  assertTrustedDesktopSender(event);
+  interactiveComputerPermissionMode = 'manual';
+  computerUseSessionApproved = false;
+  const result = await backendRequest('/desktop/computer/cancel', {
+    method: 'POST',
+    timeoutMs: 5000,
+  });
+  broadcastComputerEvent({ type: 'interrupted', at: new Date().toISOString() });
+  return { ...result, permissionMode: interactiveComputerPermissionMode };
+});
+
+ipcMain.handle('aether-desktop:computer-history', async (event, after = 0) => {
+  assertTrustedDesktopSender(event);
+  const sequence = Math.max(0, Math.floor(Number(after) || 0));
+  return backendRequest(`/desktop/computer/history?after=${sequence}`, { timeoutMs: 5000 });
 });
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();

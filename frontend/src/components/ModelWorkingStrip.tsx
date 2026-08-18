@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useI18n } from '../i18n';
+import { compactToolName } from './toolDisplay';
 
 export type AgentActivityItem = {
   model: string;
@@ -19,13 +20,6 @@ export type AgentActivityItem = {
 interface ModelWorkingStripProps {
   activity: Record<string, AgentActivityItem>;
 }
-
-const compactToolName = (toolName?: string) => {
-  const value = String(toolName || '').trim();
-  if (!value) return '';
-  const segments = value.split('__').filter(Boolean);
-  return segments[segments.length - 1] || value;
-};
 
 export function ModelWorkingStrip({ activity }: ModelWorkingStripProps) {
   const { locale } = useI18n();
@@ -71,7 +65,7 @@ export function ModelWorkingStrip({ activity }: ModelWorkingStripProps) {
   const accessibleLabel = `${modelLabel} · ${phaseLabel} · ${elapsedLabel}`;
 
   return (
-    <div className="border-t border-[#e7dfd3] bg-[#fbfaf7] px-6 py-2">
+    <div className="bg-transparent px-4 pb-0 pt-1">
       <div
         role="status"
         aria-live="polite"

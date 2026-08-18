@@ -26,7 +26,7 @@ const providerFromModel = (model: ModelConfig, current?: Provider): Provider => 
 interface SessionState {
   sessionId: string;
   conversations: Conversation[];
-  activePanel: '记忆' | '资料' | '任务' | '自动化' | '工件' | '合并' | '工具' | '插件' | '连接' | '电脑' | '模型' | '运行' | '设置' | '规范' | '治理' | null;
+  activePanel: '记忆' | '资料' | '任务' | '自动化' | '工件' | '合并' | '工具' | '插件' | '连接' | '电脑' | '模型' | '运行' | '设置' | '语音' | '规范' | '治理' | null;
   selectedArtifactPath: string;
   messages: Message[];
   streams: Record<string, string>;
@@ -74,7 +74,7 @@ export const useSessionStore = create<SessionState>()(persist((set) => ({
   sessionId: '11111111-1111-4111-8111-111111111111',
   conversations: [],
   activePanel: null,
-  selectedArtifactPath: 'README.md',
+  selectedArtifactPath: '',
   messages: [],
   streams: {},
   reasoningStreams: {},
@@ -102,6 +102,7 @@ export const useSessionStore = create<SessionState>()(persist((set) => ({
     reasoningStreams: {},
     tasks: [],
     artifacts: [],
+    selectedArtifactPath: '',
     mergeProposals: [],
     budget: { total: 10, remaining: 10 },
   }),
@@ -121,6 +122,7 @@ export const useSessionStore = create<SessionState>()(persist((set) => ({
       reasoningStreams: {},
       tasks: [],
       artifacts: [],
+      selectedArtifactPath: '',
       mergeProposals: [],
       budget: { total: 10, remaining: 10 },
     }));
@@ -154,7 +156,7 @@ export const useSessionStore = create<SessionState>()(persist((set) => ({
     artifacts,
     selectedArtifactPath: artifacts.some((artifact) => artifact.path === state.selectedArtifactPath)
       ? state.selectedArtifactPath
-      : artifacts[0]?.path ?? state.selectedArtifactPath,
+      : artifacts[0]?.path ?? '',
   })),
   setMergeProposals: (mergeProposals) => set({ mergeProposals }),
   updateMergeProposal: (proposal) => set((state) => ({

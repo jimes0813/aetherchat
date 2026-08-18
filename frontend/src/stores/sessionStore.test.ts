@@ -237,6 +237,7 @@ describe('sessionStore: 会话切换与创建', () => {
     store.addDelta('claude', 'stream');
     store.addReasoningStep('claude', { phase: 'analysis', detail: 'x' });
     store.setTasks([{ id: 't1' } as never]);
+    store.setSelectedArtifactPath('stale/from-old-session.md');
     store.setBudget(3);
 
     store.selectConversation('session-2');
@@ -248,11 +249,13 @@ describe('sessionStore: 会话切换与创建', () => {
     expect(state.reasoningStreams).toEqual({});
     expect(state.tasks).toEqual([]);
     expect(state.artifacts).toEqual([]);
+    expect(state.selectedArtifactPath).toBe('');
     expect(state.mergeProposals).toEqual([]);
     expect(state.budget).toEqual({ total: 10, remaining: 10 });
   });
 
   it('createConversation 新建会话置顶、返回 id 并切换过去', () => {
+    useSessionStore.getState().setSelectedArtifactPath('stale/from-old-session.md');
     useSessionStore.getState().setConversations([
       { id: 'old', title: '旧会话', summary: '', updatedAt: '' },
     ]);
@@ -265,11 +268,28 @@ describe('sessionStore: 会话切换与创建', () => {
     expect(state.conversations[0].title).toBe('我的会话');
     expect(state.conversations[1].id).toBe('old');
     expect(state.messages).toEqual([]);
+    expect(state.selectedArtifactPath).toBe('');
   });
 
   it('createConversation 空标题回退为「新会话」', () => {
     useSessionStore.getState().createConversation('   ');
     expect(useSessionStore.getState().conversations[0].title).toBe('新会话');
+  });
+});
+
+describe('sessionStore: 工件选择恢复', () => {
+  it('空列表会清除过期选择，避免对新会话发出 404 请求', () => {
+    useSessionStore.getState().setSelectedArtifactPath('deleted.md');
+    useSessionStore.getState().setArtifacts([]);
+    expect(useSessionStore.getState().selectedArtifactPath).toBe('');
+  });
+
+  it('选择已过期时切换到服务端返回的第一个可用工件', () => {
+    useSessionStore.getState().setSelectedArtifactPath('deleted.md');
+    useSessionStore.getState().setArtifacts([
+      { id: 'a1', session_id: 's1', path: 'README.md', kind: 'doc', current_hash: 'abc' },
+    ]);
+    expect(useSessionStore.getState().selectedArtifactPath).toBe('README.md');
   });
 });
 

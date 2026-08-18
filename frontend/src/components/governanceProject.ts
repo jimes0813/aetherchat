@@ -1,4 +1,4 @@
-import { fetchJson } from '../api/client';
+import { asArray, fetchJson } from '../api/client';
 import { API_BASE } from './shared';
 
 export type GovernanceProject = {
@@ -17,7 +17,8 @@ export type PlatformStatusLite = {
 /** Load governance projects; empty list on failure (UI degrades gracefully). */
 export async function loadGovernanceProjects(): Promise<GovernanceProject[]> {
   try {
-    return await fetchJson<GovernanceProject[]>(`${API_BASE}/platform/projects`);
+    const value = await fetchJson<unknown>(`${API_BASE}/platform/projects`);
+    return asArray<GovernanceProject>(value);
   } catch {
     return [];
   }
@@ -30,6 +31,18 @@ export async function loadDefaultGovernanceProjectId(): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+export async function createGovernanceProject(name: string): Promise<GovernanceProject> {
+  const status = await fetchJson<PlatformStatusLite & { default_tenant_id?: string }>(`${API_BASE}/platform/status`);
+  return fetchJson<GovernanceProject>(`${API_BASE}/platform/projects`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name,
+      tenant_id: status.default_tenant_id || 'local',
+    }),
+  });
 }
 
 export function projectLabel(

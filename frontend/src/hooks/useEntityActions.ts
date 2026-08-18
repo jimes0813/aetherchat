@@ -19,7 +19,7 @@ export type UseEntityActionsParams = {
   wsClient: MutableRefObject<ReturnType<typeof connectWS> | null>;
   setNotice: Dispatch<SetStateAction<string>>;
   setApprovals: Dispatch<SetStateAction<ApprovalRequest[]>>;
-  setMainView: Dispatch<SetStateAction<'chat' | 'history' | 'tasks'>>;
+  setMainView: Dispatch<SetStateAction<'chat' | 'history' | 'tasks' | 'settings'>>;
   setConversations: SessionStoreState['setConversations'];
   selectConversation: SessionStoreState['selectConversation'];
   setActivePanel: SessionStoreState['setActivePanel'];
@@ -38,7 +38,12 @@ export type UseEntityActionsParams = {
 };
 
 export type UseEntityActionsResult = {
-  sendMessage: (content: string, targets: string[], attachmentIds: string[]) => boolean;
+  sendMessage: (
+    content: string,
+    targets: string[],
+    attachmentIds: string[],
+    references?: Array<{ kind: string; id: string; session_id?: string; label?: string }>,
+  ) => boolean;
   exportSession: (fmt?: 'markdown' | 'json') => Promise<void>;
   decideApproval: (
     approval: ApprovalRequest,
@@ -85,7 +90,12 @@ export function useEntityActions({
   loadConversations,
   createPersistentConversation,
 }: UseEntityActionsParams): UseEntityActionsResult {
-  const sendMessage = (content: string, targets: string[], attachmentIds: string[]) => {
+  const sendMessage = (
+    content: string,
+    targets: string[],
+    attachmentIds: string[],
+    references: Array<{ kind: string; id: string; session_id?: string; label?: string }> = [],
+  ) => {
     const resolvedTargets = targets.includes('all')
       ? modelConfigs
           .filter(isConfiguredModel)
@@ -101,6 +111,11 @@ export function useEntityActions({
       max_revision_cycles: currentMode === 'project' ? 1 : 0,
       language: workspaceSettings.language,
       attachment_ids: attachmentIds,
+      references: references.map((item) => ({
+        kind: item.kind,
+        id: item.id,
+        ...(item.session_id ? { session_id: item.session_id } : {}),
+      })),
       ...(currentMode === 'project' && gitRepository ? {
         repository_id: gitRepository.id,
         verification_commands: verificationCommands

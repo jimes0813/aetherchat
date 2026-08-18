@@ -91,6 +91,9 @@ export type AgentRunStatus =
   | 'waiting_approval'
   | 'waiting_plan_confirmation'
   | 'completed'
+  | 'completed_verified'
+  | 'completed_with_warnings'
+  | 'uncertain'
   | 'failed'
   | 'interrupted'
   | 'recoverable';
@@ -268,7 +271,12 @@ export interface AgentRun {
   verified_effect_count?: number;
   failed_effect_count?: number;
   uncertain_effect_count?: number;
+  unverified_effect_count?: number;
+  problem_tool_count?: number;
+  pending_tool_count?: number;
   effect_verification_status?: 'not_applicable' | 'unverified' | 'verified' | 'failed' | 'uncertain';
+  outcome_status?: AgentRunStatus;
+  completion_summary?: string | null;
   checkpoint_count?: number;
   steer_count?: number;
   plan_step_count?: number;
@@ -425,7 +433,9 @@ export interface Artifact {
   status?: 'draft' | 'ready' | 'archived';
   parent_version?: number | null;
   size_bytes?: number;
-  updated_at?: number;
+  updated_at?: number | string;
+  availability?: 'current' | 'history_only';
+  recoverable?: boolean;
 }
 
 export interface MergeProposal {

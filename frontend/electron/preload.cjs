@@ -52,6 +52,19 @@ contextBridge.exposeInMainWorld('aetherDesktop', {
   captureScreen: () => ipcRenderer.invoke('aether-desktop:capture-screen'),
   saveScreenshot: (dataUrl) => ipcRenderer.invoke('aether-desktop:save-screenshot', dataUrl),
   mouse: (action, options = {}) => ipcRenderer.invoke('aether-desktop:mouse', { action, ...options }),
+  computerAction: (action, options = {}) => ipcRenderer.invoke(
+    'aether-desktop:computer-action',
+    { action, ...options },
+  ),
+  setComputerPermission: (mode) => ipcRenderer.invoke('aether-desktop:set-computer-permission', mode),
+  cancelComputer: () => ipcRenderer.invoke('aether-desktop:cancel-computer'),
+  computerHistory: (after = 0) => ipcRenderer.invoke('aether-desktop:computer-history', after),
+  onComputerEvent: (callback) => {
+    if (typeof callback !== 'function') return () => undefined;
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('aether-desktop:computer-event', listener);
+    return () => ipcRenderer.removeListener('aether-desktop:computer-event', listener);
+  },
 });
 
 contextBridge.exposeInMainWorld('aetherWorkspace', {

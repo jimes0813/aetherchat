@@ -1,4 +1,4 @@
-import { MessageSquarePlus, PlayCircle, Sparkles } from 'lucide-react';
+import { Sparkles } from 'lucide-react';
 import { useI18n } from '../i18n';
 
 export type EmptyExample = {
@@ -41,8 +41,6 @@ export type ChatEmptyStateProps = {
   hasLocalModel?: boolean;
   examples?: EmptyExample[];
   onPickExample: (prompt: string) => void;
-  onOpenModels?: () => void;
-  onOpenRuns?: () => void;
 };
 
 export function ChatEmptyState({
@@ -50,10 +48,8 @@ export function ChatEmptyState({
   hasLocalModel = false,
   examples,
   onPickExample,
-  onOpenModels,
-  onOpenRuns,
 }: ChatEmptyStateProps) {
-  const { t } = useI18n();
+  const { t, ui } = useI18n();
   const resolvedExamples = examples ?? (
     hasLocalModel
       ? [LOCAL_EMPTY_EXAMPLE, ...DEFAULT_EMPTY_EXAMPLES.slice(0, 2)]
@@ -61,64 +57,35 @@ export function ChatEmptyState({
   );
 
   return (
-    <div className="rounded-xl border border-dashed border-[#d6cbbd] bg-[#fffdf9] px-5 py-8">
+    <div className="px-2 py-8">
       <div className="mx-auto max-w-xl text-center">
-        <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-[#ebe3d8] text-[#5b4532]">
-          <MessageSquarePlus size={18} />
-        </div>
-        <div className="text-sm font-medium text-[#4a4037]">{t('emptyTitle')}</div>
-        <div className="mt-2 text-sm leading-6 text-[#6b6259]">{t('emptyDescription')}</div>
+        <div className="text-[1.65rem] font-medium tracking-tight text-[#2f2a24]">{t('emptyTitle')}</div>
+        <div className="mt-2 text-sm leading-6 text-[#7a7065]">{t('emptyDescription')}</div>
         {!hasConfiguredModel && (
-          <p className="mt-3 rounded-lg bg-[#fff5ec] px-3 py-2 text-xs text-[#8a5a28]">
-            还没有可用模型。请先在「模型」面板配置密钥，或完成首次设置向导。
+          <p className="mt-4 text-sm text-[#8a5a28]">
+            {ui('还没有可用模型。请先在「模型」面板配置密钥，或完成首次设置向导。')}
           </p>
         )}
         {hasConfiguredModel && hasLocalModel && (
-          <p className="mt-3 rounded-lg bg-[#eef6ea] px-3 py-2 text-xs text-[#326022]">
-            已检测到本地模型配置。若回复失败，请到「模型」面板使用「启动并验证」唤醒本机服务。
+          <p className="mt-4 text-sm text-[#326022]">
+            {ui('已检测到本地模型配置。若回复失败，请到「模型」面板使用「启动并验证」唤醒本机服务。')}
           </p>
         )}
       </div>
 
-      <div className="mx-auto mt-6 grid max-w-2xl gap-3 sm:grid-cols-3">
+      <div className="mx-auto mt-8 flex max-w-xl flex-wrap justify-center gap-2">
         {resolvedExamples.map((example) => (
           <button
             key={example.id}
             type="button"
             disabled={!hasConfiguredModel}
             onClick={() => onPickExample(example.prompt)}
-            className="rounded-xl border border-[#e1d9cd] bg-white p-3 text-left shadow-sm transition hover:border-[#c9a27a] hover:bg-[#fffaf4] disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-full border border-[#e1d9cd] bg-white px-3 py-1.5 text-sm text-[#4a4037] transition hover:border-[#c9a27a] hover:bg-[#fffaf4] disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <div className="flex items-center gap-2 text-sm font-medium text-[#4a4037]">
-              <Sparkles size={14} className="text-[#8d5f35]" />
-              {example.title}
-            </div>
-            <p className="mt-2 line-clamp-3 text-xs leading-5 text-[#6b6259]">{example.prompt}</p>
-            <p className="mt-2 text-[11px] text-[#8b8176]">{example.hint}</p>
+            <Sparkles size={13} className="text-[#8d5f35]" />
+            {ui(example.title)}
           </button>
         ))}
-      </div>
-
-      <div className="mx-auto mt-5 flex max-w-2xl flex-wrap justify-center gap-2">
-        {onOpenModels && (
-          <button
-            type="button"
-            onClick={onOpenModels}
-            className="rounded-lg border border-[#d8cfc3] bg-white px-3 py-1.5 text-xs text-[#5d4a3a] hover:bg-[#f5efe7]"
-          >
-            打开模型面板
-          </button>
-        )}
-        {onOpenRuns && (
-          <button
-            type="button"
-            onClick={onOpenRuns}
-            className="inline-flex items-center gap-1 rounded-lg border border-[#d8cfc3] bg-white px-3 py-1.5 text-xs text-[#5d4a3a] hover:bg-[#f5efe7]"
-          >
-            <PlayCircle size={13} />
-            查看运行记录
-          </button>
-        )}
       </div>
     </div>
   );

@@ -318,7 +318,10 @@ export function RunPanel({
     running: { label: '运行中', className: 'bg-[#dbe7ee] text-[#315f78]' },
     waiting_approval: { label: '等待授权', className: 'bg-[#f2e3c4] text-[#855f18]' },
     waiting_plan_confirmation: { label: '等待计划确认', className: 'bg-[#f2e3c4] text-[#855f18]' },
-    completed: { label: '已完成', className: 'bg-[#dfead7] text-[#3f6c3a]' },
+    completed: { label: '历史完成（未核验）', className: 'bg-[#f2e3c4] text-[#855f18]' },
+    completed_verified: { label: '已核验完成', className: 'bg-[#dfead7] text-[#3f6c3a]' },
+    completed_with_warnings: { label: '已生成，存在警告', className: 'bg-[#f2e3c4] text-[#855f18]' },
+    uncertain: { label: '结果待确认', className: 'bg-[#ead5d1] text-[#8a3b31]' },
     failed: { label: '失败', className: 'bg-[#ead5d1] text-[#8a3b31]' },
     interrupted: { label: '已中断', className: 'bg-[#ead5d1] text-[#8a3b31]' },
     recoverable: { label: '可恢复', className: 'bg-[#f2e3c4] text-[#855f18]' },
@@ -469,7 +472,7 @@ export function RunPanel({
         </div>
         <div className="space-y-2">
           {agentRuns.map((run) => {
-            const status = runStatus[run.status];
+            const status = runStatus[run.outcome_status || run.status];
             const retryable = ['failed', 'interrupted', 'recoverable'].includes(run.status);
             return (
               <article key={run.id} className="rounded-lg border border-[#ded6ca] bg-[#fbfaf7] p-3">
@@ -517,6 +520,15 @@ export function RunPanel({
                                 ? ui('存在失败项')
                                 : ui('存在未核验项'),
                         })}
+                      </div>
+                    )}
+                    {run.completion_summary && (
+                      <div className={`mt-1 text-[11px] ${
+                        (run.outcome_status || run.status) === 'completed_verified'
+                          ? 'text-[#477257]'
+                          : 'text-[#9a5a18]'
+                      }`}>
+                        {ui(run.completion_summary)}
                       </div>
                     )}
                     {!!run.plan_step_count && (
@@ -651,7 +663,7 @@ export function RunPanel({
                         return (
                           <div key={step.id} className="grid gap-2 rounded-md border border-[#dfd1bd] bg-white p-2 sm:grid-cols-2">
                             <input
-                              aria-label={`${step.kind} ${ui('步骤标题')}`}
+                              aria-label={ui('{kind} 步骤标题', { kind: step.kind })}
                               value={draftStep.title}
                               onChange={(event) => setPlanDraft({
                                 ...planDraft,
@@ -663,7 +675,7 @@ export function RunPanel({
                               className="h-8 rounded border border-[#ddd1c1] px-2 text-xs outline-none"
                             />
                             <select
-                              aria-label={`${step.kind} ${ui('执行模型')}`}
+                              aria-label={ui('{kind} 执行模型', { kind: step.kind })}
                               value={draftStep.assignedModel}
                               onChange={(event) => setPlanDraft({
                                 ...planDraft,
@@ -677,7 +689,7 @@ export function RunPanel({
                               {run.targets.map((model) => <option key={model} value={model}>{model}</option>)}
                             </select>
                             <input
-                              aria-label={`${step.kind} ${ui('步骤角色')}`}
+                              aria-label={ui('{kind} 步骤角色', { kind: step.kind })}
                               value={draftStep.role}
                               onChange={(event) => setPlanDraft({
                                 ...planDraft,
@@ -689,7 +701,7 @@ export function RunPanel({
                               className="h-8 rounded border border-[#ddd1c1] px-2 text-xs outline-none sm:col-span-2"
                             />
                             <textarea
-                              aria-label={`${step.kind} ${ui('步骤说明')}`}
+                              aria-label={ui('{kind} 步骤说明', { kind: step.kind })}
                               value={draftStep.description}
                               onChange={(event) => setPlanDraft({
                                 ...planDraft,
@@ -757,7 +769,11 @@ export function RunPanel({
                   <div className="mt-3 flex flex-wrap gap-2">
                     {run.steps.map((step) => (
                       <span key={step.id} title={step.error || undefined} className="rounded bg-[#eee7de] px-2 py-1 text-[11px] text-[#665a4e]">
-                        {step.model} · {step.status} · 第 {step.attempt || 0} 次
+                        {ui('{model} · {status} · 第 {attempt} 次', {
+                          model: step.model,
+                          status: step.status,
+                          attempt: step.attempt || 0,
+                        })}
                       </span>
                     ))}
                   </div>
@@ -776,17 +792,19 @@ export function RunPanel({
                   <div className="mt-3 rounded-lg border border-[#d8cec1] bg-white p-3">
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <div className="text-xs font-semibold text-[#574a3e]">Agent 协作审计日志</div>
-                        <div className="mt-1 text-[10px] leading-4 text-[#897b6d]">展示可核验的状态、消息交接、工具调用和结果；不记录或暴露模型私密思维链。</div>
+                        <div className="text-xs font-semibold text-[#574a3e]">{ui('Agent 协作审计日志')}</div>
+                        <div className="mt-1 text-[10px] leading-4 text-[#897b6d]">{ui('展示可核验的状态、消息交接、工具调用和结果；不记录或暴露模型私密思维链。')}</div>
                       </div>
                       <span className="shrink-0 text-[10px] text-[#897b6d]">
-                        {auditLoading === run.id ? '载入中…' : `${runDetails[run.id]?.events?.length || 0} 个事件`}
+                        {auditLoading === run.id
+                          ? ui('载入中…')
+                          : ui('{count} 个事件', { count: runDetails[run.id]?.events?.length || 0 })}
                       </span>
                     </div>
                     {auditLoading !== run.id && (
                       <div className="mt-3 grid gap-3 lg:grid-cols-2">
                         <div>
-                          <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-[#897b6d]">事件时间线</div>
+                          <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-[#897b6d]">{ui('事件时间线')}</div>
                           <ol className="max-h-64 space-y-2 overflow-auto border-l border-[#d8cec1] pl-3">
                             {(runDetails[run.id]?.events || []).map((event) => (
                               <li key={event.id} className="relative text-[11px] leading-4 text-[#5f554b]">
@@ -800,34 +818,44 @@ export function RunPanel({
                                 </div>
                               </li>
                             ))}
-                            {!runDetails[run.id]?.events?.length && <li className="text-[10px] text-[#897b6d]">暂无事件记录。</li>}
+                            {!runDetails[run.id]?.events?.length && <li className="text-[10px] text-[#897b6d]">{ui('暂无事件记录。')}</li>}
                           </ol>
                         </div>
                         <div>
-                          <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-[#897b6d]">工具参数传递</div>
-                          <div className="max-h-64 space-y-2 overflow-auto">
+                          <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-[#897b6d]">{ui('工具调用')}</div>
+                          <div className="max-h-64 space-y-1.5 overflow-auto">
                             {(runDetails[run.id]?.tool_calls || []).map((call) => (
-                              <div key={call.id} className="rounded border border-[#e1d8cd] bg-[#f8f4ee] p-2 text-[10px]">
+                              <div key={call.id} className="rounded-lg bg-[#f8f4ee] px-2.5 py-2 text-[11px]">
                                 <div className="flex justify-between gap-2">
-                                  <span className="font-semibold">{call.model} → {call.tool_name}</span>
+                                  <span className="font-medium">Used {call.tool_name.split('__').pop()}</span>
                                   <span className={call.status === 'completed' && (call.verification_status === 'verified' || call.verification_status === 'not_applicable') ? 'text-[#477257]' : call.status === 'failed' || call.status === 'denied' || call.verification_status === 'failed' ? 'text-[#9a4237]' : 'text-[#9a5a18]'}>
                                     {call.status}
-                                    {call.side_effect && ` · ${call.verification_status === 'verified' ? '已核验' : call.verification_status === 'unverified' ? '未核验' : call.verification_status === 'uncertain' ? '结果不确定' : call.verification_status === 'failed' ? '核验失败' : '待核验'}`}
+                                    {call.side_effect && ui(' · {status}', {
+                                      status: ui(call.verification_status === 'verified'
+                                        ? '已核验'
+                                        : call.verification_status === 'unverified'
+                                          ? '未核验'
+                                          : call.verification_status === 'uncertain'
+                                            ? '结果不确定'
+                                            : call.verification_status === 'failed'
+                                              ? '核验失败'
+                                              : '待核验'),
+                                    })}
                                   </span>
                                 </div>
                                 <pre className="mt-1 max-h-20 overflow-auto whitespace-pre-wrap break-all text-[9px] leading-4 text-[#76695d]">{auditJsonPreview(call.arguments)}</pre>
                                 {call.result !== undefined && call.result !== null && (
-                                  <pre className="mt-1 max-h-20 overflow-auto whitespace-pre-wrap break-all border-t border-[#e1d8cd] pt-1 text-[9px] leading-4 text-[#526f5c]">结果：{auditJsonPreview(call.result)}</pre>
+                                  <pre className="mt-1 max-h-20 overflow-auto whitespace-pre-wrap break-all border-t border-[#e1d8cd] pt-1 text-[9px] leading-4 text-[#526f5c]">{ui('结果：')}{auditJsonPreview(call.result)}</pre>
                                 )}
-                                {call.error && <div className="mt-1 break-all text-[9px] text-[#9a4237]">错误：{call.error}</div>}
+                                {call.error && <div className="mt-1 break-all text-[9px] text-[#9a4237]">{ui('错误：')}{call.error}</div>}
                                 {!!call.evidence?.length && (
                                   <div className="mt-1 text-[9px] text-[#76695d]">
-                                    证据：{call.evidence.map((item) => String(item.kind || 'unknown')).join('、')}
+                                    {ui('证据：')}{call.evidence.map((item) => String(item.kind || 'unknown')).join('、')}
                                   </div>
                                 )}
                               </div>
                             ))}
-                            {!runDetails[run.id]?.tool_calls?.length && <div className="text-[10px] text-[#897b6d]">本次运行没有工具调用。</div>}
+                            {!runDetails[run.id]?.tool_calls?.length && <div className="text-[10px] text-[#897b6d]">{ui('本次运行没有工具调用。')}</div>}
                           </div>
                         </div>
                       </div>
@@ -848,7 +876,14 @@ export function RunPanel({
                       const canDecide = candidate.apply_status === 'pending'
                         && !['queued', 'running', 'waiting_approval', 'waiting_plan_confirmation'].includes(run.status);
                       const canApply = canDecide
-                        && ['completed', 'failed', 'interrupted'].includes(run.status)
+                        && [
+                          'completed',
+                          'completed_verified',
+                          'completed_with_warnings',
+                          'uncertain',
+                          'failed',
+                          'interrupted',
+                        ].includes(run.status)
                         && Boolean(candidate.diff_sha256);
                       return (
                         <div key={candidate.id} className={`rounded-md border px-3 py-2 text-[11px] ${verificationTone}`}>
@@ -876,7 +911,7 @@ export function RunPanel({
                               {candidate.verification.map((check) => (
                                 <li key={`${candidate.id}-${check.command}`}>
                                   <code>{check.command}</code> · exit {check.exit_code}
-                                  {check.timed_out ? ` · ${ui('超时')}` : ''}
+                                  {check.timed_out ? ui(' · 超时') : ''}
                                 </li>
                               ))}
                             </ul>

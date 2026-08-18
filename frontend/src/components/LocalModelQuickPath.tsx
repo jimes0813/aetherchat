@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { fetchJson } from '../api/client';
+import { useI18n } from '../i18n';
 import type { ModelConfig } from '../types';
 import {
   explainLocalModelFailure,
@@ -17,6 +18,7 @@ export type LocalModelQuickPathProps = {
 };
 
 export function LocalModelQuickPath({ apiBase, models, onNotice }: LocalModelQuickPathProps) {
+  const { ui } = useI18n();
   const localModels = useMemo(
     () => models.filter(isLocalManagedModel),
     [models],
@@ -111,9 +113,9 @@ export function LocalModelQuickPath({ apiBase, models, onNotice }: LocalModelQui
 
   return (
     <section className="mb-4 rounded-xl border border-[#d6cbbd] bg-[#f7f3ed] p-3">
-      <div className="mb-2 text-xs font-semibold text-[#7a7065]">本地模型快速路径</div>
+      <div className="mb-2 text-xs font-semibold text-[#7a7065]">{ui('本地模型快速路径')}</div>
       <p className="mb-3 text-[11px] leading-5 text-[#7a7065]">
-        对已配置的本地模型：先启动（llama.cpp）再做真实对话验证。失败时会给出路径、端口与日志建议。
+        {ui('对已配置的本地模型：先启动（llama.cpp）再做真实对话验证。失败时会给出路径、端口与日志建议。')}
       </p>
       <div className="space-y-2">
         {localModels.map((model) => {
@@ -128,7 +130,7 @@ export function LocalModelQuickPath({ apiBase, models, onNotice }: LocalModelQui
                 <div className="min-w-0">
                   <div className="truncate text-sm font-semibold">{model.name}</div>
                   <div className="mt-1 text-xs text-[#7a7065]">
-                    {model.local_runtime === 'llama_cpp' ? 'llama.cpp 托管' : '外部本地接口'}
+                    {model.local_runtime === 'llama_cpp' ? ui('llama.cpp 托管') : ui('外部本地接口')}
                     {model.base_url ? ` · ${model.base_url}` : ''}
                   </div>
                   <div className={`mt-2 text-xs ${ready ? 'text-[#326022]' : 'text-[#7a5a3d]'}`}>
@@ -144,7 +146,7 @@ export function LocalModelQuickPath({ apiBase, models, onNotice }: LocalModelQui
                   onClick={() => void runStartVerify(model)}
                   className="shrink-0 rounded-md bg-[#2f2a24] px-2 py-1 text-xs text-white disabled:opacity-50"
                 >
-                  {phase ? '处理中…' : ready ? '重新验证' : '启动并验证'}
+                  {phase ? ui('处理中…') : ready ? ui('重新验证') : ui('启动并验证')}
                 </button>
               </div>
               {guide && !ready && (

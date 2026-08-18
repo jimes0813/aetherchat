@@ -1,3 +1,4 @@
+import { useI18n } from '../i18n';
 import type { GovernanceProject } from './governanceProject';
 import { projectLabel } from './governanceProject';
 
@@ -23,22 +24,23 @@ export function SessionProjectSelect({
   onChangeSessionProject,
   onChangePreferred,
 }: SessionProjectSelectProps) {
+  const { ui } = useI18n();
   if (!projects.length) {
     return (
       <span className="text-[11px] text-[#8b8176]" data-testid="session-project-empty">
-        治理项目未加载
+        {ui('治理项目未加载')}
       </span>
     );
   }
 
-  const currentLabel = projectLabel(value, projects) || '未绑定';
+  const currentLabel = projectLabel(value, projects) || ui('未绑定');
 
   return (
     <div className="flex flex-wrap items-center gap-2" data-testid="session-project-select">
       <label className="inline-flex items-center gap-1 text-[11px] text-[#5f554d]">
-        <span className="font-medium">项目</span>
+        <span className="font-medium">{ui('项目')}</span>
         <select
-          aria-label="当前会话治理项目"
+          aria-label={ui('当前会话治理项目')}
           disabled={disabled}
           value={value || ''}
           onChange={(event) => {
@@ -47,7 +49,7 @@ export function SessionProjectSelect({
           }}
           className="max-w-[10rem] rounded border border-[#d8cdbf] bg-white px-1.5 py-0.5 text-[11px] text-[#2f2a24] outline-none disabled:opacity-50"
         >
-          {!value && <option value="">未绑定</option>}
+          {!value && <option value="">{ui('未绑定')}</option>}
           {projects.map((item) => (
             <option key={item.id} value={item.id}>
               {item.name}
@@ -57,9 +59,9 @@ export function SessionProjectSelect({
       </label>
       {onChangePreferred && (
         <label className="inline-flex items-center gap-1 text-[11px] text-[#5f554d]">
-          <span className="text-[#8b8176]">新建默认</span>
+          <span className="text-[#8b8176]">{ui('新建默认')}</span>
           <select
-            aria-label="新建会话默认治理项目"
+            aria-label={ui('新建会话默认治理项目')}
             disabled={disabled}
             value={preferredProjectId || value || projects[0]?.id || ''}
             onChange={(event) => {

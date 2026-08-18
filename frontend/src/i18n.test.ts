@@ -30,9 +30,8 @@ describe('i18n: translate() 查表', () => {
   });
 
   it('同一占位符出现多次时全部替换', () => {
-    // approvalRequest: '{model} 请求调用 {tool}' / '{model} requests {tool}'
     expect(translate('zh-CN', 'approvalRequest', { model: 'gpt', tool: 'shell' }))
-      .toBe('gpt 请求调用 shell');
+      .toBe('gpt · shell');
   });
 
   it('未知 key 回退到 key 本身', () => {
@@ -54,7 +53,7 @@ describe('i18n: en-US 词条表关键条目存在性', () => {
     ['you', 'You'],
     ['allModels', '@All models'],
     ['approvalLabel', 'Model action authorization'],
-    ['approvalPromptHeading', 'AetherChat needs your approval'],
+    ['approvalPromptHeading', 'Allow {tool}?'],
     ['deny', 'Deny'],
     ['allowOnce', 'Allow once'],
     ['allowSession', 'Allow for session'],

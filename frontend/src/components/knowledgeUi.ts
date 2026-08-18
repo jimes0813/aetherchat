@@ -24,7 +24,7 @@ export function formatLayerLabel(matchTypes: string[] | undefined, layers?: Know
   if (types.includes('全文') || (layers?.lexical ?? 0) > 0) {
     parts.push(`全文${layers?.lexical != null ? ` ${Math.round(layers.lexical * 100)}%` : ''}`);
   }
-  if (types.includes('哈希相似') || (layers?.vector ?? 0) > 0.05) {
+  if (types.includes('哈希相似') || types.includes('语义') || (layers?.vector ?? 0) > 0.05) {
     parts.push(`向量${layers?.vector != null ? ` ${Math.round(layers.vector * 100)}%` : ''}`);
   }
   if ((layers?.coverage ?? 0) > 0) {

@@ -1,5 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { projectLabel, resolvePreferredProjectId, type GovernanceProject } from './governanceProject';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  loadGovernanceProjects,
+  projectLabel,
+  resolvePreferredProjectId,
+  type GovernanceProject,
+} from './governanceProject';
 
 const projects: GovernanceProject[] = [
   { id: 'default', name: '默认项目', slug: 'default' },
@@ -7,6 +12,10 @@ const projects: GovernanceProject[] = [
 ];
 
 describe('governanceProject helpers', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('projectLabel prefers name then slug then id', () => {
     expect(projectLabel('p2', projects)).toBe('严格项目');
     expect(projectLabel('missing', projects)).toBe('missing');
@@ -21,5 +30,14 @@ describe('governanceProject helpers', () => {
     expect(resolvePreferredProjectId('gone', projects, 'default')).toBe('default');
     expect(resolvePreferredProjectId(null, [], null)).toBeUndefined();
     expect(resolvePreferredProjectId(null, projects, null)).toBe('default');
+  });
+
+  it('degrades a malformed project collection to an empty array', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })));
+
+    await expect(loadGovernanceProjects()).resolves.toEqual([]);
   });
 });

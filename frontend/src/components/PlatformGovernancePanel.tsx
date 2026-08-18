@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Building2, RefreshCw, Shield } from 'lucide-react';
-import { fetchJson } from '../api/client';
+import { asArray, fetchJson } from '../api/client';
+import { useI18n } from '../i18n';
 
 export type PlatformStatus = {
   phase: string;
@@ -71,6 +72,7 @@ export type PlatformGovernancePanelProps = {
 };
 
 export function PlatformGovernancePanel({ apiBase }: PlatformGovernancePanelProps) {
+  const { ui } = useI18n();
   const [status, setStatus] = useState<PlatformStatus | null>(null);
   const [principals, setPrincipals] = useState<PlatformPrincipal[]>([]);
   const [projects, setProjects] = useState<PlatformProject[]>([]);
@@ -86,16 +88,19 @@ export function PlatformGovernancePanel({ apiBase }: PlatformGovernancePanelProp
     try {
       const [platformStatus, principalRows, projectRows, auditRows] = await Promise.all([
         fetchJson<PlatformStatus>(`${apiBase}/platform/status`),
-        fetchJson<PlatformPrincipal[]>(`${apiBase}/platform/principals`),
-        fetchJson<PlatformProject[]>(`${apiBase}/platform/projects`),
-        fetchJson<AuditEvent[]>(`${apiBase}/platform/audit?limit=20`),
+        fetchJson<unknown>(`${apiBase}/platform/principals`),
+        fetchJson<unknown>(`${apiBase}/platform/projects`),
+        fetchJson<unknown>(`${apiBase}/platform/audit?limit=20`),
       ]);
+      const safePrincipals = asArray<PlatformPrincipal>(principalRows);
+      const safeProjects = asArray<PlatformProject>(projectRows);
+      const safeAudit = asArray<AuditEvent>(auditRows);
       setStatus(platformStatus);
-      setPrincipals(principalRows);
-      setProjects(projectRows);
-      setAudit(auditRows);
+      setPrincipals(safePrincipals);
+      setProjects(safeProjects);
+      setAudit(safeAudit);
       setMessage(
-        `${platformStatus.phase_label} · 租户 ${platformStatus.tenant_count} · 项目 ${platformStatus.project_count ?? projectRows.length} · 主体 ${platformStatus.principal_count}`,
+        `${platformStatus.phase_label} · 租户 ${platformStatus.tenant_count} · 项目 ${platformStatus.project_count ?? safeProjects.length} · 主体 ${platformStatus.principal_count}`,
       );
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
@@ -235,9 +240,9 @@ export function PlatformGovernancePanel({ apiBase }: PlatformGovernancePanelProp
           <Building2 size={17} />
         </div>
         <div className="min-w-0 flex-1">
-          <h2 className="text-sm font-semibold">平台治理 · Phase 3</h2>
+          <h2 className="text-sm font-semibold">{ui('平台治理 · Phase 3')}</h2>
           <p className="mt-1 text-xs leading-5 text-[#7a7065]">
-            租户 → 项目作用域 / RBAC / 白名单 / 审计导出与保留。默认本机单租户 + 默认项目。
+            {ui('租户 → 项目作用域 / RBAC / 白名单 / 审计导出与保留。默认本机单租户 + 默认项目。')}
           </p>
         </div>
         <button
@@ -247,41 +252,41 @@ export function PlatformGovernancePanel({ apiBase }: PlatformGovernancePanelProp
           className="inline-flex items-center gap-1 rounded-md border border-[#cfc4b7] px-2 py-1 text-xs text-[#5d4a3a]"
         >
           <RefreshCw size={12} />
-          刷新
+          {ui('刷新')}
         </button>
       </div>
 
       {message && (
         <div className="mb-3 rounded-md bg-[#e9e0d5] px-3 py-2 text-xs text-[#6e5d4b]" aria-live="polite">
-          {message}
+          {ui(message)}
         </div>
       )}
 
       <section className="mb-4 rounded-xl border border-[#ded6ca] bg-white p-3">
         <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-[#5d4a3a]">
           <Shield size={13} />
-          当前策略（{status?.default_tenant_id || 'local'}）
+          {ui('当前策略（{tenant}）', { tenant: status?.default_tenant_id || 'local' })}
         </div>
         <div className="mb-2 rounded-md bg-[#f4efe8] px-2 py-1.5 text-[11px] text-[#6e5d4b]">
-          运行时门禁：{gate?.enabled ? '已接入工具与模型路径' : '已关闭（AETHERCHAT_PLATFORM_POLICY_GATE）'}
-          {gate?.enforce_tool_allowlist ? ' · 工具白名单强制中' : ''}
-          {gate?.enforce_model_allowlist ? ' · 模型白名单强制中' : ''}
+          {ui('运行时门禁：{status}', { status: ui(gate?.enabled ? '已接入工具与模型路径' : '已关闭（AETHERCHAT_PLATFORM_POLICY_GATE）') })}
+          {gate?.enforce_tool_allowlist ? ui(' · 工具白名单强制中') : ''}
+          {gate?.enforce_model_allowlist ? ui(' · 模型白名单强制中') : ''}
         </div>
         <div className="grid grid-cols-2 gap-2 text-[11px] text-[#5f554d]">
-          <div>环境：{policy?.environment || 'dev'}</div>
-          <div>高风险需授权：{policy?.require_approval_for_high_risk ? '是' : '否'}</div>
-          <div>工具白名单：{policy?.enforce_tool_allowlist ? '强制' : '关闭'}</div>
-          <div>模型白名单：{policy?.enforce_model_allowlist ? '强制' : '关闭'}</div>
-          <div>DLP 脱敏：{policy?.dlp_redact_secrets ? '开' : '关'}</div>
-          <div>审计：{policy?.audit_enabled ? '开' : '关'}</div>
-          <div>审计保留：{retention?.days ?? policy?.audit_retention_days ?? 90} 天</div>
-          <div>审计上限：{retention?.max_events ?? policy?.audit_max_events ?? 10000} 条</div>
+          <div>{ui('环境：{value}', { value: policy?.environment || 'dev' })}</div>
+          <div>{ui('高风险需授权：{value}', { value: ui(policy?.require_approval_for_high_risk ? '是' : '否') })}</div>
+          <div>{ui('工具白名单：{value}', { value: ui(policy?.enforce_tool_allowlist ? '强制' : '关闭') })}</div>
+          <div>{ui('模型白名单：{value}', { value: ui(policy?.enforce_model_allowlist ? '强制' : '关闭') })}</div>
+          <div>{ui('DLP 脱敏：{value}', { value: ui(policy?.dlp_redact_secrets ? '开' : '关') })}</div>
+          <div>{ui('审计：{value}', { value: ui(policy?.audit_enabled ? '开' : '关') })}</div>
+          <div>{ui('审计保留：{count} 天', { count: retention?.days ?? policy?.audit_retention_days ?? 90 })}</div>
+          <div>{ui('审计上限：{count} 条', { count: retention?.max_events ?? policy?.audit_max_events ?? 10000 })}</div>
         </div>
         <div className="mt-2 text-[11px] text-[#8a7f75]">
-          允许工具：{(policy?.allowed_tools || []).join('、') || '（空）'}
+          {ui('允许工具：{value}', { value: (policy?.allowed_tools || []).join('、') || ui('（空）') })}
         </div>
         <div className="mt-2 text-[11px] text-[#8a7f75]">
-          默认项目：{status?.default_project_id || 'default'}
+          {ui('默认项目：{value}', { value: status?.default_project_id || 'default' })}
         </div>
         <button
           type="button"
@@ -289,18 +294,18 @@ export function PlatformGovernancePanel({ apiBase }: PlatformGovernancePanelProp
           onClick={() => void toggleToolAllowlist()}
           className="mt-3 rounded-md bg-[#2f2a24] px-2 py-1 text-xs text-white disabled:opacity-50"
         >
-          {policy?.enforce_tool_allowlist ? '关闭工具白名单强制' : '开启工具白名单强制'}
+          {policy?.enforce_tool_allowlist ? ui('关闭工具白名单强制') : ui('开启工具白名单强制')}
         </button>
       </section>
 
       <section className="mb-4 rounded-xl border border-[#ded6ca] bg-white p-3">
-        <div className="mb-2 text-xs font-semibold text-[#5d4a3a]">项目（{projects.length}）</div>
+        <div className="mb-2 text-xs font-semibold text-[#5d4a3a]">{ui('项目（{count}）', { count: projects.length })}</div>
         <div className="mb-2 flex flex-wrap gap-2">
           <input
             value={newProjectName}
             onChange={(event) => setNewProjectName(event.target.value)}
             className="min-w-[10rem] flex-1 rounded-lg border border-[#d8cdbf] px-2 py-1.5 text-xs"
-            placeholder="新项目名称"
+            placeholder={ui('新项目名称')}
           />
           <button
             type="button"
@@ -308,7 +313,7 @@ export function PlatformGovernancePanel({ apiBase }: PlatformGovernancePanelProp
             onClick={() => void createProject()}
             className="rounded-md border border-[#cfc4b7] px-2 py-1 text-xs text-[#5d4a3a] disabled:opacity-50"
           >
-            创建项目
+            {ui('创建项目')}
           </button>
         </div>
         <div className="space-y-1">
@@ -317,16 +322,16 @@ export function PlatformGovernancePanel({ apiBase }: PlatformGovernancePanelProp
               <span className="font-medium">{item.name}</span>
               <span className="ml-2 text-[#8a7f75]">{item.slug || item.id}</span>
               {item.id === status?.default_project_id && (
-                <span className="ml-2 rounded bg-[#e5d9ca] px-1 text-[10px] text-[#684827]">默认</span>
+                <span className="ml-2 rounded bg-[#e5d9ca] px-1 text-[10px] text-[#684827]">{ui('默认')}</span>
               )}
             </div>
           ))}
-          {!projects.length && <div className="text-[11px] text-[#8a7f75]">暂无项目</div>}
+          {!projects.length && <div className="text-[11px] text-[#8a7f75]">{ui('暂无项目')}</div>}
         </div>
       </section>
 
       <section className="mb-4 rounded-xl border border-[#ded6ca] bg-white p-3">
-        <div className="mb-2 text-xs font-semibold text-[#5d4a3a]">授权试算（不执行工具）</div>
+        <div className="mb-2 text-xs font-semibold text-[#5d4a3a]">{ui('授权试算（不执行工具）')}</div>
         <div className="flex flex-wrap gap-2">
           <input
             value={toolName}
@@ -340,14 +345,14 @@ export function PlatformGovernancePanel({ apiBase }: PlatformGovernancePanelProp
             onClick={() => void runAuthorize()}
             className="rounded-md border border-[#cfc4b7] px-2 py-1 text-xs text-[#5d4a3a]"
           >
-            试算
+            {ui('试算')}
           </button>
         </div>
         {authResult && <div className="mt-2 text-[11px] text-[#5f554d]">{authResult}</div>}
       </section>
 
       <section className="mb-4 rounded-xl border border-[#ded6ca] bg-white p-3">
-        <div className="mb-2 text-xs font-semibold text-[#5d4a3a]">主体（{principals.length}）</div>
+        <div className="mb-2 text-xs font-semibold text-[#5d4a3a]">{ui('主体（{count}）', { count: principals.length })}</div>
         <div className="space-y-1">
           {principals.map((item) => (
             <div key={item.id} className="rounded border border-[#eee6db] px-2 py-1.5 text-[11px]">
@@ -360,7 +365,7 @@ export function PlatformGovernancePanel({ apiBase }: PlatformGovernancePanelProp
 
       <section className="rounded-xl border border-[#ded6ca] bg-white p-3">
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-          <div className="text-xs font-semibold text-[#5d4a3a]">审计（最近）</div>
+          <div className="text-xs font-semibold text-[#5d4a3a]">{ui('审计（最近）')}</div>
           <div className="flex flex-wrap gap-1">
             <button
               type="button"
@@ -368,7 +373,7 @@ export function PlatformGovernancePanel({ apiBase }: PlatformGovernancePanelProp
               onClick={() => void exportAudit('json')}
               className="rounded-md border border-[#cfc4b7] px-2 py-1 text-[11px] text-[#5d4a3a] disabled:opacity-50"
             >
-              导出 JSON
+              {ui('导出 JSON')}
             </button>
             <button
               type="button"
@@ -376,7 +381,7 @@ export function PlatformGovernancePanel({ apiBase }: PlatformGovernancePanelProp
               onClick={() => void exportAudit('csv')}
               className="rounded-md border border-[#cfc4b7] px-2 py-1 text-[11px] text-[#5d4a3a] disabled:opacity-50"
             >
-              导出 CSV
+              {ui('导出 CSV')}
             </button>
             <button
               type="button"
@@ -384,7 +389,7 @@ export function PlatformGovernancePanel({ apiBase }: PlatformGovernancePanelProp
               onClick={() => void pruneAudit()}
               className="rounded-md border border-[#cfc4b7] px-2 py-1 text-[11px] text-[#5d4a3a] disabled:opacity-50"
             >
-              按策略裁剪
+              {ui('按策略裁剪')}
             </button>
           </div>
         </div>
@@ -395,7 +400,7 @@ export function PlatformGovernancePanel({ apiBase }: PlatformGovernancePanelProp
               {event.project_id ? ` · ${event.project_id}` : ''}
             </div>
           ))}
-          {!audit.length && <div className="text-[11px] text-[#8a7f75]">暂无审计事件</div>}
+          {!audit.length && <div className="text-[11px] text-[#8a7f75]">{ui('暂无审计事件')}</div>}
         </div>
         {status?.notes && (
           <ul className="mt-3 list-disc space-y-0.5 pl-4 text-[11px] text-[#8a7f75]">

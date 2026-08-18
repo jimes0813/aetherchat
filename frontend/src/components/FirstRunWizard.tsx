@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { fetchJson } from '../api/client';
+import { useI18n } from '../i18n';
 import type { ModelConfig } from '../types';
 import {
   buildLlamaManagedPayload,
@@ -120,6 +121,7 @@ export function FirstRunWizard({
   onDismiss,
   apiBase = API_BASE,
 }: FirstRunWizardProps) {
+  const { ui } = useI18n();
   const [step, setStep] = useState<Step>(1);
   const [presetId, setPresetId] = useState(PRESETS[0].id);
   const [apiKey, setApiKey] = useState('');
@@ -287,24 +289,24 @@ export function FirstRunWizard({
     >
       <section className="mx-auto mt-[6vh] max-h-[88vh] w-full max-w-xl overflow-auto rounded-2xl border border-[#d8cec4] bg-white p-6 text-[#2f2925] shadow-lg">
         <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#7a695d]">
-          首次设置 · {step}/3
+          {ui('首次设置 · {step}/3', { step })}
         </p>
         <h2 id="first-run-title" className="mt-2 text-xl font-semibold">
-          {step === 1 && '欢迎使用 AetherChat'}
-          {step === 2 && '配置一个可对话的模型'}
-          {step === 3 && '已就绪，可以开始'}
+          {step === 1 && ui('欢迎使用 AetherChat')}
+          {step === 2 && ui('配置一个可对话的模型')}
+          {step === 3 && ui('已就绪，可以开始')}
         </h2>
 
         {step === 1 && (
           <div className="mt-4 space-y-3 text-sm leading-6 text-[#5f554d]">
-            <p>三步完成主路径：选择模型 → 保存并验证 → 开始聊天。</p>
+            <p>{ui('三步完成主路径：选择模型 → 保存并验证 → 开始聊天。')}</p>
             <ol className="list-decimal space-y-1 pl-5">
-              <li>云端：Kimi / DeepSeek</li>
-              <li>本机：llama.cpp 自动托管，或已运行的兼容服务</li>
-              <li>自动做真实连通测试，通过后即可发消息</li>
+              <li>{ui('云端：Kimi / DeepSeek')}</li>
+              <li>{ui('本机：llama.cpp 自动托管，或已运行的兼容服务')}</li>
+              <li>{ui('自动做真实连通测试，通过后即可发消息')}</li>
             </ol>
             <p className="text-xs text-[#6d6259]">
-              当前已配置模型：{configuredCount} 个。托管模式只需填 GGUF 与 llama-server 路径。
+              {ui('当前已配置模型：{count} 个。托管模式只需填 GGUF 与 llama-server 路径。', { count: configuredCount })}
             </p>
           </div>
         )}
@@ -312,19 +314,19 @@ export function FirstRunWizard({
         {step === 2 && (
           <div className="mt-4 space-y-3 text-sm">
             <label className="block">
-              <span className="mb-1 block text-xs font-medium text-[#6d6259]">预设</span>
+              <span className="mb-1 block text-xs font-medium text-[#6d6259]">{ui('预设')}</span>
               <select
                 className="w-full rounded-lg border border-[#d8cec4] bg-[#fbfaf7] px-3 py-2"
                 value={presetId}
                 onChange={(event) => applyPreset(event.target.value)}
               >
                 {PRESETS.map((item) => (
-                  <option key={item.id} value={item.id}>{item.label}</option>
+                  <option key={item.id} value={item.id}>{ui(item.label)}</option>
                 ))}
               </select>
             </label>
             <label className="block">
-              <span className="mb-1 block text-xs font-medium text-[#6d6259]">配置名称</span>
+              <span className="mb-1 block text-xs font-medium text-[#6d6259]">{ui('配置名称')}</span>
               <input
                 className="w-full rounded-lg border border-[#d8cec4] bg-[#fbfaf7] px-3 py-2"
                 value={name}
@@ -332,16 +334,16 @@ export function FirstRunWizard({
               />
             </label>
             <label className="block">
-              <span className="mb-1 block text-xs font-medium text-[#6d6259]">模型 ID</span>
+              <span className="mb-1 block text-xs font-medium text-[#6d6259]">{ui('模型 ID')}</span>
               <input
                 className="w-full rounded-lg border border-[#d8cec4] bg-[#fbfaf7] px-3 py-2"
                 value={modelId}
                 onChange={(event) => setModelId(event.target.value)}
-                placeholder={isLocal ? '可与 GGUF 文件名一致' : undefined}
+                placeholder={isLocal ? ui('可与 GGUF 文件名一致') : undefined}
               />
             </label>
             <label className="block">
-              <span className="mb-1 block text-xs font-medium text-[#6d6259]">接口 Base URL</span>
+              <span className="mb-1 block text-xs font-medium text-[#6d6259]">{ui('接口 Base URL')}</span>
               <input
                 className="w-full rounded-lg border border-[#d8cec4] bg-[#fbfaf7] px-3 py-2"
                 value={baseUrl}
@@ -351,7 +353,7 @@ export function FirstRunWizard({
 
             {preset.requires_api_key && (
               <label className="block">
-                <span className="mb-1 block text-xs font-medium text-[#6d6259]">API 密钥</span>
+                <span className="mb-1 block text-xs font-medium text-[#6d6259]">{ui('API 密钥')}</span>
                 <input
                   type="password"
                   autoComplete="off"
@@ -366,10 +368,10 @@ export function FirstRunWizard({
             {isLlamaManaged && (
               <div className="space-y-3 rounded-xl border border-[#dcebd7] bg-[#f4faf1] p-3">
                 <p className="text-xs leading-5 text-[#326022]">
-                  llama.cpp 托管：AetherChat 会启动 <code>llama-server</code>，再做真实对话验证。路径需为本机绝对路径。
+                  {ui('llama.cpp 托管：AetherChat 会启动 ')}<code>llama-server</code>{ui('，再做真实对话验证。路径需为本机绝对路径。')}
                 </p>
                 <label className="block">
-                  <span className="mb-1 block text-xs font-medium text-[#6d6259]">GGUF 模型路径</span>
+                  <span className="mb-1 block text-xs font-medium text-[#6d6259]">{ui('GGUF 模型路径')}</span>
                   <input
                     className="w-full rounded-lg border border-[#d8cec4] bg-white px-3 py-2 font-mono text-xs"
                     value={modelPath}
@@ -378,7 +380,7 @@ export function FirstRunWizard({
                   />
                 </label>
                 <label className="block">
-                  <span className="mb-1 block text-xs font-medium text-[#6d6259]">llama-server 路径</span>
+                  <span className="mb-1 block text-xs font-medium text-[#6d6259]">{ui('llama-server 路径')}</span>
                   <input
                     className="w-full rounded-lg border border-[#d8cec4] bg-white px-3 py-2 font-mono text-xs"
                     value={runtimeExecutable}
@@ -387,7 +389,7 @@ export function FirstRunWizard({
                   />
                 </label>
                 <label className="block">
-                  <span className="mb-1 block text-xs font-medium text-[#6d6259]">启动参数（每行一个，可选）</span>
+                  <span className="mb-1 block text-xs font-medium text-[#6d6259]">{ui('启动参数（每行一个，可选）')}</span>
                   <textarea
                     className="min-h-20 w-full rounded-lg border border-[#d8cec4] bg-white px-3 py-2 font-mono text-xs"
                     value={runtimeArgs}
@@ -400,7 +402,7 @@ export function FirstRunWizard({
 
             {isLocal && !isLlamaManaged && (
               <p className="rounded-lg bg-[#eef6ea] px-3 py-2 text-xs leading-5 text-[#326022]">
-                外部本地服务模式：请先自行启动兼容服务，再点保存并验证。
+                {ui('外部本地服务模式：请先自行启动兼容服务，再点保存并验证。')}
               </p>
             )}
 
@@ -413,11 +415,11 @@ export function FirstRunWizard({
         {step === 3 && (
           <div className="mt-4 space-y-3 text-sm leading-6 text-[#5f554d]">
             <p>
-              连通测试通过。可直接发第一条消息；本地托管模型也可随时在「模型」面板使用「启动并验证」重新拉起。
+              {ui('连通测试通过。可直接发第一条消息；本地托管模型也可随时在「模型」面板使用「启动并验证」重新拉起。')}
             </p>
             {verifySample && (
               <p className="rounded-lg bg-[#eef6ea] px-3 py-2 text-xs text-[#326022]">
-                样本回复：{verifySample}
+                {ui('样本回复：{sample}', { sample: verifySample })}
               </p>
             )}
             {statusLine && (
@@ -428,7 +430,7 @@ export function FirstRunWizard({
 
         {error && (
           <p role="alert" className="mt-4 rounded-lg border border-[#e2b8b0] bg-[#fff5f2] px-3 py-2 text-xs text-[#8a4036]">
-            {error}
+            {ui(error)}
           </p>
         )}
 
@@ -440,14 +442,14 @@ export function FirstRunWizard({
                 className="rounded-lg border border-[#cfc4b7] px-3 py-2 text-sm text-[#6d6259]"
                 onClick={finish}
               >
-                稍后再说
+                {ui('稍后再说')}
               </button>
               <button
                 type="button"
                 className="rounded-lg bg-[#8d5f35] px-3 py-2 text-sm text-white"
                 onClick={() => setStep(2)}
               >
-                开始配置
+                {ui('开始配置')}
               </button>
             </>
           )}
@@ -459,7 +461,7 @@ export function FirstRunWizard({
                 onClick={() => setStep(1)}
                 disabled={busy}
               >
-                上一步
+                {ui('上一步')}
               </button>
               <button
                 type="button"
@@ -467,7 +469,7 @@ export function FirstRunWizard({
                 onClick={() => void saveAndVerify()}
                 disabled={busy}
               >
-                {busy ? '正在保存并验证…' : isLlamaManaged ? '保存并启动验证' : '保存并验证'}
+                {busy ? ui('正在保存并验证…') : isLlamaManaged ? ui('保存并启动验证') : ui('保存并验证')}
               </button>
             </>
           )}
@@ -477,7 +479,7 @@ export function FirstRunWizard({
               className="rounded-lg bg-[#326022] px-3 py-2 text-sm text-white"
               onClick={finish}
             >
-              进入工作台
+              {ui('进入工作台')}
             </button>
           )}
         </div>
