@@ -12,14 +12,14 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "backend"))
 
-os.environ["AETHERCHAT_DATA_DIR"] = tempfile.mkdtemp(prefix="aetherchat-platform-")
+os.environ.setdefault("AETHERCHAT_DATA_DIR", tempfile.mkdtemp(prefix="aetherchat-platform-"))
 
 from app.services.platform_governance import (  # noqa: E402
     AuthorizeRequest,
+    PlatformGovernanceService,
     PolicyPatch,
     PrincipalCreate,
     ProjectCreate,
-    PlatformGovernanceService,
 )
 
 

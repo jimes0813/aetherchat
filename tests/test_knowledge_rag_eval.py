@@ -16,7 +16,6 @@ from app.services.knowledge_rag_eval import (  # noqa: E402
     load_rag_fixture,
 )
 
-
 FIXTURE = PROJECT_ROOT / "tests" / "fixtures" / "knowledge_rag_cases.json"
 
 

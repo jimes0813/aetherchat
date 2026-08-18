@@ -10,8 +10,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "backend"))
 os.environ.setdefault("AETHERCHAT_DATA_DIR", tempfile.mkdtemp(prefix="aetherchat-runtime-tests-"))
 
-from app.models.schemas import ProviderConfig
-from app.services.local_model_runtime import LocalModelRuntimeError, LocalModelRuntimeService
+from app.models.schemas import ProviderConfig  # noqa: E402
+from app.services.local_model_runtime import (  # noqa: E402
+    LocalModelRuntimeError,
+    LocalModelRuntimeService,
+)
 
 
 def config(**overrides):

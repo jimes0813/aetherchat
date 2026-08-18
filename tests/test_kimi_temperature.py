@@ -7,15 +7,15 @@ from app.providers.base import OpenAICompatProvider
 
 
 def _provider(**kwargs) -> OpenAICompatProvider:
-    base = dict(
-        name="kimi",
-        type="openai_compat",
-        model="kimi-k3",
-        base_url="https://api.moonshot.cn/v1",
-        api_key_ref="KIMI_API_KEY",
-        max_tokens=256,
-        participation_policy="always",
-    )
+    base = {
+        "name": "kimi",
+        "type": "openai_compat",
+        "model": "kimi-k3",
+        "base_url": "https://api.moonshot.cn/v1",
+        "api_key_ref": "KIMI_API_KEY",
+        "max_tokens": 256,
+        "participation_policy": "always",
+    }
     base.update(kwargs)
     return OpenAICompatProvider(ProviderConfig(**base))
 

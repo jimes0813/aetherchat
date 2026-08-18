@@ -2,7 +2,6 @@ import os
 
 from mcp.server.fastmcp import FastMCP
 
-
 server = FastMCP(
     "AetherChat HTTP Test MCP",
     host="127.0.0.1",

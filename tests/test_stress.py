@@ -2,12 +2,11 @@ import errno
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "backend"))
@@ -25,7 +24,7 @@ def test_long_conversation_and_concurrent_writes_remain_recoverable(tmp_path):
         Message(
             id=uuid4(), session_id=session_id, author_model="user" if index % 2 == 0 else "offline-model",
             role="user" if index % 2 == 0 else "assistant",
-            content=f"turn-{index} " + ("context " * 500), created_at=datetime.now(timezone.utc),
+            content=f"turn-{index} " + ("context " * 500), created_at=datetime.now(UTC),
         )
         for index in range(300)
     ]

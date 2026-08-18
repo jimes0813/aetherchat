@@ -65,6 +65,18 @@ def test_context_assembler_preserves_the_full_instruction_order():
     ]
 
 
+def test_context_assembler_puts_explicit_references_above_history():
+    history = [ChatMessage(role="user", content="按这个改")]
+    assembled = ContextAssembler.assemble(
+        history,
+        memory_context="共享记忆",
+        reference_context="用户明确引用了文件",
+    )
+    contents = [message.content for message in assembled]
+    assert contents.index("用户明确引用了文件") == contents.index("共享记忆") + 1
+    assert contents[-1] == "按这个改"
+
+
 def test_context_assembler_injects_instruction_context_above_memory():
     history = [ChatMessage(role="user", content="请评审这段代码")]
     assembled = ContextAssembler.assemble(

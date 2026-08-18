@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "backend"))
 os.environ.setdefault(
@@ -18,6 +17,7 @@ os.environ.setdefault(
 from app.models.schemas import ToolDefinition  # noqa: E402
 from app.services.mcp_registry import MCPConnectionCreate, MCPRegistry  # noqa: E402
 from app.services.orchestrator import SessionOrchestrator  # noqa: E402
+
 from mcp_servers.aetherchat_local_audit import (  # noqa: E402
     _get_run_evidence,
     _list_recent_runs,

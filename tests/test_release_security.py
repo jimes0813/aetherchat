@@ -8,7 +8,6 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
     "release_security", PROJECT_ROOT / "scripts" / "release_security.py"
@@ -24,8 +23,24 @@ def test_linux_desktop_entry_and_icon_match_electron_package():
     )
     assert "StartupWMClass=aetherchat" in build_script
     assert "StartupWMClass=AetherChat" not in build_script
+    assert "Exec=/usr/bin/aetherchat %U" in build_script
+    assert "Exec=/usr/bin/aetherchat aetherchat://chat" in build_script
+    assert "Exec=/opt/AetherChat/aetherchat-frontend" not in build_script
     assert '"$SCRIPT_DIR/build/icon.svg"' in build_script
     assert "electron-linux/256x256.png" not in build_script
+
+    launcher = (PROJECT_ROOT / "frontend" / "linux" / "aetherchat").read_text(
+        encoding="utf-8"
+    )
+    assert 'readonly APP_DIR="/opt/AetherChat"' in launcher
+    assert 'owner_uid="$(stat -c \'%u\'' in launcher
+    assert 'owner_gid="$(stat -c \'%g\'' in launcher
+    assert 'mode="$(stat -c \'%a\'' in launcher
+    assert '"$owner_uid" != "0"' in launcher
+    assert '"$owner_gid" != "0"' in launcher
+    assert '"$mode" != "4755"' in launcher
+    assert "--no-sandbox" not in launcher
+    assert "--disable-setuid-sandbox" not in launcher
 
     package = json.loads(
         (PROJECT_ROOT / "frontend" / "package.json").read_text(

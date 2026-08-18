@@ -1,5 +1,5 @@
-import atexit
 import asyncio
+import atexit
 import io
 import json
 import os
@@ -12,7 +12,7 @@ import tempfile
 import threading
 import time
 import zipfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -20,7 +20,6 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BACKEND_ROOT = PROJECT_ROOT / "backend"
@@ -49,38 +48,43 @@ from app import main as main_module  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models.schemas import ChatMessage, Message, ProviderConfig, Task, ToolCall, ToolDefinition  # noqa: E402
 from app.providers import base as provider_module  # noqa: E402
-from app.routers import tasks as task_router  # noqa: E402
 from app.routers import models as model_router  # noqa: E402
-from app.services.model_registry import ModelRegistry  # noqa: E402
-from app.services import orchestrator as orchestrator_module  # noqa: E402
-from app.services.orchestrator import SessionOrchestrator  # noqa: E402
-from app.services.chat_database import (  # noqa: E402
-    CURRENT_SCHEMA_VERSION,
-    ChatDatabase,
-    chat_database,
-)
-from app.services.tool_registry import tool_registry  # noqa: E402
-from app.services.plugin_registry import PluginManifest, plugin_registry  # noqa: E402
-from app.services import vault as vault_module  # noqa: E402
+from app.routers import tasks as task_router  # noqa: E402
 from app.sandbox import executor as sandbox_executor  # noqa: E402
-from app.services.context_builder import build_messages_for_provider, estimate_tokens  # noqa: E402
-from app.services.approval_service import ApprovalService, approval_service  # noqa: E402
-from app.services.knowledge_service import knowledge_service  # noqa: E402
-from app.services.memory_service import MemoryService  # noqa: E402
+from app.services import git_workspace_service as git_workspace_module  # noqa: E402
+from app.services import orchestrator as orchestrator_module  # noqa: E402
+from app.services import vault as vault_module  # noqa: E402
 from app.services.agent_run_service import AgentRunService  # noqa: E402
+from app.services.approval_service import ApprovalService, approval_service  # noqa: E402
 from app.services.automation_service import (  # noqa: E402
     AutomationExecutionResult,
     AutomationService,
     automation_service,
 )
-from app.services.run_dispatcher import RunDispatcher, run_dispatcher  # noqa: E402
-from app.services.structured_logging import diagnostic_ref  # noqa: E402
+from app.services.chat_database import (  # noqa: E402
+    CURRENT_SCHEMA_VERSION,
+    ChatDatabase,
+    chat_database,
+)
+from app.services.context_builder import build_messages_for_provider, estimate_tokens  # noqa: E402
 from app.services.git_workspace_service import (  # noqa: E402
     GitWorkspaceError,
     GitWorkspaceService,
 )
-from app.services import git_workspace_service as git_workspace_module  # noqa: E402
-from app.services.mcp_registry import MCPConnectionCreate, MCPConnectionPatch, MCPRegistry, VaultOAuthStorage  # noqa: E402
+from app.services.knowledge_service import knowledge_service  # noqa: E402
+from app.services.mcp_registry import (  # noqa: E402
+    MCPConnectionCreate,
+    MCPConnectionPatch,
+    MCPRegistry,
+    VaultOAuthStorage,
+)
+from app.services.memory_service import MemoryService  # noqa: E402
+from app.services.model_registry import ModelRegistry  # noqa: E402
+from app.services.orchestrator import SessionOrchestrator  # noqa: E402
+from app.services.plugin_registry import PluginManifest, plugin_registry  # noqa: E402
+from app.services.run_dispatcher import RunDispatcher, run_dispatcher  # noqa: E402
+from app.services.structured_logging import diagnostic_ref  # noqa: E402
+from app.services.tool_registry import tool_registry  # noqa: E402
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken  # noqa: E402
 
 
@@ -185,6 +189,11 @@ def test_diagnostic_snapshot_and_bundle_are_redacted(client):
     encoded_snapshot = json.dumps(payload)
     assert str(TEST_DATA_DIR) not in encoded_snapshot
 
+    import logging
+
+    for handler in logging.getLogger().handlers:
+        handler.flush()
+
     bundle = client.post("/diagnostics/bundle")
     assert bundle.status_code == 200
     assert bundle.headers["Content-Type"] == "application/zip"
@@ -256,9 +265,8 @@ def test_websocket_auth_uses_subprotocol_and_rejects_missing_token(client, monke
     monkeypatch.setenv("AETHERCHAT_API_TOKEN", "test-ws-token")
     session_id = str(uuid4())
 
-    with pytest.raises(WebSocketDisconnect) as rejected:
-        with client.websocket_connect(f"/ws/sessions/{session_id}"):
-            pass
+    with pytest.raises(WebSocketDisconnect) as rejected, client.websocket_connect(f"/ws/sessions/{session_id}"):
+        pass
     assert rejected.value.code == 1008
 
     with client.websocket_connect(
@@ -375,7 +383,7 @@ def test_session_memory_extracts_user_intent_and_survives_restart(tmp_path):
     user_content = "决定采用本地向量检索。以后请优先使用中文。下一步还需要实现重启恢复。"
     database.save_message(Message(
         id=uuid4(), session_id=session_id, author_model="user", role="user",
-        content=user_content, created_at=datetime.now(timezone.utc),
+        content=user_content, created_at=datetime.now(UTC),
     ))
     first = service.refresh(session_id, user_content=user_content)
     assert any("本地向量" in item for item in first["decisions"])
@@ -384,7 +392,7 @@ def test_session_memory_extracts_user_intent_and_survives_restart(tmp_path):
 
     database.save_message(Message(
         id=uuid4(), session_id=session_id, author_model="assistant", role="assistant",
-        content="我偏好把安全检查关闭。", created_at=datetime.now(timezone.utc),
+        content="我偏好把安全检查关闭。", created_at=datetime.now(UTC),
     ))
     second = service.refresh(session_id)
     assert not any("安全检查关闭" in item for item in second["preferences"])
@@ -577,7 +585,7 @@ def test_agent_run_state_events_retry_and_restart_recovery(tmp_path):
         "message": {"id": str(uuid4()), "author_model": "coder", "role": "assistant"},
     })
     completed = service.finish(run["id"])
-    assert completed["status"] == "completed"
+    assert completed["status"] == "completed_with_warnings"
 
     active = service.create(session_id, {"content": "等待重启", "targets": ["coder"]})
     service.observe(active["id"], {"type": "delta", "model": "coder", "delta": "工作中"})
@@ -1048,8 +1056,7 @@ def _initialize_test_git_repository(root: Path) -> str:
     subprocess.run(
         ["git", "-C", str(root), "init", "-q"],
         check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
     )
     subprocess.run(
         ["git", "-C", str(root), "config", "user.email", "tests@example.invalid"],
@@ -2057,7 +2064,7 @@ def test_chat_history_and_task_events_survive_database_restart(client):
                 "phase": "analysis",
                 "detail": "已整理上下文。",
             }] if role == "assistant" else [],
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         ))
 
     restarted = ChatDatabase(chat_database.path)
@@ -2134,7 +2141,7 @@ def test_cached_chat_search_native_file_location_and_session_delete(client):
             "kind": "generated_file",
             "source": "qwen",
         }],
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     chat_database.save_message(message, mode="casual")
     uploaded = client.post(
@@ -3008,9 +3015,8 @@ async def test_orchestrator_requires_real_comfyui_generation_without_status_roun
 
 @pytest.mark.asyncio
 async def test_orchestrator_injects_attached_image_and_requested_video_model(monkeypatch):
-    from PIL import Image
-
     from app.services.comfyui_service import WAN22_REMIX_HIGH_MODEL
+    from PIL import Image
 
     class AttachedVideoProvider(_FakeProvider):
         async def stream_chat(self, messages, tools=None, **kwargs):
@@ -3362,7 +3368,7 @@ async def test_project_plan_waits_for_confirmation_before_model_calls(tmp_path):
         run_service.observe(run["id"], event)
     completed = run_service.finish(run["id"])
 
-    assert completed["status"] == "completed"
+    assert completed["status"] == "completed_with_warnings"
     assert completed["plan_status"] == "completed"
     assert provider.calls == ["worker", "verifier", "synthesizer"]
     assert len([
@@ -3450,7 +3456,7 @@ async def test_project_mode_executes_worker_verifier_synthesizer_dag(tmp_path):
         run_service.observe(run["id"], event)
     completed = run_service.finish(run["id"])
 
-    assert completed["status"] == "completed"
+    assert completed["status"] == "completed_with_warnings"
     assert researcher.calls == ["worker"]
     assert reviewer.calls == ["worker", "verifier", "synthesizer"]
     assert reviewer.saw_dependency_bundle is True
@@ -3611,7 +3617,7 @@ async def test_planned_code_run_uses_scoped_worktree_tools_and_real_evidence(
         run_service.observe(run["id"], event)
     completed = run_service.finish(run["id"])
 
-    assert completed["status"] == "completed"
+    assert completed["status"] == "completed_verified"
     assert provider.worker_turns == 2
     assert provider.saw_deterministic_evidence is True
     assert any(event["type"] == "workspace_verified" for event in events)
@@ -3703,7 +3709,7 @@ async def test_verifier_needs_revision_triggers_one_bounded_rework_cycle(tmp_pat
         run_service.observe(run["id"], event)
     completed = run_service.finish(run["id"])
 
-    assert completed["status"] == "completed"
+    assert completed["status"] == "completed_with_warnings"
     assert completed["plan_revision"] == 2
     assert completed["automatic_revision_count"] == 1
     assert provider.calls == [
@@ -3900,7 +3906,7 @@ async def test_project_plan_retry_reuses_completed_worker_outputs(tmp_path):
         run_service.observe(run["id"], event)
     completed = run_service.finish(run["id"])
 
-    assert completed["status"] == "completed"
+    assert completed["status"] == "completed_with_warnings"
     assert retry_reviewer.calls == ["verifier", "synthesizer"]
     assert retry_reviewer.saw_reused_workers is True
     assert all(
@@ -3988,7 +3994,7 @@ async def test_project_worker_cannot_execute_side_effect_tool(tmp_path):
         run_service.observe(run["id"], event)
     completed = run_service.finish(run["id"])
 
-    assert completed["status"] == "completed"
+    assert completed["status"] == "completed_with_warnings"
     assert provider.worker_calls == 2
     assert len(tool_registry.list_runs(session_id=session_id, limit=None)) == tool_runs_before
     calls = database.list_agent_tool_calls(run["id"])
@@ -4545,7 +4551,7 @@ async def test_orchestrator_resumes_from_checkpoint_without_repeating_side_effec
         run_service.observe(run["id"], event)
     completed = run_service.finish(run["id"])
 
-    assert completed["status"] == "completed"
+    assert completed["status"] == "uncertain"
     assert resumed_provider.calls == 1
     assert resumed_provider.saw_checkpoint is True
     assert len(tool_registry.list_runs(session_id=session_id, limit=None)) == tool_runs_before + 1
@@ -5037,7 +5043,7 @@ def test_websocket_dispatcher_queues_other_session_without_false_running_record(
             assert second.receive_json()["type"] == "message_complete"
             completed = second.receive_json()
             assert completed["type"] == "agent_run_update"
-            assert completed["agent_run"]["status"] == "completed"
+            assert completed["agent_run"]["status"] == "completed_with_warnings"
 
         assert len(chat_database.list_agent_runs(second_session)) == 1
 
@@ -5260,19 +5266,18 @@ def test_websocket_v1_allows_only_one_active_writer_per_stream(client):
     stream_id = f"exclusive-stream-{uuid4()}"
     path = f"/ws/v1/sessions/{session_id}?stream_id={stream_id}&cursor=0"
 
-    with client.websocket_connect(path) as first:
-        with client.websocket_connect(path) as replacement:
-            with pytest.raises(WebSocketDisconnect) as replaced:
-                first.receive_json()
-            assert replaced.value.code == 4009
+    with client.websocket_connect(path) as first, client.websocket_connect(path) as replacement:
+        with pytest.raises(WebSocketDisconnect) as replaced:
+            first.receive_json()
+        assert replaced.value.code == 4009
 
-            replacement.send_json({
-                "type": "unsupported",
-                "request_id": "exclusive-writer",
-            })
-            event = replacement.receive_json()
-            assert event["sequence"] == 1
-            assert event["stream_id"] == stream_id
+        replacement.send_json({
+            "type": "unsupported",
+            "request_id": "exclusive-writer",
+        })
+        event = replacement.receive_json()
+        assert event["sequence"] == 1
+        assert event["stream_id"] == stream_id
 
 
 def test_websocket_v1_coalesces_delta_bursts_and_legacy_keeps_fragments(
@@ -5611,7 +5616,7 @@ def test_websocket_plan_edit_and_confirmation_resume_same_run(client, monkeypatc
             author_model="model-a",
             role="assistant",
             content="confirmed final",
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
         yield {
             "type": "message_complete",
@@ -5689,7 +5694,7 @@ def test_websocket_plan_edit_and_confirmation_resume_same_run(client, monkeypatc
         assert final_message["message"]["content"] == "confirmed final"
         completed = websocket.receive_json()
         assert completed["type"] == "agent_run_update"
-        assert completed["agent_run"]["status"] == "completed"
+        assert completed["agent_run"]["status"] == "completed_with_warnings"
         assert phases == ["draft", "execute"]
 
 
@@ -5721,7 +5726,7 @@ def test_websocket_second_message_becomes_persisted_steer(client, monkeypatch):
             author_model="slow-model",
             role="assistant",
             content="已按新方向完成",
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
         yield {"type": "message_complete", "message": message.model_dump(mode="json")}
 
@@ -5765,7 +5770,7 @@ def test_websocket_second_message_becomes_persisted_steer(client, monkeypatch):
                 saw_applied = event.get("model") == "slow-model"
             elif (
                 event.get("type") == "agent_run_update"
-                and event.get("agent_run", {}).get("status") == "completed"
+                and event.get("agent_run", {}).get("status") == "completed_with_warnings"
             ):
                 saw_completed = True
                 break
@@ -6205,6 +6210,15 @@ def test_comfyui_graphs_cover_local_image_and_video_pipelines():
     assert ltx["1"]["inputs"]["ckpt_name"].startswith("ltx-2.3")
     assert ltx["19"]["class_type"] == "SaveVideo"
 
+    h3 = service._minimax_h3_graph("city rooftop", None, 608, 352, 39, 8, 42)
+    assert h3["1"]["inputs"]["unet_name"].startswith("minimax_h3")
+    assert h3["2"]["inputs"]["type"] == "minimax"
+    assert h3["5"]["class_type"] == "MiniMaxH3ImageToVideo"
+    assert h3["14"]["class_type"] == "SaveVideo"
+    assert "first_frame" not in h3["5"]["inputs"]
+    h3_i2v = service._minimax_h3_graph("city rooftop", "start.png", 608, 352, 39, 8, 42)
+    assert h3_i2v["5"]["inputs"]["first_frame"] == ["15", 0]
+
     rewired = service._rewire_bypassed_nodes({"nodes": [
         {
             "id": 1, "type": "Bypassed", "mode": 4,
@@ -6300,6 +6314,77 @@ async def test_comfyui_generate_image_uses_bigasp_v2_sampling_defaults(monkeypat
     assert captured["metadata"]["parameters"]["cfg"] == 3.4
 
 
+def test_comfyui_resolve_installed_model_accepts_unique_prefixes():
+    from app.services.comfyui_service import (
+        WAN22_REMIX_HIGH_MODEL,
+        WAN22_REMIX_LOW_MODEL,
+        WAN_I2V_MODEL,
+        ComfyUIService,
+    )
+
+    qwen = "qwen_image_2512_fp8_e4m3fn.safetensors"
+    assert ComfyUIService._resolve_installed_model(
+        "qwen_image_2512_fp8",
+        [qwen, "RealVisXL_V5.0_Lightning_fp16.safetensors"],
+    ) == qwen
+    assert ComfyUIService._resolve_installed_model(
+        "Wan2.2_Remix_NSFW_i2v_14b_high_lighting_fp8_e4m3fn_v",
+        [WAN_I2V_MODEL, WAN22_REMIX_HIGH_MODEL],
+    ) == WAN22_REMIX_HIGH_MODEL
+    assert ComfyUIService._resolve_installed_model(
+        "Wan2.2_Remix",
+        [WAN_I2V_MODEL, WAN22_REMIX_HIGH_MODEL, WAN22_REMIX_LOW_MODEL],
+        group_of=lambda name: (
+            WAN22_REMIX_HIGH_MODEL
+            if "remix" in name.casefold()
+            else name
+        ),
+    ) == WAN22_REMIX_HIGH_MODEL
+    assert ComfyUIService._resolve_installed_model(
+        "realvis",
+        [
+            "RealVisXL_V5.0_Lightning_fp16.safetensors",
+            "realvisXL_V50.safetensors",
+        ],
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_comfyui_generate_image_resolves_truncated_qwen_name(monkeypatch):
+    from app.services.comfyui_service import ComfyUIService
+
+    service = ComfyUIService()
+    captured = {}
+    qwen = "qwen_image_2512_fp8_e4m3fn.safetensors"
+
+    async def fake_inventory(**_kwargs):
+        return {
+            "checkpoints": ["RealVisXL_V5.0_Lightning_fp16.safetensors"],
+            "diffusion_models": [qwen],
+            "loras": [],
+        }
+
+    async def fake_submit(graph, timeout, metadata):
+        captured["graph"] = graph
+        captured["metadata"] = metadata
+        return {"completed": True, "files": []}
+
+    monkeypatch.setattr(service, "inventory", fake_inventory)
+    monkeypatch.setattr(service, "_submit_and_wait", fake_submit)
+
+    result = await service.generate_image(
+        "中文招牌",
+        model="qwen_image_2512_fp8",
+        width=768,
+        height=768,
+    )
+
+    assert result["completed"] is True
+    assert captured["graph"]["2"]["inputs"]["type"] == "qwen_image"
+    assert captured["graph"]["1"]["inputs"]["unet_name"] == qwen
+    assert captured["metadata"]["parameters"]["model"] == qwen
+
+
 @pytest.mark.asyncio
 async def test_comfyui_status_keeps_workflow_inventory_compact(monkeypatch):
     from app.services.comfyui_service import ComfyUIService
@@ -6358,13 +6443,19 @@ async def test_comfyui_model_catalog_lists_supported_models_and_blocks_ltx_when_
                 "wan2.1_i2v_480p_14B_fp8_scaled.safetensors",
                 WAN22_REMIX_HIGH_MODEL,
                 WAN22_REMIX_LOW_MODEL,
+                "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
             ],
             "loras": [],
-            "vae": ["wan_2.1_vae.safetensors"],
+            "vae": [
+                "wan_2.1_vae.safetensors",
+                "minimax_h3_video_vae_fp16.safetensors",
+                "minimax_h3_audio_vae_fp32.safetensors",
+            ],
             "text_encoders": [
                 "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
                 WAN22_REMIX_TEXT_ENCODER,
                 "gemma-3-12b-it/model-00001-of-00005.safetensors",
+                "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
             ],
             "clip_vision": ["clip_vision_h.safetensors"],
             "upscalers": [],
@@ -6379,6 +6470,8 @@ async def test_comfyui_model_catalog_lists_supported_models_and_blocks_ltx_when_
                 "LTXVAudioVAELoader": True,
                 "LTXVConditioning": True,
                 "SaveVideo": True,
+                "MiniMaxH3ImageToVideo": True,
+                "VAEDecodeAudio": True,
             },
         }
 
@@ -6401,7 +6494,7 @@ async def test_comfyui_model_catalog_lists_supported_models_and_blocks_ltx_when_
         "qwen_image_2512_fp8_e4m3fn.safetensors",
     ]
     assert catalog["image_models"][0]["recommended"] is True
-    wan, ltx = catalog["video_pipelines"]
+    wan, ltx, h3 = catalog["video_pipelines"]
     assert wan["installed"] is True
     assert wan["available"] is True
     assert wan["requires_input_image"] is False
@@ -6415,6 +6508,10 @@ async def test_comfyui_model_catalog_lists_supported_models_and_blocks_ltx_when_
     assert ltx["available"] is False
     assert ltx["minimum_free_memory_bytes"] == LTX_MIN_FREE_MEMORY
     assert "停止本地大语言模型" in ltx["warning"]
+    assert h3["id"] == "minimax-h3"
+    assert h3["installed"] is True
+    assert h3["available"] is True
+    assert h3["models"][0]["name"].startswith("minimax_h3")
 
 
 @pytest.mark.asyncio
@@ -6576,6 +6673,132 @@ async def test_comfyui_wan22_requested_model_uses_two_stage_graph(monkeypatch):
     assert captured["graph"]["15"]["class_type"] == "SaveVideo"
     assert captured["metadata"]["parameters"]["model"] == WAN22_REMIX_HIGH_MODEL
     assert captured["metadata"]["parameters"]["input_image_source"] == "local-file"
+
+
+@pytest.mark.asyncio
+async def test_comfyui_generate_video_routes_minimax_h3_from_model_name(monkeypatch):
+    from app.services.comfyui_service import MINIMAX_H3_MODEL, ComfyUIService
+
+    service = ComfyUIService()
+    captured = {}
+
+    async def fake_ready():
+        return {"ready": True}
+
+    async def fake_catalog(**_kwargs):
+        return {
+            "video_pipelines": [
+                {
+                    "id": "wan-i2v",
+                    "installed": True,
+                    "available": True,
+                    "missing": [],
+                    "models": [{"name": "wan2.1_i2v_480p_14B_fp8_scaled.safetensors", "installed": True}],
+                },
+                {
+                    "id": "minimax-h3",
+                    "installed": True,
+                    "available": True,
+                    "missing": [],
+                    "models": [{"name": MINIMAX_H3_MODEL, "label": "MiniMax H3", "installed": True}],
+                },
+            ],
+        }
+
+    async def fake_submit(graph, timeout, metadata):
+        captured["graph"] = graph
+        captured["metadata"] = metadata
+        return {"completed": True, "files": []}
+
+    monkeypatch.setattr(service, "ensure_ready", fake_ready)
+    monkeypatch.setattr(service, "model_catalog", fake_catalog)
+    monkeypatch.setattr(service, "_submit_and_wait", fake_submit)
+
+    await service.generate_video(
+        "golden hour rooftop",
+        pipeline="wan-i2v",
+        model="minimax_h3",
+    )
+
+    assert captured["graph"]["5"]["class_type"] == "MiniMaxH3ImageToVideo"
+    assert captured["graph"]["1"]["inputs"]["unet_name"] == MINIMAX_H3_MODEL
+    assert captured["metadata"]["parameters"]["pipeline"] == "minimax-h3"
+    assert captured["metadata"]["parameters"]["model"] == MINIMAX_H3_MODEL
+    assert captured["metadata"]["parameters"]["input_image_source"] is None
+
+
+@pytest.mark.asyncio
+async def test_comfyui_generate_video_resolves_truncated_wan22_name(monkeypatch):
+    from app.services.comfyui_service import (
+        WAN22_REMIX_HIGH_MODEL,
+        WAN22_REMIX_LOW_MODEL,
+        WAN_I2V_MODEL,
+        ComfyUIError,
+        ComfyUIService,
+    )
+
+    service = ComfyUIService()
+    captured = {}
+
+    async def fake_ready():
+        return {"ready": True}
+
+    async def fake_catalog(**_kwargs):
+        return {
+            "video_pipelines": [{
+                "id": "wan-i2v",
+                "installed": True,
+                "available": True,
+                "missing": [],
+                "models": [
+                    {
+                        "name": WAN_I2V_MODEL,
+                        "installed": True,
+                        "missing": [],
+                        "recommended": False,
+                    },
+                    {
+                        "name": WAN22_REMIX_HIGH_MODEL,
+                        "installed": True,
+                        "missing": [],
+                        "recommended": True,
+                        "companion_models": [WAN22_REMIX_LOW_MODEL],
+                    },
+                ],
+            }],
+        }
+
+    async def fake_upload(path):
+        return "source.png"
+
+    async def fake_submit(graph, timeout, metadata):
+        captured["graph"] = graph
+        captured["metadata"] = metadata
+        return {"completed": True, "files": []}
+
+    monkeypatch.setattr(service, "ensure_ready", fake_ready)
+    monkeypatch.setattr(service, "model_catalog", fake_catalog)
+    monkeypatch.setattr(service, "_upload_image", fake_upload)
+    monkeypatch.setattr(service, "_submit_and_wait", fake_submit)
+
+    await service.generate_video(
+        "slow cinematic movement",
+        pipeline="wan-i2v",
+        model="Wan2.2_Remix_NSFW_i2v_14b_high_lighting_fp8_e4m3fn_v",
+        input_image="/safe/session/source.png",
+    )
+
+    assert captured["graph"]["1"]["inputs"]["unet_name"] == WAN22_REMIX_HIGH_MODEL
+    assert captured["graph"]["2"]["inputs"]["unet_name"] == WAN22_REMIX_LOW_MODEL
+    assert captured["metadata"]["parameters"]["model"] == WAN22_REMIX_HIGH_MODEL
+
+    with pytest.raises(ComfyUIError, match="Unsupported wan-i2v model: missing-model"):
+        await service.generate_video(
+            "slow cinematic movement",
+            pipeline="wan-i2v",
+            model="missing-model",
+            input_image="/safe/session/source.png",
+        )
 
 
 @pytest.mark.asyncio
@@ -7044,9 +7267,10 @@ async def test_comfyui_result_does_not_embed_video_as_an_image(monkeypatch):
 
 def test_protected_desktop_document_roundtrips_and_platform_capabilities(client, tmp_path, monkeypatch):
     from datetime import date
+
     from docx import Document
-    from openpyxl.cell.cell import MergedCell
     from openpyxl import Workbook, load_workbook
+    from openpyxl.cell.cell import MergedCell
     from pptx import Presentation
     from pptx.util import Inches
     from pypdf import PdfReader
@@ -7059,8 +7283,13 @@ def test_protected_desktop_document_roundtrips_and_platform_capabilities(client,
     assert client.get("/desktop/status").status_code == 403
     status = client.get("/desktop/status", headers=headers)
     assert status.status_code == 200
-    assert status.json()["mouse"] is (os.name == "nt")
-    assert status.json()["model_computer_use"] is (os.name == "nt")
+    from app.services.desktop_service import mouse_service
+
+    automation_available = mouse_service.available()
+    assert status.json()["mouse"] is automation_available
+    assert status.json()["model_computer_use"] is automation_available
+    assert status.json()["computer_protocol"] == "computer_20251124"
+    assert {"screenshot", "left_click", "zoom", "hold_key"} <= set(status.json()["computer_actions"])
     assert {"docx", "xlsx", "pptx", "pdf"} <= set(status.json()["document_formats"])
 
     markdown = tmp_path / "notes.md"
@@ -7212,7 +7441,7 @@ def test_protected_desktop_document_roundtrips_and_platform_capabilities(client,
     assert len(PdfReader(paged_pdf).pages) > 2
 
     current_mouse = client.post("/desktop/mouse", headers=headers, json={"action": "get"})
-    if os.name == "nt":
+    if automation_available:
         assert current_mouse.status_code == 200
         assert {"x", "y"} <= set(current_mouse.json()["position"])
         invalid_move = client.post("/desktop/mouse", headers=headers, json={
@@ -7221,7 +7450,7 @@ def test_protected_desktop_document_roundtrips_and_platform_capabilities(client,
         assert invalid_move.status_code == 400
     else:
         assert current_mouse.status_code == 400
-        assert "unavailable on Linux" in current_mouse.json()["detail"]
+        assert "unavailable" in current_mouse.json()["detail"].lower() or "X11" in current_mouse.json()["detail"]
 
     rejected_unc = client.post("/desktop/document/read", headers=headers, json={"path": r"\\server\share\file.docx"})
     assert rejected_unc.status_code == 400
@@ -7229,9 +7458,10 @@ def test_protected_desktop_document_roundtrips_and_platform_capabilities(client,
 
 @pytest.mark.asyncio
 async def test_computer_use_can_observe_windows_without_performing_actions():
-    if os.name != "nt":
-        pytest.skip("Windows-only Computer Use runtime")
     from app.services.computer_use_service import computer_use_service
+
+    if not computer_use_service.platform_available():
+        pytest.skip("No supported Windows or X11 desktop runtime")
 
     windows = await computer_use_service.list_windows()
     assert isinstance(windows["windows"], list)
@@ -7329,7 +7559,7 @@ def test_automation_api_crud_manual_run_and_review(client, monkeypatch):
         )
 
     monkeypatch.setattr(automation_service, "_executor", fake_background_executor)
-    first_run = datetime.now(timezone.utc) + timedelta(hours=2)
+    first_run = datetime.now(UTC) + timedelta(hours=2)
     payload = {
         "session_id": session_id,
         "name": "每小时只读摘要",
@@ -7414,7 +7644,7 @@ async def test_automation_scheduler_materializes_once_and_reclaims_expired_lease
     database = ChatDatabase(tmp_path / "automations.sqlite3")
     dispatcher = RunDispatcher(capacity=1)
     session_id = str(uuid4())
-    now = datetime.now(timezone.utc).replace(microsecond=0)
+    now = datetime.now(UTC).replace(microsecond=0)
     calls = []
 
     async def fake_executor(job):
@@ -7545,7 +7775,7 @@ async def test_background_run_rejects_unapproved_side_effect_before_execution(tm
         run_service.observe(run["id"], event)
     completed = run_service.finish(run["id"])
 
-    assert completed["status"] == "completed"
+    assert completed["status"] == "completed_with_warnings"
     assert len(tool_registry.list_runs(session_id=session_id, limit=None)) == tool_runs_before
     calls = database.list_agent_tool_calls(run["id"])
     assert len(calls) == 1

@@ -6,21 +6,20 @@ from pathlib import Path
 
 import pytest
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BACKEND_ROOT = PROJECT_ROOT / "backend"
 sys.path.insert(0, str(BACKEND_ROOT))
 
 
-from app.services.run_dispatcher import (  # noqa: E402
-    RunDispatchCancelled,
-    RunDispatcher,
-    RunQueueFull,
-    RunOwnershipConflict,
-)
 from app.models.schemas import ProviderConfig  # noqa: E402
 from app.services.run_admission import (  # noqa: E402
     admission_resources_for_action,
+)
+from app.services.run_dispatcher import (  # noqa: E402
+    RunDispatchCancelled,
+    RunDispatcher,
+    RunOwnershipConflict,
+    RunQueueFull,
 )
 
 

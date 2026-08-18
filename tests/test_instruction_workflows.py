@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
 import sys
 import tempfile
@@ -13,11 +12,11 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "backend"))
 
-os.environ["AETHERCHAT_DATA_DIR"] = tempfile.mkdtemp(prefix="aetherchat-workflows-")
+os.environ.setdefault("AETHERCHAT_DATA_DIR", tempfile.mkdtemp(prefix="aetherchat-workflows-"))
 
 from app.services.instruction_workflow_service import (  # noqa: E402
-    WorkflowCreate,
     InstructionWorkflowService,
+    WorkflowCreate,
 )
 from app.services.skills_rules_service import SkillCreate, SkillsRulesService  # noqa: E402
 

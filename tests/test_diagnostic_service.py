@@ -25,6 +25,7 @@ def _cleanup_test_data() -> None:
     shutil.rmtree(TEST_DATA_DIR, ignore_errors=True)
 
 
+from app.services.chat_database import CURRENT_SCHEMA_VERSION  # noqa: E402
 from app.services.diagnostic_service import DiagnosticService  # noqa: E402
 from app.services.structured_logging import (  # noqa: E402
     JsonLineFormatter,
@@ -38,7 +39,7 @@ class ReadyDatabase:
     def readiness_probe(self) -> dict[str, object]:
         return {
             "status": "ready",
-            "schema_version": 3,
+            "schema_version": CURRENT_SCHEMA_VERSION,
             "path": "/home/private/aetherchat.sqlite3",
         }
 
@@ -178,8 +179,8 @@ def test_diagnostic_bundle_uses_allowlists_and_aggregates_provider_resources(
     assert snapshot["schema"] == "aetherchat-diagnostics-v1"
     assert snapshot["database"] == {
         "status": "ready",
-        "schema_version": 3,
-        "expected_schema_version": 3,
+        "schema_version": CURRENT_SCHEMA_VERSION,
+        "expected_schema_version": CURRENT_SCHEMA_VERSION,
     }
     assert snapshot["runtime"]["run_dispatcher"]["resource_summary"] == {
         "provider_slots": 1,

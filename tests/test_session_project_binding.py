@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import os
 import sys
-import tempfile
 from pathlib import Path
 from uuid import uuid4
 
@@ -20,8 +18,8 @@ def db_and_gov(tmp_path, monkeypatch):
     data_dir.mkdir()
     monkeypatch.setenv("AETHERCHAT_DATA_DIR", str(data_dir))
     # Fresh modules against the temp data dir.
+    from app.services.chat_database import CURRENT_SCHEMA_VERSION, ChatDatabase
     from app.services.platform_governance import PlatformGovernanceService
-    from app.services.chat_database import ChatDatabase, CURRENT_SCHEMA_VERSION
 
     gov = PlatformGovernanceService()
     database = ChatDatabase(path=data_dir / "aetherchat.sqlite3")
@@ -81,8 +79,8 @@ def test_resolve_project_id_from_session(db_and_gov, monkeypatch):
 
 def test_project_policy_gate_via_session(db_and_gov, monkeypatch):
     database, gov = db_and_gov
-    from app.services.platform_governance import PolicyPatch, ProjectCreate
     import app.services.chat_database as chat_db_mod
+    from app.services.platform_governance import PolicyPatch, ProjectCreate
 
     monkeypatch.setattr(chat_db_mod, "chat_database", database)
 
@@ -104,7 +102,7 @@ def test_schema_migration_adds_project_id_column(tmp_path, monkeypatch):
     data_dir = tmp_path / "mig"
     data_dir.mkdir()
     monkeypatch.setenv("AETHERCHAT_DATA_DIR", str(data_dir))
-    from app.services.chat_database import ChatDatabase, CURRENT_SCHEMA_VERSION
+    from app.services.chat_database import CURRENT_SCHEMA_VERSION, ChatDatabase
 
     database = ChatDatabase(path=data_dir / "aetherchat.sqlite3")
     assert CURRENT_SCHEMA_VERSION >= 4
@@ -117,3 +115,42 @@ def test_schema_migration_adds_project_id_column(tmp_path, monkeypatch):
     assert version == CURRENT_SCHEMA_VERSION
     assert "project_id" in session_cols
     assert "project_id" in run_cols
+
+
+def test_backfill_binds_legacy_null_project_ids(tmp_path, monkeypatch):
+    data_dir = tmp_path / "backfill"
+    data_dir.mkdir()
+    monkeypatch.setenv("AETHERCHAT_DATA_DIR", str(data_dir))
+    from app.services.chat_database import ChatDatabase
+
+    database = ChatDatabase(path=data_dir / "aetherchat.sqlite3")
+    unbound_session = str(uuid4())
+    bound_session = str(uuid4())
+    database.create_session(unbound_session, "历史会话", "project", project_id=None)
+    database.create_session(bound_session, "已绑定", "project", project_id="keep-me")
+    with database._connect() as connection:
+        connection.execute(
+            "UPDATE sessions SET project_id = NULL WHERE id = ?",
+            (unbound_session,),
+        )
+        connection.execute(
+            """INSERT INTO agent_runs
+               (id, session_id, status, mode, project_id, input_json, targets_json, created_at, updated_at)
+               VALUES (?, ?, 'completed', 'project', NULL, '{}', '[]', '2026-08-13T00:00:00Z', '2026-08-13T00:00:00Z')""",
+            (str(uuid4()), unbound_session),
+        )
+        connection.commit()
+
+    result = database.backfill_unbound_projects("default")
+    assert result["sessions"] >= 1
+    rebound = database.get_session(unbound_session)
+    kept = database.get_session(bound_session)
+    assert rebound is not None and rebound["project_id"] == "default"
+    assert kept is not None and kept["project_id"] == "keep-me"
+    with database._connect() as connection:
+        run_ids = connection.execute(
+            "SELECT project_id FROM agent_runs WHERE session_id = ?",
+            (unbound_session,),
+        ).fetchall()
+    assert run_ids
+    assert all(row[0] == "default" for row in run_ids)

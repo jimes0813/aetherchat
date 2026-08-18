@@ -170,6 +170,18 @@ def test_run_telemetry_aggregates_fixed_evidence_without_private_values(
         "duration_ms": {"count": 3, "p50": 10000.0, "p95": 20000.0, "max": 20000.0},
         "retry_count": 1,
     }
+    assert snapshot["recovery"] == {
+        "target_success_rate": 0.95,
+        "eligible_runs": 1,
+        "attempted_runs": 1,
+        "successful_runs": 0,
+        "verified_successful_runs": 0,
+        "unsuccessful_runs": 1,
+        "pending_runs": 0,
+        "success_rate": 0.0,
+        "meets_target": False,
+        "sample_sufficient": False,
+    }
     assert snapshot["providers"] == {
         "turns": 2,
         "type_counts": {"local": 1, "openai_compat": 1},

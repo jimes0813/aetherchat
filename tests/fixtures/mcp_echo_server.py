@@ -1,6 +1,5 @@
 from mcp.server.fastmcp import FastMCP
 
-
 server = FastMCP("AetherChat Test MCP", json_response=True)
 
 

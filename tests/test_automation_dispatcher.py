@@ -8,7 +8,6 @@ from uuid import uuid4
 
 import pytest
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BACKEND_ROOT = PROJECT_ROOT / "backend"
 sys.path.insert(0, str(BACKEND_ROOT))

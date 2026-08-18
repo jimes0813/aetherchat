@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BACKEND_ROOT = PROJECT_ROOT / "backend"
@@ -24,7 +23,6 @@ from app.services.execution_verification_eval import (  # noqa: E402
     evaluate_declarations,
     load_declaration_cases,
 )
-
 
 FIXTURE_PATH = (
     PROJECT_ROOT / "tests" / "fixtures" / "execution_verification_cases.json"
