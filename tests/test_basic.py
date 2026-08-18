@@ -89,7 +89,8 @@ from mcp.shared.auth import OAuthClientInformationFull, OAuthToken  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
-def _clear_rate_limit_store():
+def _clear_rate_limit_store(monkeypatch):
+    monkeypatch.setattr(main_module, "redis_client", None)
     main_module.rate_limit_store.clear()
     yield
     main_module.rate_limit_store.clear()
@@ -116,6 +117,29 @@ def test_health_and_rate_limit_return_expected_status(client, monkeypatch):
     assert limited.json()["detail"] == "Rate limit exceeded"
     assert limited.json()["request_id"] == limited.headers["X-Request-ID"]
     assert int(limited.headers["Retry-After"]) >= 1
+
+
+def test_voice_routes_are_not_rate_limit_exempt(client, monkeypatch):
+    from app.services import rate_limit as rate_limit_module
+
+    monkeypatch.setattr(rate_limit_module, "VOICE_STATUS_LIMIT", 2)
+    assert client.get("/voice/status").status_code == 200
+    assert client.get("/voice/status").status_code == 200
+    limited = client.get("/voice/status")
+    assert limited.status_code == 429
+    assert limited.json()["detail"] == "Rate limit exceeded"
+
+
+def test_allow_unauthenticated_logs_startup_warning(monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setenv("AETHERCHAT_ALLOW_UNAUTHENTICATED", "1")
+    with caplog.at_level(logging.WARNING, logger="app.main"), TestClient(app):
+        pass
+    assert any(
+        "AETHERCHAT_ALLOW_UNAUTHENTICATED" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_http_errors_return_request_id_in_body_and_header(client):
@@ -4675,6 +4699,7 @@ async def test_agent_run_drops_turn_limit_tool_draft_from_chat(tmp_path, monkeyp
             yield {"delta": "", "usage": {"prompt_tokens": 2, "completion_tokens": 1}}
 
     monkeypatch.setattr(orchestrator_module, "MAX_MODEL_TURNS", 1)
+    monkeypatch.setattr("app.services.orchestrator.run.MAX_MODEL_TURNS", 1)
     provider = TurnLimitProvider()
     orchestrator = SessionOrchestrator(session_id)
     orchestrator.providers = {"turn-limit-model": provider}

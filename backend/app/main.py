@@ -2,7 +2,6 @@ import logging
 import os
 import re
 import time
-from collections import defaultdict
 from contextlib import asynccontextmanager
 
 import redis.asyncio as redis
@@ -40,8 +39,12 @@ from .services import tool_executor
 from .services.agent_run_service import agent_run_service
 from .services.automation_service import automation_service
 from .services.comfyui_runtime import comfyui_runtime
-from .services.local_auth import demo_token_response, require_api_access
+from .services.local_auth import allow_unauthenticated, demo_token_response, require_api_access
 from .services.local_model_runtime import local_model_runtime
+from .services.rate_limit import RATE_LIMIT as RATE_LIMIT
+from .services.rate_limit import RATE_LIMIT_EXEMPT_PATHS as RATE_LIMIT_EXEMPT_PATHS
+from .services.rate_limit import allow_request, is_exempt
+from .services.rate_limit import rate_limit_store as rate_limit_store
 from .services.readiness_service import readiness_service
 from .services.run_dispatcher import run_dispatcher
 from .services.structured_logging import configure_structured_logging
@@ -62,6 +65,11 @@ async def lifespan(app: FastAPI):
         await redis_client.ping()
     except Exception:
         redis_client = None
+    if allow_unauthenticated():
+        logger.warning(
+            "AETHERCHAT_ALLOW_UNAUTHENTICATED is enabled; API authentication is disabled. "
+            "Do not use this escape hatch on a network-accessible or production backend."
+        )
     tasks.redis_client = redis_client
     tool_executor.redis_client = redis_client
     agent_run_service.recover()
@@ -201,26 +209,23 @@ async def readiness(request: Request):
 async def login_for_token():
     return demo_token_response()
 
-# PR12: Simple rate limiting (per IP)
-rate_limit_store: defaultdict[str, list[float]] = defaultdict(list)
-RATE_LIMIT = 60  # requests per minute
-RATE_WINDOW = 60
-RATE_LIMIT_EXEMPT_PATHS = frozenset({"/health", "/health/ready"})
-RATE_LIMIT_EXEMPT_PREFIXES = ("/voice/",)
+# Re-exported so existing tests can still patch RATE_LIMIT / rate_limit_store.
+# /voice/* is no longer blanket-exempt: mutating voice routes use a tighter
+# per-path bucket, and Redis is preferred when the lifespan ping succeeds.
+
 
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
-    if (
-        request.url.path in RATE_LIMIT_EXEMPT_PATHS
-        or request.url.path.startswith(RATE_LIMIT_EXEMPT_PREFIXES)
-        or request.method == "OPTIONS"
-    ):
+    if is_exempt(request.url.path, request.method):
         return await call_next(request)
     ip = request.client.host if request.client else "unknown"
-    now = time.time()
-    rate_limit_store[ip] = [t for t in rate_limit_store[ip] if now - t < RATE_WINDOW]
-    if len(rate_limit_store[ip]) >= RATE_LIMIT:
-        retry_after = max(1, int(RATE_WINDOW - (now - rate_limit_store[ip][0])))
+    allowed, retry_after = await allow_request(
+        redis_client,
+        ip,
+        request.url.path,
+        default_limit=RATE_LIMIT,
+    )
+    if not allowed:
         return JSONResponse(
             status_code=429,
             content={
@@ -229,7 +234,6 @@ async def rate_limit_middleware(request: Request, call_next):
             },
             headers={"Retry-After": str(retry_after)},
         )
-    rate_limit_store[ip].append(now)
     return await call_next(request)
 
 

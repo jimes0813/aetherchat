@@ -37,7 +37,8 @@ from app.services.readiness_service import ReadinessService  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
-def _clear_rate_limit_store():
+def _clear_rate_limit_store(monkeypatch):
+    monkeypatch.setattr(main_module, "redis_client", None)
     main_module.rate_limit_store.clear()
     yield
     main_module.rate_limit_store.clear()
