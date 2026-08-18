@@ -1,143 +1,44 @@
+from __future__ import annotations
+
 import asyncio
 import json
-import os
-import re
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from time import monotonic
-from typing import Any
 from uuid import UUID, uuid4
 
-from ..models.schemas import ChatMessage, Message, ProviderConfig, ToolCall, ToolDefinition
-from ..providers.base import LLMProvider, get_provider
-from .agent_run_service import agent_run_service
-from .approval_service import approval_policy, approval_service
-from .chat_database import chat_database
-from .chat_references import resolve_chat_references
-from .computer_use_consent import conversation_computer_use_approval
-from .context_assembler import (
-    BROWSER_OPEN_TOOL_NAME,
-    ContextAssembler,
-    context_assembler,
-)
-from .context_builder import build_messages_for_provider, estimate_tokens
-from .git_workspace_service import (
+from ...models.schemas import ChatMessage, Message, ToolCall
+from ...providers.base import LLMProvider, get_provider
+from ..approval_service import approval_policy
+from ..chat_database import chat_database
+from ..chat_references import resolve_chat_references
+from ..computer_use_consent import conversation_computer_use_approval
+from ..context_builder import build_messages_for_provider, estimate_tokens
+from ..git_workspace_service import (
     WORKSPACE_TOOL_NAMES,
     GitWorkspaceError,
     git_workspace_service,
 )
-from .knowledge_service import KnowledgeError, knowledge_service
-from .mcp_registry import mcp_registry
-from .memory_service import memory_service
-from .model_registry import model_registry
-from .plugin_registry import plugin_registry
-from .skills_rules_service import skills_rules_service
-from .tool_loop import (
+from ..knowledge_service import KnowledgeError, knowledge_service
+from ..mcp_registry import mcp_registry
+from ..memory_service import memory_service
+from ..model_registry import model_registry
+from ..plugin_registry import plugin_registry
+from ..skills_rules_service import skills_rules_service
+from ..tool_loop import (
     COMFYUI_IMAGE_TOOL,
-    COMFYUI_STATUS_TOOL,
     COMFYUI_VIDEO_TOOL,
-    COMFYUI_WORKFLOW_TOOL,
     FILE_WRITE_TOOLS,
-    ToolLoop,
-    tool_loop,
 )
-from .tool_registry import ToolInvoke, tool_registry
+from ..tool_registry import ToolInvoke, tool_registry
+from ._constants import _COMPUTER_USE_LOCK, BROWSER_OPEN_TOOL, MAX_MODEL_TURNS, PSEUDO_TOOL_CALL_RE
 
-MAX_MODEL_TURNS = 32
-PSEUDO_TOOL_CALL_RE = re.compile(r"请求执行工具\s*[:：]\s*([A-Za-z0-9_]+)")
-BROWSER_OPEN_TOOL = BROWSER_OPEN_TOOL_NAME
-_COMPUTER_USE_LOCK = asyncio.Lock()
 
-# Simple Facilitator for loop detection and summaries (PR10 starter)
-class Facilitator:
-    def __init__(self, session_id: str):
-        self.session_id = session_id
-        self.mode = "project"
-        self.history: list[str] = []
-        self.loop_count = 0
-
-    def check_loop(self, content: str) -> bool:
-        self.history.append(content[:100])
-        if len(self.history) > 5:
-            self.history.pop(0)
-        # Simple repetition detection
-        if len(set(self.history[-3:])) == 1:
-            self.loop_count += 1
-            return self.loop_count >= 2
-        return False
-
-    def get_summary(self) -> str:
-        mode_note = f"当前模式: {self.mode if hasattr(self, 'mode') else 'project'}。"
-        return f"{mode_note} 当前进度摘要（Facilitator）: 已处理 {len(self.history)} 条消息。建议检查任务状态并推进合并提案（需2票或人类确认）。"
-
-    def inject(self, content: str) -> dict:
-        return {
-            "type": "facilitator_msg",
-            "content": content,
-            "ts": datetime.now(UTC).isoformat()
-        }
-
-DEFAULT_PROVIDERS = [
-    ProviderConfig(name="claude", type="anthropic", model="claude-3-5-sonnet", persona="Architect/Reviewer", participation_policy="always", api_key_ref="ANTHROPIC_API_KEY"),
-    ProviderConfig(name="deepseek", type="openai_compat", model="deepseek-chat", persona="Coder/Reasoner", participation_policy="always", api_key_ref="DEEPSEEK_API_KEY"),
-    ProviderConfig(name="grok", type="openai_compat", model="grok-2", persona="Creative", participation_policy="always", api_key_ref="XAI_API_KEY"),
-    ProviderConfig(name="qwen", type="openai_compat", model="qwen-plus", persona="Chinese/local + Critic", participation_policy="always", api_key_ref="QWEN_API_KEY"),
-    ProviderConfig(
-        name="kimi",
-        type="openai_compat",
-        model="kimi-k3",
-        base_url="https://api.moonshot.cn/v1",
-        persona="Researcher",
-        participation_policy="always",
-        api_key_ref="KIMI_API_KEY",
-    ),
-    ProviderConfig(name="gpt", type="openai_compat", model="gpt-4.1", persona="Implementer", participation_policy="always", api_key_ref="OPENAI_API_KEY"),
-]
-
-class SessionOrchestrator:
-    def __init__(
-        self,
-        session_id: str,
-        tenant_id: str = "demo",
-        mode: str = "casual",
-        desktop_action_handler: (
-            Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None
-        ) = None,
-        context_assembler_service: ContextAssembler | None = None,
-        tool_loop_service: ToolLoop | None = None,
-    ):
-        self.session_id = session_id
-        self.tenant_id = tenant_id
-        self.mode: str = mode  # casual | roundtable | project
-        self.providers: dict[str, LLMProvider] = {}
-        self.refresh_providers()
-        self.budget_remaining = 10.0
-        self.facilitator = Facilitator(session_id)
-        self.conversation_history: list[ChatMessage] = []
-        self._history_loaded = False
-        self._running_tasks: dict[str, asyncio.Task] = {}
-        self._interrupt_all = False
-        self._interrupted_models: set[str] = set()
-        self._budget_lock = asyncio.Lock()
-        self._budget_exhausted = False
-        self._roundtable_cursor = 0
-        self.run_service = agent_run_service
-        self._active_run_id: str | None = None
-        self._run_steers: list[dict] = []
-        self._plan_cancelled = False
-        self.desktop_action_handler = desktop_action_handler
-        self.context_assembler = context_assembler_service or context_assembler
-        self.tool_loop = tool_loop_service or tool_loop
-        self.project_id = self._resolve_project_id()
-
-    def _resolve_project_id(self) -> str | None:
-        try:
-            from .platform_governance import platform_governance
-
-            return platform_governance.resolve_project_id(session_id=self.session_id)
-        except Exception:
-            row = chat_database.get_session(self.session_id) or {}
-            return str(row.get("project_id") or "").strip() or None
+class RunMixin:
+    session_id: str
+    project_id: str | None
+    mode: str
+    _active_run_id: str | None
 
     def begin_agent_run(self, run_id: str, steers: list[dict] | None = None) -> None:
         self._active_run_id = str(run_id)
@@ -194,64 +95,6 @@ class SessionOrchestrator:
             if model not in applied:
                 return True
         return False
-
-    @staticmethod
-    def _requested_browser(content: str) -> str:
-        if re.search(r"(?:\bfirefox\b|\bfierfox\b|火狐)", content, re.IGNORECASE):
-            return "firefox"
-        return "default"
-
-    @staticmethod
-    def _browser_execution_receipt(payload: dict[str, Any]) -> dict[str, Any] | None:
-        plugin_envelope = payload.get("result")
-        navigation = (
-            plugin_envelope.get("result")
-            if isinstance(plugin_envelope, dict)
-            else None
-        )
-        receipt = (
-            navigation.get("execution_receipt")
-            if isinstance(navigation, dict)
-            else None
-        )
-        if (
-            isinstance(receipt, dict)
-            and receipt.get("success") is True
-            and receipt.get("verification") == "launcher_accepted"
-        ):
-            return receipt
-        return None
-
-    async def _complete_desktop_action(
-        self,
-        tool_name: str,
-        plugin_result: dict[str, Any],
-    ) -> dict[str, Any]:
-        if tool_name != BROWSER_OPEN_TOOL:
-            return plugin_result
-        result = plugin_result.get("result")
-        if not isinstance(result, dict) or result.get("kind") != "open_external":
-            raise RuntimeError("外部导航插件没有返回可执行的桌面动作")
-        if self.desktop_action_handler is None:
-            raise RuntimeError(
-                "外部导航未执行：当前没有活动的 AetherChat 桌面客户端可确认浏览器启动"
-            )
-        receipt = await self.desktop_action_handler({
-            "kind": "open_external",
-            "url": str(result.get("url") or ""),
-            "browser": str(result.get("browser") or "default"),
-        })
-        if receipt.get("success") is not True:
-            raise RuntimeError(
-                str(receipt.get("error") or "桌面客户端未确认外部导航")
-            )
-        return {
-            **plugin_result,
-            "result": {
-                **result,
-                "execution_receipt": receipt,
-            },
-        }
 
     async def stream_user_message(self, action: dict) -> AsyncIterator[dict]:
         self.refresh_providers()
@@ -351,7 +194,7 @@ class SessionOrchestrator:
                 created_at=datetime.now(UTC),
             )
             self.conversation_history.append(ChatMessage(role="user", content=content, images=attachment_images))
-            chat_database.save_message(user_message, mode=self.mode)
+            await chat_database.run_in_thread(chat_database.save_message, user_message, mode=self.mode)
             memory_service.refresh(self.session_id, user_content=content)
             yield {"type": "message_complete", "message": user_message.model_dump(mode="json")}
 
@@ -362,7 +205,7 @@ class SessionOrchestrator:
         queue: asyncio.Queue[dict] = asyncio.Queue()
         selected = [name for name in targets if self._should_participate(name, content, targets, explicit_targets)]
         if selected:
-            from .platform_governance import platform_governance
+            from ..platform_governance import platform_governance
 
             selected = platform_governance.filter_model_names(
                 selected,
@@ -1570,7 +1413,9 @@ class SessionOrchestrator:
                         self.conversation_history.append(
                             ChatMessage(role="assistant", content=final_content)
                         )
-                        chat_database.save_message(message, mode=self.mode)
+                        await chat_database.run_in_thread(
+                            chat_database.save_message, message, mode=self.mode
+                        )
                         memory_service.refresh(self.session_id)
                         await queue.put({
                             "type": "message_complete",
@@ -1618,7 +1463,9 @@ class SessionOrchestrator:
                         self.conversation_history.append(
                             ChatMessage(role="assistant", content=final_content)
                         )
-                        chat_database.save_message(message, mode=self.mode)
+                        await chat_database.run_in_thread(
+                            chat_database.save_message, message, mode=self.mode
+                        )
                         memory_service.refresh(self.session_id)
                         await queue.put({
                             "type": "message_complete",
@@ -2181,657 +2028,6 @@ class SessionOrchestrator:
                 "message": "计划未生成可确认的最终交付，请在运行面板检查失败步骤。",
             }
 
-    @staticmethod
-    def _plan_step_instruction(goal: dict, step: dict) -> str:
-        goal_text = json.dumps({
-            "objective": goal.get("objective"),
-            "success_criteria": goal.get("success_criteria") or [],
-            "constraints": goal.get("constraints") or [],
-            "deliverable": goal.get("deliverable"),
-        }, ensure_ascii=False, indent=2)
-        base = (
-            f"步骤：{step.get('title')}\n"
-            f"类型：{step.get('kind')}\n"
-            f"职责：{step.get('role')}\n"
-            f"说明：{step.get('description')}\n"
-            f"Goal Spec：\n{goal_text}\n"
-        )
-        if step.get("kind") == "worker":
-            return (
-                f"{base}\n"
-                "独立完成你的候选结果，不假设其他 Worker 会弥补遗漏。"
-                "只报告实际执行或验证过的事实；明确列出证据、风险与未验证项。"
-            )
-        if step.get("kind") == "verifier":
-            return (
-                f"{base}\n"
-                "核验后只输出一个 JSON 对象，不要使用 Markdown 代码围栏。格式："
-                '{"verdict":"pass|needs_revision|fail",'
-                '"summary":"核验摘要","evidence":["可核对证据"],'
-                '"issues":["矛盾、缺口或未验证项"]}。'
-                "若没有足够证据，不能返回 pass。"
-            )
-        if step.get("kind") == "synthesizer":
-            return (
-                f"{base}\n"
-                "生成唯一、可直接交付给用户的最终答案。不要展示内部 JSON、Plan Step "
-                "编号或模型讨论过程；吸收 Verifier 指出的问题，并明确仍无法验证的部分。"
-            )
-        return base
-
-    @staticmethod
-    def _public_plan_step(step: dict) -> dict:
-        return {**step, "output": None}
-
-    @staticmethod
-    def _plan_step_context(
-        base_context: list[ChatMessage],
-        goal: dict,
-        step: dict,
-        steps_by_key: dict[str, dict],
-        steers: list[dict],
-        reviews: list[dict],
-        workspace_evidence: list[dict] | None = None,
-    ) -> list[ChatMessage]:
-        messages = [message.model_copy(deep=True) for message in base_context]
-        if step.get("kind") == "worker" and int(step.get("attempt") or 0) > 1:
-            previous_output = step.get("output")
-            previous_content = (
-                str(previous_output.get("content") or "")
-                if isinstance(previous_output, dict)
-                else ""
-            )
-            latest_review = reviews[-1] if reviews else {}
-            issues = latest_review.get("issues")
-            issue_lines = [
-                str(issue)[:1000]
-                for issue in issues[:20]
-            ] if isinstance(issues, list) else []
-            messages.append(ChatMessage(
-                role="user",
-                content=(
-                    "【Verifier 触发的受控返工】\n"
-                    f"上一版候选：\n{previous_content[:40_000] or '[无可复用候选]'}\n\n"
-                    f"核验摘要：{str(latest_review.get('summary') or '需要修订')[:10_000]}\n"
-                    + (
-                        "待修问题：\n"
-                        + "\n".join(f"- {issue}" for issue in issue_lines)
-                        if issue_lines else "待修问题：核验未提供结构化问题，请重新检查成功条件。"
-                    )
-                    + "\n请针对问题生成新的完整候选，不要只描述修改过程。"
-                ),
-            ))
-        dependencies = [
-            steps_by_key[key]
-            for key in step.get("dependencies") or []
-            if key in steps_by_key
-        ]
-        if dependencies:
-            blocks: list[str] = []
-            remaining = 120_000
-            for dependency in dependencies:
-                output = dependency.get("output")
-                content = (
-                    str(output.get("content") or "")
-                    if isinstance(output, dict)
-                    else ""
-                )
-                content = content[:40_000]
-                block = (
-                    f"### {dependency.get('title')} "
-                    f"[{dependency.get('kind')} / {dependency.get('status')}]\n"
-                    f"模型：{dependency.get('assigned_model') or 'system'}\n"
-                    f"{content or '[无可用输出]'}"
-                )
-                if dependency.get("error"):
-                    block += f"\n错误：{dependency['error']}"
-                if len(block) > remaining:
-                    block = block[:remaining] + "\n...[依赖输出已截断]"
-                remaining = max(0, remaining - len(block))
-                blocks.append(block)
-                if remaining == 0:
-                    break
-            messages.append(ChatMessage(
-                role="user",
-                content=(
-                    "以下是已经持久化的上游步骤结果。只把其中可核对内容视为证据，"
-                    "失败或空输出不得推断为成功：\n\n"
-                    + "\n\n".join(blocks)
-                ),
-            ))
-        if (
-            workspace_evidence
-            and step.get("kind") in {"verifier", "synthesizer"}
-        ):
-            messages.append(ChatMessage(
-                role="user",
-                content=(
-                    "【不可由模型声明替代的 Git/测试证据】\n"
-                    "以下记录由 AetherChat 在独立 worktree 上直接采集。"
-                    "exit_code 非 0 不能视为通过；unverified 表示只有 diff、"
-                    "没有执行确定性核验命令：\n"
-                    + json.dumps(
-                        workspace_evidence,
-                        ensure_ascii=False,
-                        indent=2,
-                    )[:80_000]
-                ),
-            ))
-        steer_texts = [
-            str(item.get("content") or "").strip()
-            for item in steers
-            if str(item.get("content") or "").strip()
-        ]
-        if steer_texts:
-            messages.append(ChatMessage(
-                role="user",
-                content=(
-                    "【本 Run 最新转向记录】\n"
-                    + "\n".join(f"- {text}" for text in steer_texts[-10:])
-                    + "\n最终输出必须服从这些较新的指令。"
-                ),
-            ))
-        return messages
-
-    @staticmethod
-    def _parse_plan_review(content: str) -> dict:
-        normalized = str(content or "").strip()
-        candidate = normalized
-        fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", normalized, re.S)
-        if fenced:
-            candidate = fenced.group(1)
-        else:
-            start = normalized.find("{")
-            end = normalized.rfind("}")
-            if start >= 0 and end > start:
-                candidate = normalized[start:end + 1]
-        try:
-            parsed = json.loads(candidate)
-        except (json.JSONDecodeError, TypeError):
-            parsed = {}
-        if not isinstance(parsed, dict):
-            parsed = {}
-        verdict = str(parsed.get("verdict") or "unknown").lower()
-        if verdict not in {"pass", "needs_revision", "fail"}:
-            verdict = "unknown"
-        evidence = parsed.get("evidence")
-        issues = parsed.get("issues")
-        return {
-            "verdict": verdict,
-            "summary": str(parsed.get("summary") or normalized or "无核验摘要")[:20_000],
-            "evidence": evidence[:50] if isinstance(evidence, list) else [],
-            "issues": issues[:50] if isinstance(issues, list) else [],
-        }
-
-    async def _authorize_model_tool(
-        self,
-        queue: asyncio.Queue[dict],
-        model: str,
-        tool_name: str,
-        arguments: dict,
-    ) -> tuple[bool, str]:
-        policy = approval_policy(tool_name, arguments)
-        if policy is None:
-            return True, ""
-        safe_arguments = dict(
-            self.tool_loop.sanitize_arguments(tool_name, arguments)
-        )
-        for key in ("content", "api_key", "token", "password", "secret"):
-            if key in safe_arguments:
-                safe_arguments[key] = f"[已隐藏 {len(str(safe_arguments[key]))} 个字符]"
-        pending = approval_service.create(
-            session_id=self.session_id,
-            model=model,
-            tool_name=tool_name,
-            arguments=safe_arguments,
-            **policy,
-        )
-        if pending is None:
-            return True, ""
-        await queue.put({"type": "approval_required", "approval": pending.public()})
-        decision = await approval_service.wait(pending.id)
-        await queue.put({
-            "type": "approval_resolved",
-            "approval_id": pending.id,
-            "decision": decision,
-            "feedback": pending.feedback,
-        })
-        return decision in {"allow_once", "allow_session"}, pending.feedback
-
-    @staticmethod
-    def _comfyui_completion_content(generated_files: list[dict]) -> str:
-        if not generated_files:
-            return (
-                "ComfyUI 已完成生成，但没有返回可关联的输出文件。"
-                "请在协作日志中查看本次工具结果。"
-            )
-        lines = []
-        for item in generated_files[:8]:
-            name = str(item.get("name") or "generated-file").strip()
-            location = str(item.get("path") or item.get("url") or "").strip()
-            if location:
-                lines.append(f"- {name}：`{location}`")
-            else:
-                lines.append(f"- {name}")
-        return (
-            "ComfyUI 已完成生成。文件已附在本条消息中，可直接预览或打开。\n\n"
-            "文件位置：\n"
-            + "\n".join(lines)
-        )
-
-    @staticmethod
-    def _comfyui_intent_text(
-        content: str,
-        execution: dict | None = None,
-    ) -> str:
-        """Normalize ComfyUI intent while removing explicitly negated actions."""
-        execution = execution or {}
-        text = " ".join((
-            str(content or ""),
-            str(execution.get("instruction") or ""),
-        )).casefold()
-        text = re.sub(
-            r"(?:不要|请勿|无需|不需要|禁止|别)\s*(?:再\s*)?"
-            r"(?:重新生成|生成|绘制|制作|创作|渲染|画|运行|执行)"
-            r"[^,，。！？；;\n]*",
-            " ",
-            text,
-        )
-        text = re.sub(
-            r"(?:do\s+not|don't|dont|no\s+need\s+to|without)\s+"
-            r"(?:generate|regenerate|create|draw|render|make|run|execute)"
-            r"[^,，。！？；;\n]*",
-            " ",
-            text,
-        )
-        return text
-
-    @staticmethod
-    def _requested_comfyui_image_model(content: str) -> str | None:
-        """Extract a checkpoint explicitly named by the user, if present."""
-        text = str(content or "")
-        exact = re.search(
-            r"([a-z0-9_.-]+\.safetensors)",
-            text,
-            flags=re.IGNORECASE,
-        )
-        if exact:
-            return exact.group(1)
-        alias = re.search(
-            r"(?:使用|用)\s*([a-z0-9_.-]{3,})\s*模型",
-            text,
-            flags=re.IGNORECASE,
-        )
-        return alias.group(1) if alias else None
-
-    @staticmethod
-    def _requested_comfyui_video_model(content: str) -> str | None:
-        """Extract an explicitly named video model without trusting the LLM.
-
-        Video requests often contain the exact local ``.safetensors`` name.
-        Preserve that user choice in a hidden server-side argument just as the
-        image path does for image checkpoints.
-        """
-
-        matches: list[str] = re.findall(
-            r"([a-z0-9_.-]+\.safetensors)",
-            str(content or ""),
-            flags=re.IGNORECASE,
-        )
-        for value in matches:
-            lowered = value.casefold()
-            if any(
-                marker in lowered
-                for marker in ("wan", "ltx", "i2v", "t2v", "video", "minimax")
-            ):
-                return value
-        return matches[0] if matches else None
-
-    @staticmethod
-    def _required_comfyui_tools(
-        content: str,
-        execution: dict | None = None,
-    ) -> list[str]:
-        """Return the mandatory ComfyUI sequence for explicit generation requests.
-
-        Merely mentioning an existing image (for example “图片呢”) must not
-        silently start a new GPU job. Chinese requests may put the deliverable
-        before the verb ("图片生成") or name a checkpoint before describing the
-        action ("使用 xxx 模型……进行图片").
-        """
-
-        # A mandatory side effect must come from the user's own request. Plan
-        # step titles such as “生成单一最终交付” are orchestration language and
-        # must never be reinterpreted as a request to generate visual media.
-        text = SessionOrchestrator._comfyui_intent_text(content)
-        visual_target = (
-            r"(?:图片|图像|照片|摄影图|艺术照|肖像|插图|海报|封面|画面|"
-            r"视频|动画|影片|短片|图)"
-        )
-        chinese_creation = re.search(
-            rf"(?:重新生成|生成|绘制|制作|创作|渲染|画|出|做)"
-            rf"[^,，。！？；;\n]{{0,32}}{visual_target}",
-            text,
-        )
-        chinese_target_first_creation = re.search(
-            rf"{visual_target}\s*(?:重新)?生成"
-            rf"(?!\s*(?:的\s*)?(?:模型|能力|服务|资源|列表|清单|状态|数量|"
-            rf"有哪些|都有什么))",
-            text,
-        )
-        chinese_named_model_creation = re.search(
-            rf"(?:使用|用)[^,，。！？；;\n]{{0,48}}"
-            rf"(?:[a-z0-9_.-]+\.safetensors|[a-z0-9_.-]{{3,}}\s*模型)"
-            rf"[^,，。！？；;\n]{{0,96}}"
-            rf"(?:来\s*)?(?:进行|生成|制作|创作|渲染|出图|画)"
-            rf"[^,，。！？；;\n]{{0,48}}{visual_target}",
-            text,
-        )
-        english_creation = re.search(
-            r"(?:generate|regenerate|create|draw|render|make)"
-            r"[^,，。！？；;\n]{0,48}"
-            r"(?:image|picture|photo|photograph|illustration|poster|cover|"
-            r"video|movie|clip)",
-            text,
-        )
-        if not any((
-            chinese_creation,
-            chinese_target_first_creation,
-            chinese_named_model_creation,
-            english_creation,
-        )):
-            return []
-
-        if any(term in text for term in ("工作流", "workflow")) and any(
-            term in text for term in ("运行", "执行", "run", "execute")
-        ):
-            action_tool = COMFYUI_WORKFLOW_TOOL
-        elif any(term in text for term in ("视频", "动画", "video", "movie", "clip")):
-            action_tool = COMFYUI_VIDEO_TOOL
-        elif (
-            any(term in text for term in (
-                "图片", "图像", "生成图", "画图", "照片", "摄影", "艺术照", "肖像",
-                "插图", "海报", "封面", "画面", "image", "picture", "photo",
-                "photograph", "photography", "illustration", "poster", "cover",
-            ))
-            or re.search(
-                r"(?:生成|重新生成|画|绘制|制作|创作|渲染)(?:一|这|那)?(?:张)?图",
-                text,
-            )
-        ):
-            action_tool = COMFYUI_IMAGE_TOOL
-        else:
-            return []
-        return [action_tool]
-
-    @staticmethod
-    def _route_tools(
-        content: str,
-        definitions: list[ToolDefinition],
-        execution: dict | None = None,
-    ) -> list[ToolDefinition]:
-        """Keep model prompts small while preserving tools relevant to the request."""
-
-        execution = execution or {}
-        text = " ".join((
-            str(content or ""),
-            str(execution.get("instruction") or ""),
-        )).casefold()
-        selected: set[str] = set()
-
-        def contains(*terms: str) -> bool:
-            return any(term.casefold() in text for term in terms)
-
-        if execution.get("workspace_id"):
-            selected.update(WORKSPACE_TOOL_NAMES)
-        if execution.get("plan_step_id"):
-            # Planned workers and verifiers need a cheap, read-only view of the
-            # shared task board even when the user's wording does not literally
-            # contain “task”. Side-effecting tools are still filtered by policy.
-            selected.add("list_tasks")
-        if contains("任务", "task", "待办", "进度", "依赖", "认领", "拆分"):
-            selected.update({
-                "list_tasks", "create_task", "claim_task", "subdivide_task",
-                "get_progress_summary", "plugin__visualize__task_chart",
-            })
-        if contains(
-            "文件", "工件", "artifact", "文档", "代码", "报告", "表格",
-            "演示", "幻灯片", "pdf", "docx", "xlsx", "pptx", "csv",
-            "保存", "写入", "修改",
-        ):
-            selected.update({
-                "read_artifact", "write_artifact",
-                "plugin__pdf__inventory",
-                "plugin__documents__inventory",
-                "plugin__documents__export_to_local",
-                "plugin__presentations__inventory",
-                "plugin__spreadsheets__inventory",
-            })
-        if contains("命令", "终端", "shell", "运行测试", "执行测试", "run command"):
-            selected.add("run_command")
-        if contains("合并", "merge", "提案", "投票"):
-            selected.update({
-                "create_merge_proposal", "propose_merge", "vote_on_proposal",
-            })
-        if contains(
-            "comfyui", "comfy", "图片", "图像", "生成图", "画图",
-            "视频", "工作流", "seed", "提示词",
-        ):
-            required_comfyui = SessionOrchestrator._required_comfyui_tools(
-                content,
-                execution,
-            )
-            positive_comfyui_text = SessionOrchestrator._comfyui_intent_text(
-                content,
-            )
-            workflow_run = (
-                any(term in positive_comfyui_text for term in ("工作流", "workflow"))
-                and any(
-                    term in positive_comfyui_text
-                    for term in ("运行", "执行", "run", "execute")
-                )
-            )
-            if required_comfyui:
-                selected.update(required_comfyui)
-            elif workflow_run:
-                selected.add(COMFYUI_WORKFLOW_TOOL)
-            else:
-                # Resource questions and negated generation requests are
-                # read-only. Do not expose generation tools for the model to
-                # call accidentally.
-                selected.add(COMFYUI_STATUS_TOOL)
-            if contains("工作流", "workflow"):
-                selected.add("plugin__comfyui__workflow_schema")
-        if contains(
-            "电脑", "桌面", "窗口", "鼠标", "键盘", "点击", "粘贴",
-            "启动应用", "打开应用", "computer use", "截图",
-        ):
-            selected.update(
-                definition.name
-                for definition in definitions
-                if definition.name.startswith("plugin__desktop_control__")
-            )
-        if contains("网页", "浏览器", "链接", "url", "http://", "https://"):
-            selected.add("plugin__browser_links__open_url")
-        if contains("github", "仓库状态"):
-            selected.add("plugin__github_readonly__status")
-        if contains("诊断", "健康检查", "workspace health"):
-            selected.add("plugin__qa_diagnostics__workspace_health")
-        if contains("记住", "记忆", "角色名", "关键实体", "以后使用", "共享实体"):
-            selected.add("upsert_memory_entity")
-        if contains("摘要", "总结", "summarize"):
-            selected.add("summarize_cn")
-        if contains("所有工具", "全部工具", "工具清单", "插件清单"):
-            selected.update(definition.name for definition in definitions)
-        if contains("mcp", "model context protocol"):
-            selected.update(
-                definition.name
-                for definition in definitions
-                if definition.name.startswith("mcp__")
-            )
-        if contains(
-            "执行凭证", "运行证据", "真实操作", "操作记录", "工具调用记录",
-            "执行审计",
-        ):
-            selected.update(
-                definition.name
-                for definition in definitions
-                if definition.name.startswith("mcp__aetherchat_local_audit__")
-            )
-
-        return [
-            definition for definition in definitions
-            if definition.name in selected
-        ]
-
-    @staticmethod
-    def _context_limits(
-        provider: LLMProvider,
-        tools: list[ToolDefinition],
-    ) -> tuple[int, int, int]:
-        output_reserve = max(256, int(provider.config.max_tokens or 2048))
-        provider_limit = max(2048, int(provider.config.token_limit or 8192))
-        if provider.config.type != "local":
-            return provider_limit, output_reserve, 0
-        try:
-            active_limit = int(
-                os.getenv("AETHERCHAT_LOCAL_ACTIVE_CONTEXT_TOKENS", "8192")
-            )
-        except ValueError:
-            active_limit = 8192
-        try:
-            local_output = int(
-                os.getenv("AETHERCHAT_LOCAL_MAX_OUTPUT_TOKENS", "2048")
-            )
-        except ValueError:
-            local_output = 2048
-        tool_tokens = estimate_tokens(json.dumps(
-            [tool.model_dump(mode="json") for tool in tools],
-            ensure_ascii=False,
-            default=str,
-        )) if tools else 0
-        output_reserve = min(output_reserve, max(256, local_output))
-        message_limit = max(
-            3072,
-            min(provider_limit, max(4096, active_limit)) - tool_tokens,
-        )
-        return message_limit, output_reserve, tool_tokens
-
-    @staticmethod
-    def _history_message_limit(provider: LLMProvider) -> int | None:
-        if provider.config.type != "local":
-            return None
-        try:
-            configured = int(
-                os.getenv("AETHERCHAT_LOCAL_MAX_HISTORY_MESSAGES", "8")
-            )
-        except ValueError:
-            configured = 8
-        return max(4, min(64, configured))
-
-    @staticmethod
-    def _generated_files_from_tool_result(
-        tool_name: str,
-        value: object,
-    ) -> list[dict]:
-        return tool_loop.generated_files_from_result(tool_name, value)
-
-    def _available_tools(self) -> list[ToolDefinition]:
-        definitions = [
-            ToolDefinition(
-                name=tool["name"],
-                description=tool.get("description") or tool["name"],
-                parameters=tool.get("input_schema") or {"type": "object", "properties": {}},
-            )
-            for tool in tool_registry.list(self.session_id)
-            if tool.get("enabled", True)
-        ]
-        definitions.extend(plugin_registry.tool_definitions())
-        definitions.extend(mcp_registry.tool_definitions())
-        unique: dict[str, ToolDefinition] = {}
-        for definition in definitions:
-            unique[definition.name] = definition
-        return list(unique.values())
-
-    @staticmethod
-    def _sanitize_tool_result(value):
-        return tool_loop.sanitize_result(value)
-
-    def _save_provider_checkpoint(
-        self,
-        run_id: str,
-        model: str,
-        messages: list[ChatMessage],
-        *,
-        next_tool_round: int,
-        kind: str,
-        plan_step_id: str | None = None,
-    ) -> dict:
-        serialized_messages = []
-        for message in messages[-80:]:
-            payload = message.model_dump(mode="json")
-            payload["images"] = []
-            if len(payload.get("content") or "") > 50_000:
-                payload["content"] = (
-                    str(payload["content"])[:50_000]
-                    + "\n...[checkpoint content truncated]"
-                )
-            serialized_messages.append(payload)
-        return self.run_service.save_checkpoint(
-            run_id=run_id,
-            session_id=self.session_id,
-            model=model,
-            kind=kind,
-            plan_step_id=plan_step_id,
-            state={
-                "version": 1,
-                "next_tool_round": max(0, int(next_tool_round)),
-                "messages": serialized_messages,
-            },
-        )
-
-    @staticmethod
-    def _restore_checkpoint(checkpoint: dict | None) -> tuple[list[ChatMessage], int]:
-        if not isinstance(checkpoint, dict):
-            return [], 0
-        state = checkpoint.get("state")
-        if not isinstance(state, dict) or state.get("version") != 1:
-            return [], 0
-        restored: list[ChatMessage] = []
-        for payload in state.get("messages") or []:
-            try:
-                restored.append(ChatMessage.model_validate(payload))
-            except Exception:
-                return [], 0
-        if not restored:
-            return [], 0
-        try:
-            next_tool_round = max(0, int(state.get("next_tool_round", 0)))
-        except (TypeError, ValueError):
-            next_tool_round = 0
-        return restored, next_tool_round
-
-    @staticmethod
-    def _normalize_tool_calls(calls: Sequence[dict | ToolCall]) -> list[ToolCall]:
-        return tool_loop.normalize_tool_calls(calls)
-
-    @staticmethod
-    def _tool_argument_error(
-        tool_name: str,
-        arguments: dict[str, Any],
-        definition: ToolDefinition | None,
-    ) -> str | None:
-        return tool_loop.argument_error(
-            tool_name,
-            arguments,
-            definition,
-            validate_arguments=tool_registry.validate_arguments,
-        )
-
-    @staticmethod
-    def _sanitize_tool_arguments(tool_name: str, arguments: dict) -> dict:
-        return tool_loop.sanitize_arguments(tool_name, arguments)
-
     async def broadcast_user_message(self, action: dict):
         async for _ in self.stream_user_message(action):
             pass
@@ -2863,63 +2059,6 @@ class SessionOrchestrator:
         for name, task in list(self._running_tasks.items()):
             if name != exclude and not task.done():
                 task.cancel()
-
-    def _calculate_cost(self, provider: LLMProvider, usage: dict) -> float:
-        prompt_tokens = max(0, int(usage.get("prompt_tokens", 0) or 0))
-        completion_tokens = max(0, int(usage.get("completion_tokens", 0) or 0))
-        input_cost = prompt_tokens * max(0.0, provider.config.cost_per_1k_input) / 1000
-        output_cost = completion_tokens * max(0.0, provider.config.cost_per_1k_output) / 1000
-        return round(input_cost + output_cost, 6)
-
-    @staticmethod
-    def _provider_system_prompt(name: str, provider: LLMProvider) -> str:
-        agent_name = " ".join(str(name or "agent").split())[:120]
-        persona = " ".join(str(provider.config.persona or "").split())[:1200]
-        parts = [
-            "你是 AetherChat 多模型团队中的一个独立 Agent。",
-            f"你的稳定标识是：{agent_name}。",
-        ]
-        if persona:
-            parts.append(f"你的当前职责是：{persona}。请优先完成与该职责直接相关的工作。")
-        parts.append(
-            "只报告你实际完成或验证过的工作；不要声称其他 Agent 已经评审、执行或同意，"
-            "除非上下文中有对应的可核对结果。"
-        )
-        return "\n".join(parts)
-
-    def _parse_targets(self, content: str, default_targets: list[str]) -> list[str]:
-        """PR6: Parse @mentions for targeting"""
-        import re
-        mentions = re.findall(r'@(\w+)', content)
-        if not mentions:
-            if "all" in default_targets:
-                return list(self.providers.keys())
-            return default_targets
-        if "all" in mentions:
-            return list(self.providers.keys())
-        targets = [m for m in mentions if m in self.providers]
-        return targets or default_targets
-
-    def _should_participate(self, name: str, content: str, targets: list[str], explicit_targets: set[str] | None = None) -> bool:
-        """Respect participation_policy and mode"""
-        provider = self.providers.get(name)
-        if not provider:
-            return False
-        policy = provider.config.participation_policy
-        if name not in targets:
-            return False
-        if self.mode == "casual":
-            return True
-        if policy == "always":
-            return True
-        if policy == "mentioned":
-            return name in (explicit_targets or set()) or "@" + name in content or "all" in content.lower()
-        if policy == "project_autonomous" and self.mode == "project":
-            if name in (explicit_targets or set()):
-                return True
-            # In project mode, autonomous for task-related
-            return any(kw in content.lower() for kw in ["task", "claim", "write", "merge", "propose"])
-        return False
 
     def refresh_providers(self):
         self.providers = {
