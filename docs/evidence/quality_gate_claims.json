@@ -1,0 +1,12 @@
+{
+  "source_report": "docs/P0_P1_REMEDIATION_REPORT_2026-08-18.md",
+  "generated_at": "2026-08-18",
+  "mypy": {
+    "files": 97,
+    "issues": 0
+  },
+  "electron": {
+    "passed": 24,
+    "total": 24
+  }
+}

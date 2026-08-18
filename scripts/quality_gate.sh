@@ -34,16 +34,23 @@ fi
 bash "$ROOT/scripts/check_module_boundaries.sh"
 "$VENV_DIR/bin/ruff" check --config "$ROOT/backend/pyproject.toml" \
   "$ROOT/backend/app" "$ROOT/tests" "$ROOT/scripts"
-(cd "$ROOT/backend" && "$VENV_DIR/bin/mypy")
+mypy_output="$(cd "$ROOT/backend" && "$VENV_DIR/bin/mypy")"
+printf '%s\n' "$mypy_output"
 env PYTHONPATH="$ROOT" "$VENV_DIR/bin/pytest" -q "$ROOT/tests"
+
+electron_output="$(cd "$ROOT/frontend" && npm run test:electron)"
+printf '%s\n' "$electron_output"
 
 (
   cd "$ROOT/frontend"
   npm run check:i18n
-  npm run test:electron
   npm run test:unit
   npm run build
   npm run test:e2e
 )
+
+"$VENV_DIR/bin/python" "$ROOT/scripts/check_gate_claims.py" \
+  --mypy-output "$mypy_output" \
+  --electron-output "$electron_output"
 
 "$ROOT/scripts/check_diff_hygiene.sh"

@@ -31,4 +31,10 @@ check_max_lines frontend/src/components/PluginCenter.tsx 550
 check_max_lines frontend/src/components/RunPanel.tsx 1050
 check_max_lines frontend/src/components/SkillsRulesPanel.tsx 1000
 
+# Backend service modules have their own budget script so the two trees
+# can evolve independently. Failures here still fail this combined gate.
+if ! bash "$ROOT/scripts/check_backend_module_boundaries.sh"; then
+  failed=1
+fi
+
 exit "$failed"
