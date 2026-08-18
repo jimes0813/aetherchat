@@ -1,0 +1,103 @@
+{
+  "schema": "aetherchat-kpi-evidence-v1",
+  "generated_at": "2026-08-13T05:28:30Z",
+  "source": {
+    "commit": "6581a627b1234579f472de6b76a158ff02ecdb90",
+    "dirty": true
+  },
+  "kpis": [
+    {
+      "id": "error_green_rate",
+      "target": "错误绿色成功率 = 0",
+      "status": "pass",
+      "measurement": "100 条版本化执行声明离线评测",
+      "value": {
+        "total": 100,
+        "false_verified": 0,
+        "mismatches": 0
+      }
+    },
+    {
+      "id": "controlled_task_closure_rate",
+      "target": "1.0 RC 受控任务闭环完成率 ≥ 80%",
+      "status": "insufficient_evidence",
+      "measurement": "确定性组件契约代理；不等同于真实 provider 端到端闭环",
+      "value": {
+        "proxy_total": 60,
+        "proxy_matched": 60,
+        "proxy_categories": 20,
+        "operational_rc_sample": 0
+      }
+    },
+    {
+      "id": "first_task_p90_minutes",
+      "target": "新用户首次闭环 p90 ≤ 5 分钟",
+      "status": "insufficient_evidence",
+      "measurement": "需要新用户计时样本；自动 E2E 只证明路径可用",
+      "value": {
+        "human_samples": 0,
+        "p90_minutes": null
+      }
+    },
+    {
+      "id": "recovery_success_rate",
+      "target": "可恢复 Run 恢复成功率 ≥ 95%",
+      "status": "insufficient_evidence",
+      "measurement": "真实本地 Run telemetry；至少 20 个已决恢复样本才判定",
+      "value": {
+        "target_success_rate": 0.95,
+        "eligible_runs": 3,
+        "attempted_runs": 0,
+        "successful_runs": 0,
+        "verified_successful_runs": 0,
+        "unsuccessful_runs": 0,
+        "pending_runs": 0,
+        "success_rate": null,
+        "meets_target": null,
+        "sample_sufficient": false
+      }
+    },
+    {
+      "id": "diagnostic_localization_rate",
+      "target": "内测严重问题由诊断包定位率 ≥ 90%",
+      "status": "insufficient_evidence",
+      "measurement": "现有自动测试证明脱敏与 trace 完整性，尚无人工问题归因样本",
+      "value": {
+        "triaged_incidents": 0,
+        "localized_incidents": 0
+      }
+    },
+    {
+      "id": "public_release_gate",
+      "target": "签名、三平台、升级与供应链证据全部通过",
+      "status": "no_go",
+      "measurement": "release_evidence 硬门禁",
+      "value": {
+        "local_dev_ready": true,
+        "public_rc_ready": false,
+        "decision": "No-Go",
+        "public_missing": 5
+      }
+    },
+    {
+      "id": "knowledge_rag_quality",
+      "target": "离线知识检索 Hit@3 ≥ 0.85、MRR ≥ 0.75",
+      "status": "pass",
+      "measurement": "固定离线 RAG 问答集（补充 KPI）",
+      "value": {
+        "case_count": 15,
+        "positive_count": 13,
+        "negative_count": 2,
+        "corpus_count": 8,
+        "hit_rate_at_1": 1.0,
+        "hit_rate_at_3": 1.0,
+        "hit_rate_at_5": 1.0,
+        "recall_at_1": 0.9615,
+        "recall_at_3": 1.0,
+        "recall_at_5": 1.0,
+        "mrr": 1.0,
+        "negative_hit_rate_at_3": 0.0
+      }
+    }
+  ]
+}

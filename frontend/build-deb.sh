@@ -34,7 +34,11 @@ cp -a "$UNPACKED_DIR/." "$STAGING_DIR/opt/AetherChat/"
 # requires this exact mode in the installed package.
 chmod 4755 "$STAGING_DIR/opt/AetherChat/chrome-sandbox"
 
-install -d "$STAGING_DIR/usr/share/applications" "$STAGING_DIR/usr/share/icons/hicolor/scalable/apps"
+install -d \
+  "$STAGING_DIR/usr/bin" \
+  "$STAGING_DIR/usr/share/applications" \
+  "$STAGING_DIR/usr/share/icons/hicolor/scalable/apps"
+install -m 0755 "$SCRIPT_DIR/linux/aetherchat" "$STAGING_DIR/usr/bin/aetherchat"
 install -m 0644 "$SCRIPT_DIR/build/icon.svg" \
   "$STAGING_DIR/usr/share/icons/hicolor/scalable/apps/aetherchat.svg"
 
@@ -42,7 +46,7 @@ cat > "$STAGING_DIR/usr/share/applications/aetherchat.desktop" <<'EOF'
 [Desktop Entry]
 Name=AetherChat
 Comment=多模型协作桌面工作台
-Exec=/opt/AetherChat/aetherchat-frontend %U
+Exec=/usr/bin/aetherchat %U
 Icon=aetherchat
 Terminal=false
 Type=Application
@@ -55,7 +59,7 @@ StartupWMClass=aetherchat
 [Desktop Action QuickEntry]
 Name=Quick Entry
 Name[zh_CN]=快速输入
-Exec=/opt/AetherChat/aetherchat-frontend aetherchat://chat
+Exec=/usr/bin/aetherchat aetherchat://chat
 EOF
 chmod 0644 "$STAGING_DIR/usr/share/applications/aetherchat.desktop"
 

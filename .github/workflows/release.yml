@@ -131,6 +131,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -160,8 +162,15 @@ jobs:
 
       - name: Backend lint (ruff)
         if: matrix.target == 'linux-x64'
-        working-directory: backend
-        run: ruff check app
+        run: ruff check --config backend/pyproject.toml backend/app tests scripts
+      - name: Diff hygiene
+        if: matrix.target == 'linux-x64'
+        env:
+          AETHERCHAT_DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: scripts/check_diff_hygiene.sh
+      - name: Module boundary budgets
+        if: matrix.target == 'linux-x64'
+        run: bash scripts/check_module_boundaries.sh
       - name: Backend type check (mypy)
         if: matrix.target == 'linux-x64'
         working-directory: backend
@@ -177,6 +186,10 @@ jobs:
       - name: Electron supply-chain tests
         working-directory: frontend
         run: npm run test:electron
+      - name: Frontend i18n coverage
+        if: matrix.target == 'linux-x64'
+        working-directory: frontend
+        run: npm run check:i18n
       - name: Frontend unit and component tests
         working-directory: frontend
         run: npm run test:unit

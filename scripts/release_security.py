@@ -11,8 +11,8 @@ import os
 import platform
 import re
 import subprocess
-import sys
-from datetime import datetime, timezone
+from contextlib import suppress
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -235,10 +235,8 @@ def command_generate_keys(args: argparse.Namespace) -> None:
         pub_path = out / "AETHERCHAT_RELEASE_PUBLIC_KEY_B64.txt"
         priv_path.write_text(private_b64 + "\n", encoding="utf-8")
         pub_path.write_text(public_b64 + "\n", encoding="utf-8")
-        try:
+        with suppress(OSError):
             priv_path.chmod(0o600)
-        except OSError:
-            pass
         print(f"Wrote {priv_path} (mode 600 preferred)")
         print(f"Wrote {pub_path}")
         print("Configure GitHub Secrets with these values. Do NOT commit the private key.")
@@ -255,26 +253,38 @@ def command_generate_keys(args: argparse.Namespace) -> None:
 
 
 def parser() -> argparse.ArgumentParser:
-    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     root = argparse.ArgumentParser()
     commands = root.add_subparsers(dest="command", required=True)
     sbom = commands.add_parser("sbom")
-    sbom.add_argument("--npm-lock", required=True); sbom.add_argument("--requirements", required=True)
-    sbom.add_argument("--version", required=True); sbom.add_argument("--timestamp", default=now); sbom.add_argument("--output", required=True)
+    sbom.add_argument("--npm-lock", required=True)
+    sbom.add_argument("--requirements", required=True)
+    sbom.add_argument("--version", required=True)
+    sbom.add_argument("--timestamp", default=now)
+    sbom.add_argument("--output", required=True)
     sbom.set_defaults(run=command_sbom)
     metadata = commands.add_parser("metadata")
-    metadata.add_argument("--version", required=True); metadata.add_argument("--platform", required=True); metadata.add_argument("--arch", required=True)
-    metadata.add_argument("--timestamp", default=now); metadata.add_argument("--artifact", action="append", default=[]); metadata.add_argument("--output", required=True)
+    metadata.add_argument("--version", required=True)
+    metadata.add_argument("--platform", required=True)
+    metadata.add_argument("--arch", required=True)
+    metadata.add_argument("--timestamp", default=now)
+    metadata.add_argument("--artifact", action="append", default=[])
+    metadata.add_argument("--output", required=True)
     metadata.set_defaults(run=command_metadata)
     manifest = commands.add_parser("manifest")
-    manifest.add_argument("--version", required=True); manifest.add_argument("--timestamp", default=now)
-    manifest.add_argument("--release", action="append", required=True); manifest.add_argument("--output", required=True)
+    manifest.add_argument("--version", required=True)
+    manifest.add_argument("--timestamp", default=now)
+    manifest.add_argument("--release", action="append", required=True)
+    manifest.add_argument("--output", required=True)
     manifest.set_defaults(run=command_manifest)
     sign = commands.add_parser("sign")
-    sign.add_argument("--manifest", required=True); sign.add_argument("--key-env", default="AETHERCHAT_RELEASE_PRIVATE_KEY_B64"); sign.add_argument("--output", required=True)
+    sign.add_argument("--manifest", required=True)
+    sign.add_argument("--key-env", default="AETHERCHAT_RELEASE_PRIVATE_KEY_B64")
+    sign.add_argument("--output", required=True)
     sign.set_defaults(run=command_sign)
     verify = commands.add_parser("verify")
-    verify.add_argument("--envelope", required=True); verify.add_argument("--key-env", default="AETHERCHAT_RELEASE_PUBLIC_KEY_B64")
+    verify.add_argument("--envelope", required=True)
+    verify.add_argument("--key-env", default="AETHERCHAT_RELEASE_PUBLIC_KEY_B64")
     verify.set_defaults(run=command_verify)
     generate_keys = commands.add_parser(
         "generate-keys",

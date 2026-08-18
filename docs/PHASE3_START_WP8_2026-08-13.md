@@ -84,7 +84,15 @@
 | 插件 mock | `invoke_tool(..., project_id=)` 后测试 fakes 补 `**kwargs` |
 | 标签 | `v0.2.0-rc.4` 验证 Linux-first 全绿 |
 
-## 下一步建议（Batch 50+）
+## Batch 50（完整度）
+
+| 项 | 内容 |
+|---|---|
+| CI | `release_evidence` 对齐 Linux-first RC 契约；无本机 ARM64 包时跳过而非失败 |
+| 治理 | 启动时把未绑定会话/Run 回填到默认项目；已对真实库 17/139 生效 |
+| 前端 | App.tsx 拆出 desktop 类型、协作模式、生成文件 hook，744 行 |
+
+## 下一步建议（Batch 51+）
 
 1. 配置 Windows CSC 后切 full_rc / stable
 2. SSO / 团队空间（有客户需求时）

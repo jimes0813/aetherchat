@@ -1,0 +1,164 @@
+{
+  "schema": "aetherchat-release-evidence-v1",
+  "generated_at": "2026-08-13T05:28:30Z",
+  "version": "0.2.0",
+  "summary": {
+    "local_dev_total": 11,
+    "local_dev_pass": 11,
+    "local_dev_fail": 0,
+    "local_dev_missing": 0,
+    "local_dev_skipped": 0,
+    "public_rc_total": 5,
+    "public_rc_pass": 0,
+    "public_rc_missing": 5,
+    "public_rc_fail": 0,
+    "local_dev_ready": true,
+    "public_rc_ready": false,
+    "public_1_0_go_no_go": "No-Go",
+    "reason": "Local development evidence complete; public RC still requires signed multi-platform CI artifacts and remaining public checks."
+  },
+  "checks": [
+    {
+      "id": "artifact_appimage",
+      "title": "Linux ARM64 AppImage package present",
+      "status": "pass",
+      "tier": "local_dev",
+      "detail": "AetherChat-0.2.0-linux-arm64.AppImage size=204396343",
+      "evidence": [
+        "/home/jimes0813/AetherChat-linux/frontend/release/AetherChat-0.2.0-linux-arm64.AppImage"
+      ]
+    },
+    {
+      "id": "artifact_deb",
+      "title": "Linux ARM64 Deb package present",
+      "status": "pass",
+      "tier": "local_dev",
+      "detail": "AetherChat-0.2.0-linux-arm64.deb size=160053198",
+      "evidence": [
+        "/home/jimes0813/AetherChat-linux/frontend/release/AetherChat-0.2.0-linux-arm64.deb"
+      ]
+    },
+    {
+      "id": "build_metadata",
+      "title": "Build metadata exists and matches package hashes",
+      "status": "pass",
+      "tier": "local_dev",
+      "detail": "ok",
+      "evidence": [
+        "/home/jimes0813/AetherChat-linux/frontend/release/AetherChat-0.2.0-linux-arm64.build.json"
+      ]
+    },
+    {
+      "id": "sbom",
+      "title": "CycloneDX SBOM present with components",
+      "status": "pass",
+      "tier": "local_dev",
+      "detail": "components=571",
+      "evidence": [
+        "/home/jimes0813/AetherChat-linux/frontend/release/AetherChat-0.2.0-linux-arm64.cdx.json"
+      ]
+    },
+    {
+      "id": "deb_chrome_sandbox",
+      "title": "Deb archives chrome-sandbox as root setuid",
+      "status": "pass",
+      "tier": "local_dev",
+      "detail": "-rwsr-xr-x root/root     17000 2026-08-13 13:19 ./opt/AetherChat/chrome-sandbox",
+      "evidence": [
+        "-rwsr-xr-x root/root     17000 2026-08-13 13:19 ./opt/AetherChat/chrome-sandbox"
+      ]
+    },
+    {
+      "id": "ed25519_roundtrip",
+      "title": "Ed25519 manifest sign/verify/tamper-reject works offline",
+      "status": "pass",
+      "tier": "local_dev",
+      "detail": "valid verify ok; tamper rejected",
+      "evidence": []
+    },
+    {
+      "id": "workflow_preflight",
+      "title": "Release workflow fails fast without signing secrets",
+      "status": "pass",
+      "tier": "local_dev",
+      "detail": "preflight + Linux-first RC secrets wired",
+      "evidence": [
+        ".github/workflows/release.yml"
+      ]
+    },
+    {
+      "id": "workflow_matrix",
+      "title": "CI matrix declares Linux x64/ARM64 and Windows x64",
+      "status": "pass",
+      "tier": "local_dev",
+      "detail": "matrix targets present",
+      "evidence": [
+        ".github/workflows/release.yml"
+      ]
+    },
+    {
+      "id": "execution_declarations",
+      "title": "100 execution declarations with zero error-green",
+      "status": "pass",
+      "tier": "local_dev",
+      "detail": "total=100 matched=100 false_verified=0",
+      "evidence": []
+    },
+    {
+      "id": "agent_benchmarks",
+      "title": "20×3 agent benchmarks fully matched",
+      "status": "pass",
+      "tier": "local_dev",
+      "detail": "total=60 matched=60 categories=20",
+      "evidence": []
+    },
+    {
+      "id": "knowledge_rag_recall",
+      "title": "Offline knowledge RAG Recall@K / MRR gates",
+      "status": "pass",
+      "tier": "local_dev",
+      "detail": "hit@3=1.0 mrr=1.0 neg@3=0.0",
+      "evidence": []
+    },
+    {
+      "id": "signed_rc_secrets",
+      "title": "Production Ed25519 + Windows CSC secrets configured for tag release",
+      "status": "missing",
+      "tier": "public_rc",
+      "detail": "missing env: WINDOWS_CSC_LINK, WINDOWS_CSC_KEY_PASSWORD, AETHERCHAT_RELEASE_PRIVATE_KEY_B64, AETHERCHAT_RELEASE_PUBLIC_KEY_B64; configure GitHub secrets then re-run public_rc_preflight.py",
+      "evidence": []
+    },
+    {
+      "id": "ci_three_platforms_green",
+      "title": "Same candidate green on Linux x64, Linux ARM64, Windows x64 CI",
+      "status": "missing",
+      "tier": "public_rc",
+      "detail": "Requires GitHub Actions run on clean hosted runners",
+      "evidence": []
+    },
+    {
+      "id": "signed_update_manifest",
+      "title": "Published update-manifest.signed.json on GitHub Releases",
+      "status": "missing",
+      "tier": "public_rc",
+      "detail": "Created only by signed tag pipeline",
+      "evidence": []
+    },
+    {
+      "id": "windows_install_upgrade_uninstall",
+      "title": "Windows silent install / same-version upgrade / uninstall evidence",
+      "status": "missing",
+      "tier": "public_rc",
+      "detail": "Produced by windows-installer workflow on CI",
+      "evidence": []
+    },
+    {
+      "id": "opt_install_sandbox_runtime",
+      "title": "System /opt install launches without --no-sandbox and chrome-sandbox 4755",
+      "status": "missing",
+      "tier": "public_rc",
+      "detail": "Requires sudo dpkg install end verification",
+      "evidence": []
+    }
+  ]
+}

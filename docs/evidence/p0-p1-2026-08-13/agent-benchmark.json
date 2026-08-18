@@ -1,0 +1,104 @@
+{
+  "meta": {
+    "schema_version": 1,
+    "name": "agent_benchmark_suite",
+    "count": 60,
+    "min_categories": 20,
+    "min_per_category": 3,
+    "description": "Deterministic Agent domain benchmarks (20+ categories × 3). No paid providers or network.",
+    "path": "/home/jimes0813/AetherChat-linux/tests/fixtures/agent_benchmark_cases.json"
+  },
+  "summary": {
+    "total": 60,
+    "matched": 60,
+    "mismatches": 0,
+    "category_count": 20,
+    "min_per_category_ok": true,
+    "duration_ms": 672.431,
+    "pass": true
+  },
+  "category_summary": {
+    "execution_strategy_ok": {
+      "total": 3,
+      "matched": 3
+    },
+    "execution_strategy_compat": {
+      "total": 3,
+      "matched": 3
+    },
+    "execution_strategy_reject": {
+      "total": 3,
+      "matched": 3
+    },
+    "effect_not_applicable": {
+      "total": 3,
+      "matched": 3
+    },
+    "effect_failed": {
+      "total": 3,
+      "matched": 3
+    },
+    "effect_unverified": {
+      "total": 3,
+      "matched": 3
+    },
+    "effect_verified_browser": {
+      "total": 3,
+      "matched": 3
+    },
+    "effect_verified_artifact": {
+      "total": 3,
+      "matched": 3
+    },
+    "effect_verified_file": {
+      "total": 3,
+      "matched": 3
+    },
+    "effect_adversarial_browser": {
+      "total": 3,
+      "matched": 3
+    },
+    "run_create_direct": {
+      "total": 3,
+      "matched": 3
+    },
+    "run_create_planned": {
+      "total": 3,
+      "matched": 3
+    },
+    "run_create_legacy": {
+      "total": 3,
+      "matched": 3
+    },
+    "run_create_reject": {
+      "total": 3,
+      "matched": 3
+    },
+    "admission_provider_resource": {
+      "total": 3,
+      "matched": 3
+    },
+    "admission_resources_selection": {
+      "total": 3,
+      "matched": 3
+    },
+    "event_envelope_v1": {
+      "total": 3,
+      "matched": 3
+    },
+    "tool_lifecycle": {
+      "total": 3,
+      "matched": 3
+    },
+    "strategy_restore_persisted": {
+      "total": 3,
+      "matched": 3
+    },
+    "strategy_reject_inconsistent": {
+      "total": 3,
+      "matched": 3
+    }
+  },
+  "mismatched_ids": [],
+  "mismatch_details": []
+}

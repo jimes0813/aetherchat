@@ -1,0 +1,8 @@
+{
+  "agent-benchmark.json": "6a464ad822c44f2c49986f117ede51bb857db6fc46d516723244298afd4665e0",
+  "execution-verification.json": "2d3179fad56626b792b4c600380f7ebd9877becbc26688b816f1e3a6b31aa65f",
+  "knowledge-rag.json": "e6ec5e92a9bd70df759466ccef5bc7dd0ebe6982b0708010395219bd7bc122b4",
+  "kpi-evidence.json": "d604cec1aa24ba4ca0e0d43c386a406aee707c7f2feb47b141d2d85128e65a81",
+  "release-evidence.json": "21be768dabba92a01db76a789c49acdf04b3687ab4cbe40aada28c907b083c36",
+  "run-telemetry.json": "f2020a9ee40befc1a99539cecfad022e77232058f377e1b256a6069daf83baaa"
+}

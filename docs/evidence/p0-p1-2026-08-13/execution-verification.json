@@ -1,0 +1,66 @@
+{
+  "meta": {
+    "schema_version": 1,
+    "name": "execution_verification_declarations",
+    "count": 100,
+    "description": "Deterministic positive/negative/adversarial cases for ExecutionVerificationService. No paid providers.",
+    "error_green_definition": "actual_status == verified and expected_status != verified",
+    "path": "/home/jimes0813/AetherChat-linux/tests/fixtures/execution_verification_cases.json"
+  },
+  "summary": {
+    "total": 100,
+    "matched": 100,
+    "mismatches": 0,
+    "false_verified_error_green": 0,
+    "false_reject": 0,
+    "duration_ms": 0.446,
+    "pass": true
+  },
+  "status_matrix": {
+    "not_applicable": {
+      "not_applicable": 11
+    },
+    "failed": {
+      "failed": 11
+    },
+    "unverified": {
+      "unverified": 52
+    },
+    "verified": {
+      "verified": 26
+    }
+  },
+  "category_summary": {
+    "not_applicable": {
+      "total": 11,
+      "matched": 11
+    },
+    "failed": {
+      "total": 11,
+      "matched": 11
+    },
+    "unverified_bare": {
+      "total": 25,
+      "matched": 25
+    },
+    "browser_trusted": {
+      "total": 9,
+      "matched": 9
+    },
+    "browser_adversarial": {
+      "total": 13,
+      "matched": 13
+    },
+    "artifact_version": {
+      "total": 12,
+      "matched": 12
+    },
+    "file_digest": {
+      "total": 19,
+      "matched": 19
+    }
+  },
+  "mismatched_ids": [],
+  "false_verified_ids": [],
+  "false_reject_ids": []
+}

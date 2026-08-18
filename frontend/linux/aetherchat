@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly APP_DIR="/opt/AetherChat"
+readonly APP="$APP_DIR/aetherchat-frontend"
+readonly SANDBOX="$APP_DIR/chrome-sandbox"
+
+fail() {
+  printf 'AetherChat: %s\n' "$1" >&2
+  exit 1
+}
+
+[[ -x "$APP" ]] || fail "secure system installation is missing at $APP"
+[[ -f "$SANDBOX" ]] || fail "Chromium sandbox is missing at $SANDBOX"
+
+owner_uid="$(stat -c '%u' "$SANDBOX" 2>/dev/null)" || \
+  fail "cannot inspect Chromium sandbox owner"
+owner_gid="$(stat -c '%g' "$SANDBOX" 2>/dev/null)" || \
+  fail "cannot inspect Chromium sandbox group"
+mode="$(stat -c '%a' "$SANDBOX" 2>/dev/null)" || \
+  fail "cannot inspect Chromium sandbox permissions"
+
+if [[ "$owner_uid" != "0" || "$owner_gid" != "0" || "$mode" != "4755" ]]; then
+  fail "unsafe Chromium sandbox metadata (expected root:root 4755, got ${owner_uid}:${owner_gid} ${mode}); reinstall the Debian package"
+fi
+
+# A stale SOCKS proxy breaks backend HTTP clients. Local API traffic must never
+# leave the host, regardless of the user's proxy configuration.
+unset ALL_PROXY all_proxy || true
+export NO_PROXY="${NO_PROXY:+$NO_PROXY,}localhost,127.0.0.1,::1"
+export no_proxy="${no_proxy:+$no_proxy,}localhost,127.0.0.1,::1"
+
+exec "$APP" "$@"

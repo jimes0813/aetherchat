@@ -17,7 +17,7 @@ import os
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -38,7 +38,7 @@ release_security = _load_release_security()
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _sha256(path: Path) -> str:
@@ -121,6 +121,11 @@ def evaluate_release_evidence(
     if refresh_metadata and appimage.is_file() and deb.is_file():
         refresh_linux_arm64_metadata(version)
 
+    require_local_packages = os.environ.get(
+        "AETHERCHAT_REQUIRE_LOCAL_PACKAGES", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    packages_present = appimage.is_file() and deb.is_file()
+
     for path, label in ((appimage, "AppImage"), (deb, "Deb")):
         if path.is_file() and path.stat().st_size > 1_000_000:
             checks.append(
@@ -133,7 +138,7 @@ def evaluate_release_evidence(
                     evidence=[str(path)],
                 )
             )
-        else:
+        elif require_local_packages:
             checks.append(
                 _check(
                     f"artifact_{label.lower()}",
@@ -143,9 +148,29 @@ def evaluate_release_evidence(
                     detail=f"missing or too small: {path}",
                 )
             )
+        else:
+            checks.append(
+                _check(
+                    f"artifact_{label.lower()}",
+                    f"Linux ARM64 {label} package present",
+                    status="skipped",
+                    tier="local_dev",
+                    detail=f"skipped on hosted CI without local packages: {path.name}",
+                )
+            )
 
     meta = _load_json(meta_path)
-    if not meta:
+    if not meta and not packages_present and not require_local_packages:
+        checks.append(
+            _check(
+                "build_metadata",
+                "Build metadata exists and matches package hashes",
+                status="skipped",
+                tier="local_dev",
+                detail="skipped: linux-arm64 packages not present on this runner",
+            )
+        )
+    elif not meta:
         checks.append(
             _check(
                 "build_metadata",
@@ -198,6 +223,16 @@ def evaluate_release_evidence(
                 evidence=[str(cdx_path)],
             )
         )
+    elif not packages_present and not require_local_packages:
+        checks.append(
+            _check(
+                "sbom",
+                "CycloneDX SBOM present with components",
+                status="skipped",
+                tier="local_dev",
+                detail="skipped: linux-arm64 SBOM not required on hosted CI",
+            )
+        )
     else:
         checks.append(
             _check(
@@ -243,9 +278,9 @@ def evaluate_release_evidence(
             _check(
                 "deb_chrome_sandbox",
                 "Deb archives chrome-sandbox as root setuid",
-                status="missing",
+                status="missing" if require_local_packages else "skipped",
                 tier="local_dev",
-                detail="deb missing",
+                detail="deb missing" if require_local_packages else "skipped: Deb not present on this runner",
             )
         )
 
@@ -335,11 +370,18 @@ def evaluate_release_evidence(
         "AETHERCHAT_RELEASE_PRIVATE_KEY_B64",
         "AETHERCHAT_RELEASE_PUBLIC_KEY_B64",
     ]
+    # Linux-first RC (Batch 48+) fail-fasts on missing Ed25519; stable tags
+    # still require Authenticode. Accept either contract string.
     workflow_ok = (
         "release-preflight:" in workflow
         and "needs: release-preflight" in workflow
         and all(name in workflow for name in secrets)
-        and "Signed release is blocked; missing secret(s)" in workflow
+        and (
+            "Signed release is blocked; missing secret(s)" in workflow
+            or "Signed release is blocked; missing Ed25519 secret(s)" in workflow
+        )
+        and "linux_rc" in workflow
+        and "include_windows" in workflow
     )
     checks.append(
         _check(
@@ -347,7 +389,7 @@ def evaluate_release_evidence(
             "Release workflow fails fast without signing secrets",
             status="pass" if workflow_ok else "fail",
             tier="local_dev",
-            detail="preflight + four secrets wired" if workflow_ok else "workflow contract incomplete",
+            detail="preflight + Linux-first RC secrets wired" if workflow_ok else "workflow contract incomplete",
             evidence=[".github/workflows/release.yml"],
         )
     )
@@ -549,9 +591,12 @@ def evaluate_release_evidence(
     local_pass = sum(1 for c in local if c["status"] == "pass")
     local_fail = sum(1 for c in local if c["status"] == "fail")
     local_missing = sum(1 for c in local if c["status"] == "missing")
+    local_skipped = sum(1 for c in local if c["status"] == "skipped")
     public_pass = sum(1 for c in public if c["status"] == "pass")
     public_missing = sum(1 for c in public if c["status"] == "missing")
     public_fail = sum(1 for c in public if c["status"] == "fail")
+    # Hosted CI may skip local ARM64 packages; skipped checks do not block
+    # local_dev_ready. Fail/missing portable gates still do.
     local_ready = local_fail == 0 and local_missing == 0
     # Public RC is only ready when every public item is green; that still needs
     # remote CI. Secrets may pass early once configured in the operator env.
@@ -566,6 +611,7 @@ def evaluate_release_evidence(
             "local_dev_pass": local_pass,
             "local_dev_fail": local_fail,
             "local_dev_missing": local_missing,
+            "local_dev_skipped": local_skipped,
             "public_rc_total": len(public),
             "public_rc_pass": public_pass,
             "public_rc_missing": public_missing,

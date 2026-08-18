@@ -1,0 +1,439 @@
+{
+  "meta": {
+    "schema_version": 1,
+    "name": "knowledge_rag_recall_v1",
+    "description": "Fixed offline corpus + Q&A for hybrid FTS/hash-vector Recall@K gates. No paid embeddings or network.",
+    "path": "/home/jimes0813/AetherChat-linux/tests/fixtures/knowledge_rag_cases.json",
+    "k_values": [
+      1,
+      3,
+      5
+    ]
+  },
+  "summary": {
+    "case_count": 15,
+    "positive_count": 13,
+    "negative_count": 2,
+    "corpus_count": 8,
+    "hit_rate_at_1": 1.0,
+    "hit_rate_at_3": 1.0,
+    "hit_rate_at_5": 1.0,
+    "recall_at_1": 0.9615,
+    "recall_at_3": 1.0,
+    "recall_at_5": 1.0,
+    "mrr": 1.0,
+    "negative_hit_rate_at_3": 0.0
+  },
+  "gates": {
+    "min_hit_rate_at_1": 0.7,
+    "min_hit_rate_at_3": 0.85,
+    "min_hit_rate_at_5": 0.9,
+    "min_mrr": 0.75,
+    "max_negative_hit_rate_at_3": 0.25
+  },
+  "gate_results": {
+    "min_hit_rate_at_1": true,
+    "min_hit_rate_at_3": true,
+    "min_hit_rate_at_5": true,
+    "min_mrr": true,
+    "max_negative_hit_rate_at_3": true
+  },
+  "passed": true,
+  "elapsed_ms": 61.75,
+  "cases": [
+    {
+      "id": "pos-auth-reset",
+      "category": "auth",
+      "polarity": "positive",
+      "query": "怎么重置密码？链接多久有效？",
+      "hit_at": {
+        "@1": true,
+        "@3": true,
+        "@5": true
+      },
+      "recall_at": {
+        "@1": 1.0,
+        "@3": 1.0,
+        "@5": 1.0
+      },
+      "first_relevant_rank": 1,
+      "mrr": 1.0,
+      "top_citations": [
+        "auth.md · 全文",
+        "rag-design.md · 全文"
+      ],
+      "strong_hit_count": 0,
+      "ok": true,
+      "notes": []
+    },
+    {
+      "id": "pos-billing-refund",
+      "category": "billing",
+      "polarity": "positive",
+      "query": "退款申请期限是几天？",
+      "hit_at": {
+        "@1": true,
+        "@3": true,
+        "@5": true
+      },
+      "recall_at": {
+        "@1": 1.0,
+        "@3": 1.0,
+        "@5": 1.0
+      },
+      "first_relevant_rank": 1,
+      "mrr": 1.0,
+      "top_citations": [
+        "billing.md · 全文",
+        "workflows.md · 全文"
+      ],
+      "strong_hit_count": 0,
+      "ok": true,
+      "notes": []
+    },
+    {
+      "id": "pos-sandbox-network",
+      "category": "security",
+      "polarity": "positive",
+      "query": "沙箱里的命令有没有网络？",
+      "hit_at": {
+        "@1": true,
+        "@3": true,
+        "@5": true
+      },
+      "recall_at": {
+        "@1": 1.0,
+        "@3": 1.0,
+        "@5": 1.0
+      },
+      "first_relevant_rank": 1,
+      "mrr": 1.0,
+      "top_citations": [
+        "sandbox.md · 全文",
+        "approvals.md · 全文"
+      ],
+      "strong_hit_count": 0,
+      "ok": true,
+      "notes": []
+    },
+    {
+      "id": "pos-rag-offline",
+      "category": "rag",
+      "polarity": "positive",
+      "query": "本地知识库会把文档上传到外部 embedding 吗？",
+      "hit_at": {
+        "@1": true,
+        "@3": true,
+        "@5": true
+      },
+      "recall_at": {
+        "@1": 1.0,
+        "@3": 1.0,
+        "@5": 1.0
+      },
+      "first_relevant_rank": 1,
+      "mrr": 1.0,
+      "top_citations": [
+        "rag-design.md · 全文",
+        "approvals.md · 全文",
+        "deploy.md · 全文",
+        "billing.md · 全文"
+      ],
+      "strong_hit_count": 1,
+      "ok": true,
+      "notes": []
+    },
+    {
+      "id": "pos-rag-citation",
+      "category": "rag",
+      "polarity": "positive",
+      "query": "引用格式是什么样的？",
+      "hit_at": {
+        "@1": true,
+        "@3": true,
+        "@5": true
+      },
+      "recall_at": {
+        "@1": 1.0,
+        "@3": 1.0,
+        "@5": 1.0
+      },
+      "first_relevant_rank": 1,
+      "mrr": 1.0,
+      "top_citations": [
+        "rag-design.md · 全文",
+        "models.md · 全文"
+      ],
+      "strong_hit_count": 0,
+      "ok": true,
+      "notes": []
+    },
+    {
+      "id": "pos-deploy-backup",
+      "category": "ops",
+      "polarity": "positive",
+      "query": "上线前能不能跳过数据库备份？",
+      "hit_at": {
+        "@1": true,
+        "@3": true,
+        "@5": true
+      },
+      "recall_at": {
+        "@1": 1.0,
+        "@3": 1.0,
+        "@5": 1.0
+      },
+      "first_relevant_rank": 1,
+      "mrr": 1.0,
+      "top_citations": [
+        "deploy.md · 全文",
+        "rag-design.md · 全文"
+      ],
+      "strong_hit_count": 0,
+      "ok": true,
+      "notes": []
+    },
+    {
+      "id": "pos-model-baseurl",
+      "category": "models",
+      "polarity": "positive",
+      "query": "llama.cpp 的 Base URL 应该怎么写？",
+      "hit_at": {
+        "@1": true,
+        "@3": true,
+        "@5": true
+      },
+      "recall_at": {
+        "@1": 1.0,
+        "@3": 1.0,
+        "@5": 1.0
+      },
+      "first_relevant_rank": 1,
+      "mrr": 1.0,
+      "top_citations": [
+        "models.md · 全文",
+        "billing.md · 全文",
+        "workflows.md · 全文"
+      ],
+      "strong_hit_count": 1,
+      "ok": true,
+      "notes": []
+    },
+    {
+      "id": "pos-approval-session",
+      "category": "security",
+      "polarity": "positive",
+      "query": "会话级授权重启后端还在吗？",
+      "hit_at": {
+        "@1": true,
+        "@3": true,
+        "@5": true
+      },
+      "recall_at": {
+        "@1": 1.0,
+        "@3": 1.0,
+        "@5": 1.0
+      },
+      "first_relevant_rank": 1,
+      "mrr": 1.0,
+      "top_citations": [
+        "approvals.md · 全文",
+        "billing.md · 全文",
+        "auth.md · 全文",
+        "rag-design.md · 全文",
+        "sandbox.md · 全文"
+      ],
+      "strong_hit_count": 0,
+      "ok": true,
+      "notes": []
+    },
+    {
+      "id": "pos-workflow-dryrun",
+      "category": "workflow",
+      "polarity": "positive",
+      "query": "工作流 dry_run 会不会入队后台任务？",
+      "hit_at": {
+        "@1": true,
+        "@3": true,
+        "@5": true
+      },
+      "recall_at": {
+        "@1": 1.0,
+        "@3": 1.0,
+        "@5": 1.0
+      },
+      "first_relevant_rank": 1,
+      "mrr": 1.0,
+      "top_citations": [
+        "workflows.md · 全文",
+        "sandbox.md · 全文",
+        "rag-design.md · 全文",
+        "approvals.md · 全文"
+      ],
+      "strong_hit_count": 1,
+      "ok": true,
+      "notes": []
+    },
+    {
+      "id": "pos-billing-invoice",
+      "category": "billing",
+      "polarity": "positive",
+      "query": "发票哪天生成？",
+      "hit_at": {
+        "@1": true,
+        "@3": true,
+        "@5": true
+      },
+      "recall_at": {
+        "@1": 1.0,
+        "@3": 1.0,
+        "@5": 1.0
+      },
+      "first_relevant_rank": 1,
+      "mrr": 1.0,
+      "top_citations": [
+        "billing.md · 全文",
+        "auth.md · 全文",
+        "rag-design.md · 全文",
+        "deploy.md · 全文",
+        "workflows.md · 全文"
+      ],
+      "strong_hit_count": 0,
+      "ok": true,
+      "notes": []
+    },
+    {
+      "id": "pos-multi-security",
+      "category": "security",
+      "polarity": "positive",
+      "query": "命令执行和本机写盘要不要授权？",
+      "hit_at": {
+        "@1": true,
+        "@3": true,
+        "@5": true
+      },
+      "recall_at": {
+        "@1": 0.5,
+        "@3": 1.0,
+        "@5": 1.0
+      },
+      "first_relevant_rank": 1,
+      "mrr": 1.0,
+      "top_citations": [
+        "approvals.md · 全文",
+        "rag-design.md · 全文",
+        "sandbox.md · 全文",
+        "billing.md · 全文",
+        "auth.md · 全文"
+      ],
+      "strong_hit_count": 0,
+      "ok": true,
+      "notes": []
+    },
+    {
+      "id": "neg-quantum",
+      "category": "negative",
+      "polarity": "negative",
+      "query": "量子霍尔效应的低温实验步骤是什么？",
+      "hit_at": {
+        "@1": true,
+        "@3": true,
+        "@5": true
+      },
+      "recall_at": {
+        "@1": 1.0,
+        "@3": 1.0,
+        "@5": 1.0
+      },
+      "first_relevant_rank": null,
+      "mrr": 0.0,
+      "top_citations": [
+        "billing.md · 全文",
+        "rag-design.md · 全文"
+      ],
+      "strong_hit_count": 0,
+      "ok": true,
+      "notes": []
+    },
+    {
+      "id": "neg-cooking",
+      "category": "negative",
+      "polarity": "negative",
+      "query": "红烧肉需要焯水几次？",
+      "hit_at": {
+        "@1": true,
+        "@3": true,
+        "@5": true
+      },
+      "recall_at": {
+        "@1": 1.0,
+        "@3": 1.0,
+        "@5": 1.0
+      },
+      "first_relevant_rank": null,
+      "mrr": 0.0,
+      "top_citations": [
+        "auth.md · 全文",
+        "models.md · 全文",
+        "rag-design.md · 全文",
+        "approvals.md · 全文"
+      ],
+      "strong_hit_count": 0,
+      "ok": true,
+      "notes": []
+    },
+    {
+      "id": "pos-deploy-pytest",
+      "category": "ops",
+      "polarity": "positive",
+      "query": "部署前必须跑什么测试？",
+      "hit_at": {
+        "@1": true,
+        "@3": true,
+        "@5": true
+      },
+      "recall_at": {
+        "@1": 1.0,
+        "@3": 1.0,
+        "@5": 1.0
+      },
+      "first_relevant_rank": 1,
+      "mrr": 1.0,
+      "top_citations": [
+        "deploy.md · 全文",
+        "models.md · 全文",
+        "sandbox.md · 全文",
+        "approvals.md · 全文"
+      ],
+      "strong_hit_count": 0,
+      "ok": true,
+      "notes": []
+    },
+    {
+      "id": "pos-model-gguf",
+      "category": "models",
+      "polarity": "positive",
+      "query": "托管本地模型需要什么文件路径？",
+      "hit_at": {
+        "@1": true,
+        "@3": true,
+        "@5": true
+      },
+      "recall_at": {
+        "@1": 1.0,
+        "@3": 1.0,
+        "@5": 1.0
+      },
+      "first_relevant_rank": 1,
+      "mrr": 1.0,
+      "top_citations": [
+        "models.md · 全文",
+        "workflows.md · 全文",
+        "rag-design.md · 全文"
+      ],
+      "strong_hit_count": 0,
+      "ok": true,
+      "notes": []
+    }
+  ]
+}
