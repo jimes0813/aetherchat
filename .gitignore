@@ -61,6 +61,7 @@ Thumbs.db
 .vscode/
 *.swp
 *~
+*.bak
 
 # 本地评测/运行时临时目录
 .tmp-rag-eval/

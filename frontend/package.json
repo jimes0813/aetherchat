@@ -8,6 +8,7 @@
     "name": "AetherChat Maintainers",
     "email": "jimes0813@users.noreply.github.com"
   },
+  "license": "MIT",
   "private": true,
   "type": "module",
   "scripts": {
