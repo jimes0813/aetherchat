@@ -121,6 +121,8 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.release-preflight.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     env:
       AETHERCHAT_ALLOW_UNAUTHENTICATED: '1'
       CSC_LINK: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.WINDOWS_CSC_LINK || '' }}
@@ -262,6 +264,7 @@ jobs:
           python scripts/release_security.py metadata --version $version --platform windows --arch x64 --timestamp (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ") --artifact $installer.FullName --output "release-meta/AetherChat-$version-windows-x64.build.json"
 
       - uses: actions/upload-artifact@v4
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         with:
           name: AetherChat-${{ matrix.target }}
           if-no-files-found: error
@@ -271,6 +274,37 @@ jobs:
             frontend/release/AetherChat-Setup-*.exe
             frontend/release/*.blockmap
             release-meta/*.json
+      - name: Attach packages to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          title="AetherChat $GITHUB_REF_NAME"
+          if [[ "${{ needs.release-preflight.outputs.release_mode }}" == "linux_rc" ]]; then
+            title="AetherChat $GITHUB_REF_NAME (Linux RC)"
+          fi
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            if [[ "${{ needs.release-preflight.outputs.is_rc }}" == "true" ]]; then
+              gh release create "$GITHUB_REF_NAME" --verify-tag --prerelease --title "$title" --generate-notes || true
+            else
+              gh release create "$GITHUB_REF_NAME" --verify-tag --title "$title" --generate-notes || true
+            fi
+          fi
+          shopt -s nullglob
+          files=(
+            frontend/release/*.AppImage
+            frontend/release/*.deb
+            frontend/release/AetherChat-Setup-*.exe
+            frontend/release/*.blockmap
+            release-meta/*.json
+          )
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "No release packages found to upload" >&2
+            exit 1
+          fi
+          gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
 
   signed-release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -290,10 +324,11 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - run: python -m pip install cryptography==49.0.0
-      - uses: actions/download-artifact@v5
-        with:
-          path: release-assets
-          merge-multiple: true
+      - name: Download packages from GitHub Release
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          gh release download "$GITHUB_REF_NAME" --dir release-assets
       - name: Create and verify signed update manifest
         shell: bash
         run: |

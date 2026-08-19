@@ -84,6 +84,9 @@ def test_release_workflow_fails_fast_when_signing_secrets_are_missing():
     assert "linux_rc" in workflow
     assert "fromJSON(needs.release-preflight.outputs.matrix)" in workflow
     assert "INCLUDE_WINDOWS" in workflow
+    assert "Attach packages to GitHub Release" in workflow
+    assert "if: ${{ !startsWith(github.ref, 'refs/tags/v') }}" in workflow
+    assert "Download packages from GitHub Release" in workflow
 
 
 def test_windows_installer_workflow_signs_when_csc_secret_present():
