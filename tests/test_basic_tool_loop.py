@@ -630,7 +630,7 @@ async def test_agent_run_drops_turn_limit_tool_draft_from_chat(tmp_path, monkeyp
             yield {"delta": "", "usage": {"prompt_tokens": 2, "completion_tokens": 1}}
 
     monkeypatch.setattr(orchestrator_module, "MAX_MODEL_TURNS", 1)
-    monkeypatch.setattr("app.services.orchestrator.stream_exec.MAX_MODEL_TURNS", 1)
+    monkeypatch.setattr("app.services.orchestrator.stream_provider.MAX_MODEL_TURNS", 1)
     provider = TurnLimitProvider()
     orchestrator = SessionOrchestrator(session_id)
     orchestrator.providers = {"turn-limit-model": provider}

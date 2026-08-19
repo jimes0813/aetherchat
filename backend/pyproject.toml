@@ -52,6 +52,9 @@ module = [
     "app.services.orchestrator.run",
     "app.services.orchestrator.stream_exec",
     "app.services.orchestrator.stream_plan",
+    "app.services.orchestrator.stream_invoke",
+    "app.services.orchestrator.stream_provider",
+    "app.services.orchestrator.stream_tools",
     "app.services.orchestrator.tools",
 ]
 disable_error_code = ["attr-defined", "has-type", "assignment", "no-any-return", "index", "union-attr"]
