@@ -1,6 +1,6 @@
 # AetherChat Public RC Preflight
 
-Generated: `2026-08-12T16:17:35Z`
+Generated: `2026-08-19T11:19:32Z`
 
 ## Verdict
 
@@ -10,12 +10,14 @@ Generated: `2026-08-12T16:17:35Z`
 - GitHub secrets ready (all four): **False**
 - GitHub Ed25519 ready: **True**
 - GitHub Windows CSC ready: **False**
-- tag_ready (full signed RC): **False**
+- linux_rc_ready (Ed25519 + Linux packages): **True**
+- tag_ready (full multi-platform signed): **False**
 - public_1.0: **No-Go**
 
 ### Blockers
 
-- Windows CSC secrets missing (WINDOWS_CSC_LINK / WINDOWS_CSC_KEY_PASSWORD) — tag release will fail preflight
+- Windows CSC secrets missing — Linux-first RC (v*-rc*) still allowed; stable tags and full multi-platform RC need WINDOWS_CSC_LINK / WINDOWS_CSC_KEY_PASSWORD
+- Ready for Linux-first RC tag (v*-rc*); add Windows CSC for full multi-platform
 
 ## Required secrets
 
@@ -42,16 +44,25 @@ GitHub: Ed25519 secrets configured; Windows CSC secrets still missing
    - `python scripts/release_evidence.py check --refresh-metadata`
    - Done when: local_dev_ready=true
 
-4. **Push signed RC tag (vX.Y.Z-rc.N)**
-   - `git tag v0.2.0-rc.1 && git push origin v0.2.0-rc.1`
+4. **Push Linux-first RC tag (vX.Y.Z-rc.N) — Ed25519 only**
+   - `git tag -a v0.2.0-rc.2 -m 'Linux RC' && git push origin v0.2.0-rc.2`
+   - Done when: release-preflight green; linux-x64 + linux-arm64 green; prerelease published
+
+5. **Configure Windows CSC for full multi-platform RC/stable**
+   - `gh secret set WINDOWS_CSC_LINK < cert.p12.b64 && gh secret set WINDOWS_CSC_KEY_PASSWORD --body '…'`
+   - Done when: gh secret list shows WINDOWS_CSC_* ; full_rc/stable path enabled
+
+6. **Push stable tag (vX.Y.Z) — requires all four secrets**
+   - `git tag -a v0.2.0 -m 'stable' && git push origin v0.2.0`
    - Done when: release-preflight green; three platform jobs green
 
-5. **Verify published update-manifest.signed.json**
+7. **Verify published update-manifest.signed.json**
    - `curl -fsSL …/update-manifest.signed.json -o /tmp/m.json && AETHERCHAT_RELEASE_PUBLIC_KEY_B64=… python scripts/release_security.py verify --envelope /tmp/m.json`
    - Done when: signature verified
 
 ## Notes
 
 - Never commit private keys or certificate material.
-- Tag (`v*`) builds fail fast if secrets are missing (release-preflight).
+- RC tags (`v*-rc*`) need Ed25519 only; Windows CSC optional (Linux-first path).
+- Stable tags (`vX.Y.Z`) require all four secrets and fail fast without CSC.
 - Branch/PR builds stay unsigned by design.
