@@ -39,7 +39,7 @@ export function SettingsPage({
               <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-[#8b8176]">
                 {ui(group.label)}
               </div>
-              {group.tabs.map(([id, key]) => (
+              {group.tabs.map((id) => (
                 <button
                   key={id}
                   type="button"
@@ -52,7 +52,7 @@ export function SettingsPage({
                       : 'text-[#5b4532] hover:bg-[#e7ddd0]'
                   }`}
                 >
-                  {t(key)}
+                  {t(id)}
                 </button>
               ))}
             </div>

@@ -242,7 +242,7 @@ export function useEntityActions({
       }),
     });
     updateMergeProposal(proposal);
-    setActivePanel('合并');
+    setActivePanel('changes');
     setNotice('合并提案已创建');
   };
 

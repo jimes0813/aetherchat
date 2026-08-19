@@ -1,10 +1,9 @@
 import type { CommandItem } from '../components/chrome';
+import { SETTINGS_TABS } from '../components/settingsTabs';
+import type { TranslationKey } from '../i18n';
 import type { Artifact, Conversation, ModelConfig, Task } from '../types';
 
-const SETTINGS_PANELS = [
-  '记忆', '资料', '任务', '自动化', '工件', '合并', '工具', '插件',
-  '连接', '电脑', '模型', '运行', '设置', '语音', '规范', '治理',
-] as const;
+const SETTINGS_PANELS = SETTINGS_TABS;
 
 export function buildCommandItems(input: {
   conversations: Conversation[];
@@ -12,6 +11,7 @@ export function buildCommandItems(input: {
   artifacts: Artifact[];
   modelConfigs: ModelConfig[];
   ui: (key: string, values?: Record<string, string | number>) => string;
+  t: (key: TranslationKey, values?: Record<string, string | number>) => string;
   setActivePanel: (panel: typeof SETTINGS_PANELS[number]) => void;
   selectConversation: (id: string) => void;
   setSelectedArtifactPath: (path: string) => void;
@@ -19,7 +19,7 @@ export function buildCommandItems(input: {
 }): CommandItem[] {
   const panels = SETTINGS_PANELS.map((panel) => ({
     id: `panel-${panel}`,
-    label: input.ui('打开{panel}面板', { panel: input.ui(panel) }),
+    label: input.ui('打开{panel}面板', { panel: input.t(panel) }),
     hint: input.ui('命令'),
     run: () => input.setActivePanel(panel),
   }));
@@ -41,7 +41,7 @@ export function buildCommandItems(input: {
       id: `task-${task.id}`,
       label: task.title,
       hint: input.ui('任务 · {status}', { status: task.status }),
-      run: () => input.setActivePanel('任务'),
+      run: () => input.setActivePanel('tasks'),
     })),
     ...input.artifacts.map((artifact) => ({
       id: `artifact-${artifact.path}`,
@@ -49,14 +49,14 @@ export function buildCommandItems(input: {
       hint: input.ui('工件 · {kind}', { kind: artifact.kind }),
       run: () => {
         input.setSelectedArtifactPath(artifact.path);
-        input.setActivePanel('工件');
+        input.setActivePanel('artifacts');
       },
     })),
     ...input.modelConfigs.map((model) => ({
       id: `model-${model.name}`,
       label: model.name,
       hint: input.ui('模型 · {model}', { model: model.model }),
-      run: () => input.setActivePanel('模型'),
+      run: () => input.setActivePanel('models'),
     })),
   ];
 }

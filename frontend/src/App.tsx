@@ -490,11 +490,12 @@ function App() {
     artifacts,
     modelConfigs,
     ui,
+    t,
     setActivePanel,
     selectConversation,
     setSelectedArtifactPath,
     startVoice: () => { void voice.start(); },
-  }), [artifacts, conversations, modelConfigs, selectConversation, setActivePanel, setSelectedArtifactPath, tasks, ui, voice]);
+  }), [artifacts, conversations, modelConfigs, selectConversation, setActivePanel, setSelectedArtifactPath, tasks, t, ui, voice]);
 
   const {
     inspectGeneratedFile,
@@ -535,7 +536,7 @@ function App() {
           onOpenChat={() => setMainView('chat')}
           onOpenSettings={() => {
             setMainView('settings');
-            if (!activePanel) setActivePanel('设置');
+            if (!activePanel) setActivePanel('settings');
           }}
         />
 
@@ -615,7 +616,7 @@ function App() {
               onResolveGeneratedFile={resolveGeneratedFile}
               onOpenGeneratedFile={(file, action) => void openGeneratedFile(file, action)}
               onOpenRunHistory={() => {
-                setActivePanel('运行');
+                setActivePanel('runs');
                 setMainView('settings');
               }}
               onPickExample={(prompt) => {
@@ -645,7 +646,7 @@ function App() {
           {mainView === 'tasks' && <TaskHistory tasks={tasks} events={taskEvents} />}
           {mainView === 'settings' && (
             <SettingsPage
-              activeTab={isSettingsTab(activePanel) ? activePanel : '设置'}
+              activeTab={isSettingsTab(activePanel) ? activePanel : 'settings'}
               onChangeTab={(tab: SettingsTabId) => setActivePanel(tab)}
               onBackToChat={() => {
                 setActivePanel(null);

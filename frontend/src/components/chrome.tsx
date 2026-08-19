@@ -81,7 +81,7 @@ export function ActivityRail({
         aria-pressed={settingsOpen}
         onClick={() => {
           onOpenSettings?.();
-          setActivePanel('设置');
+          setActivePanel('settings');
         }}
         className={`mt-auto flex h-8 w-8 items-center justify-center rounded-md transition ${settingsOpen ? 'bg-[#8d5f35] text-white' : 'hover:bg-[#443b32]'}`}
       >

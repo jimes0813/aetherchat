@@ -191,9 +191,9 @@ export function InspectorPanel(props: InspectorProps) {
   })));
   const { t, ui } = useI18n();
   const activePanelLabel = activePanel ? ({
-    记忆: t('memory'), 资料: t('knowledge'), 任务: t('tasks'), 自动化: t('automations'), 工件: t('artifacts'), 合并: t('changes'),
-    工具: t('tools'), 插件: t('plugins'), 连接: t('connections'), 电脑: t('computer'), 模型: t('models'),
-    运行: t('runs'), 设置: t('settings'), 语音: t('voice'), 规范: t('instructions'), 治理: t('governance'),
+    memory: t('memory'), knowledge: t('knowledge'), tasks: t('tasks'), automations: t('automations'), artifacts: t('artifacts'), changes: t('changes'),
+    tools: t('tools'), plugins: t('plugins'), connections: t('connections'), computer: t('computer'), models: t('models'),
+    runs: t('runs'), settings: t('settings'), voice: t('voice'), instructions: t('instructions'), governance: t('governance'),
   } as Record<string, string>)[activePanel] : ui('检查器');
   const [artifactContent, setArtifactContent] = useState('');
   const [artifactPreview, setArtifactPreview] = useState<ArtifactPreview | null>(null);
@@ -303,7 +303,7 @@ export function InspectorPanel(props: InspectorProps) {
   };
 
   useEffect(() => {
-    if (activePanel === '工件') void loadArtifactDetail();
+    if (activePanel === 'artifacts') void loadArtifactDetail();
   }, [activePanel, props.apiBase, props.selectedArtifactPath, props.sessionId]);
 
   const loadKnowledge = async () => {
@@ -327,7 +327,7 @@ export function InspectorPanel(props: InspectorProps) {
   };
 
   useEffect(() => {
-    if (activePanel === '资料') void loadKnowledge();
+    if (activePanel === 'knowledge') void loadKnowledge();
   }, [activePanel, props.apiBase, props.sessionId]);
 
   const loadMcpConnections = async () => {
@@ -340,7 +340,7 @@ export function InspectorPanel(props: InspectorProps) {
   };
 
   useEffect(() => {
-    if (activePanel === '连接') void loadMcpConnections();
+    if (activePanel === 'connections') void loadMcpConnections();
   }, [activePanel, props.apiBase]);
 
   const createMcpConnection = async () => {
@@ -449,7 +449,7 @@ export function InspectorPanel(props: InspectorProps) {
   };
 
   useEffect(() => {
-    if (activePanel === '记忆') void loadMemory();
+    if (activePanel === 'memory') void loadMemory();
   }, [activePanel, props.apiBase, props.sessionId]);
 
   const saveMemory = async () => {
@@ -793,10 +793,10 @@ export function InspectorPanel(props: InspectorProps) {
         <div className="flex items-center gap-2">
           <div className="grid min-w-0 flex-1 grid-cols-7 gap-1 rounded-lg bg-[#e4dbcf] p-1">
             {([
-              ['记忆', t('memory')], ['资料', t('knowledge')], ['任务', t('tasks')], ['自动化', t('automations')], ['工件', t('artifacts')],
-              ['合并', t('changes')], ['工具', t('tools')], ['插件', t('plugins')], ['连接', t('connections')],
-              ['电脑', t('computer')], ['模型', t('models')], ['运行', t('runs')], ['设置', t('settings')],
-              ['语音', t('voice')], ['规范', t('instructions')], ['治理', t('governance')],
+              ['memory', t('memory')], ['knowledge', t('knowledge')], ['tasks', t('tasks')], ['automations', t('automations')], ['artifacts', t('artifacts')],
+              ['changes', t('changes')], ['tools', t('tools')], ['plugins', t('plugins')], ['connections', t('connections')],
+              ['computer', t('computer')], ['models', t('models')], ['runs', t('runs')], ['settings', t('settings')],
+              ['voice', t('voice')], ['instructions', t('instructions')], ['governance', t('governance')],
             ] as const).map(([panel, label]) => (
               <button
                 key={panel}
@@ -816,7 +816,7 @@ export function InspectorPanel(props: InspectorProps) {
       </div>
       )}
 
-      {activePanel === '记忆' && (
+      {activePanel === 'memory' && (
         <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto p-4">
           <div className="mb-4 flex items-start gap-3">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#e5d9ca] text-[#684827]"><Brain size={17} /></div>
@@ -863,7 +863,7 @@ export function InspectorPanel(props: InspectorProps) {
                           <button
                             onClick={() => {
                               props.onSelectArtifact(String(entity.metadata?.artifact_path));
-                              setActivePanel('工件');
+                              setActivePanel('artifacts');
                             }}
                             className="mt-1 break-all text-left font-mono text-[10px] text-[#356a82] underline"
                           >
@@ -897,7 +897,7 @@ export function InspectorPanel(props: InspectorProps) {
         </div>
       )}
 
-      {activePanel === '资料' && (
+      {activePanel === 'knowledge' && (
         <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto p-4">
           <div className="mb-4">
             <h2 className="text-sm font-semibold">{ui('项目资料库')}</h2>
@@ -1052,7 +1052,7 @@ export function InspectorPanel(props: InspectorProps) {
         </div>
       )}
 
-      {activePanel === '任务' && (
+      {activePanel === 'tasks' && (
         <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto p-4">
           <div className="mb-3 flex gap-2">
             <input
@@ -1098,19 +1098,19 @@ export function InspectorPanel(props: InspectorProps) {
         </div>
       )}
 
-      {activePanel === '自动化' && (
+      {activePanel === 'automations' && (
         <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto">
           <AutomationPanel
             apiBase={props.apiBase}
             sessionId={props.sessionId}
             models={modelConfigs.map((model) => model.name)}
             request={fetchJson}
-            onOpenRuns={() => setActivePanel('运行')}
+            onOpenRuns={() => setActivePanel('runs')}
           />
         </div>
       )}
 
-      {activePanel === '工件' && (
+      {activePanel === 'artifacts' && (
         <div className="aether-tab-panel aether-panel-scroll grid min-h-0 flex-1 overflow-y-auto grid-rows-[auto_minmax(20rem,1fr)]">
           <div className="overflow-auto border-b border-[#ded6ca] p-4">
             <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
@@ -1262,7 +1262,7 @@ export function InspectorPanel(props: InspectorProps) {
         </div>
       )}
 
-      {activePanel === '合并' && (
+      {activePanel === 'changes' && (
         <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto p-4">
           <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
             <GitMerge size={16} />
@@ -1292,7 +1292,7 @@ export function InspectorPanel(props: InspectorProps) {
         </div>
       )}
 
-      {activePanel === '工具' && (
+      {activePanel === 'tools' && (
         <div className="aether-tab-panel aether-panel-scroll grid min-h-0 flex-1 overflow-y-auto grid-rows-[auto_minmax(16rem,1fr)_auto]">
           <div className="border-b border-[#ded6ca] p-4">
             <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
@@ -1389,11 +1389,11 @@ export function InspectorPanel(props: InspectorProps) {
         </div>
       )}
 
-      {activePanel === '插件' && (
+      {activePanel === 'plugins' && (
         <PluginCenter apiBase={props.apiBase} sessionId={props.sessionId} />
       )}
 
-      {activePanel === '连接' && (
+      {activePanel === 'connections' && (
         <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto p-4">
           <div className="mb-4 flex items-start gap-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#e5d9ca] text-[#684827]"><Cable size={17} /></div>
@@ -1456,9 +1456,9 @@ export function InspectorPanel(props: InspectorProps) {
         </div>
       )}
 
-      {activePanel === '电脑' && <DesktopControlPanel />}
+      {activePanel === 'computer' && <DesktopControlPanel />}
 
-      {activePanel === '模型' && (
+      {activePanel === 'models' && (
         <div className="aether-tab-panel aether-panel-scroll grid min-h-0 flex-1 overflow-y-auto grid-rows-[auto_minmax(16rem,1fr)]">
           <div className="border-b border-[#ded6ca] p-4">
             <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
@@ -1549,7 +1549,7 @@ export function InspectorPanel(props: InspectorProps) {
         </div>
       )}
 
-      {activePanel === '运行' && (
+      {activePanel === 'runs' && (
         <ErrorBoundary scope="运行面板" resetKey={`${props.sessionId}:${props.agentRuns.length}`}>
           <RunPanel
             sessionId={props.sessionId}
@@ -1569,7 +1569,7 @@ export function InspectorPanel(props: InspectorProps) {
         </ErrorBoundary>
       )}
 
-      {activePanel === '语音' && (
+      {activePanel === 'voice' && (
         <VoiceSettingsPanel
           silenceMs={props.voiceSilenceMs ?? 1100}
           onSilenceMs={props.onVoiceSilenceMs ?? (() => undefined)}
@@ -1583,7 +1583,7 @@ export function InspectorPanel(props: InspectorProps) {
         />
       )}
 
-      {activePanel === '设置' && (
+      {activePanel === 'settings' && (
         <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto p-4">
           <div className="mb-4 flex items-center gap-2 text-sm font-semibold">
             <ShieldCheck size={16} />
@@ -1644,11 +1644,11 @@ export function InspectorPanel(props: InspectorProps) {
         </div>
       )}
 
-      {activePanel === '规范' && (
+      {activePanel === 'instructions' && (
         <SkillsRulesPanel apiBase={props.apiBase} sessionId={props.sessionId} />
       )}
 
-      {activePanel === '治理' && (
+      {activePanel === 'governance' && (
         <PlatformGovernancePanel apiBase={props.apiBase} />
       )}
     </aside>

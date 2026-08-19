@@ -12,13 +12,13 @@ type GeneratedFileHandlers = {
 export function useGeneratedFiles(
   sessionId: string,
   onSelectArtifact: (path: string) => void,
-  onOpenPanel: (panel: '工件') => void,
+  onOpenPanel: (panel: 'artifacts') => void,
   onNotice: (message: string) => void,
 ): GeneratedFileHandlers {
   const inspectGeneratedFile = useCallback((file: GeneratedFile) => {
     if (!file.path) return;
     onSelectArtifact(file.path);
-    onOpenPanel('工件');
+    onOpenPanel('artifacts');
   }, [onOpenPanel, onSelectArtifact]);
 
   const resolveGeneratedFile = useCallback(async (

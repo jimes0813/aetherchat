@@ -1,6 +1,7 @@
 // frontend/src/stores/sessionStore.ts
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import type { SettingsTabId } from '../components/settingsTabs';
 import { Artifact, Conversation, MergeProposal, Message, ModelConfig, Provider, ReasoningStep, Task, ToolItem, ToolRun, WorkspaceSettings } from '../types';
 
 const providerColors: Record<string, string> = {
@@ -26,7 +27,7 @@ const providerFromModel = (model: ModelConfig, current?: Provider): Provider => 
 interface SessionState {
   sessionId: string;
   conversations: Conversation[];
-  activePanel: '记忆' | '资料' | '任务' | '自动化' | '工件' | '合并' | '工具' | '插件' | '连接' | '电脑' | '模型' | '运行' | '设置' | '语音' | '规范' | '治理' | null;
+  activePanel: SettingsTabId | null;
   selectedArtifactPath: string;
   messages: Message[];
   streams: Record<string, string>;

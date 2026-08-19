@@ -6,7 +6,7 @@
 
 ## 本轮执行范围
 
-P0–P12 已合入。本轮把 Run 列表、记忆、任务 HTTP 与 WS 收尾写也移出事件循环。Windows CSC 仍阻塞。
+P0–P13 已合入。本轮把设置/检查器面板 ID 改成稳定英文 key。Windows CSC 仍阻塞。
 
 ## P0 — 一周内（本轮落地）
 
@@ -31,7 +31,7 @@ P0–P12 已合入。本轮把 Run 列表、记忆、任务 HTTP 与 WS 收尾�
 | P1-2 | 消息列表虚拟化（content-visibility + 只渲染最近 80 条）；历史默认 100 条 | **完成** |
 | P1-3 | steer 写走 `to_thread`；消息列表异步化；插件调用从 run 抽出 | **完成**（会话/自动化路由与 `/health/ready` 也走 `run_in_thread`；delta 不再每 token 写库） |
 | P1-4 | 设置页收成 4 组 | **完成** |
-| P1-5 | 自绘对话框替换 `window.confirm` | **完成**（确认文案走 `ui(...)`，门禁覆盖 confirmAction 与命令面板） |
+| P1-5 | 自绘对话框替换 `window.confirm` | **完成**（确认文案走 `ui(...)`；设置面板 ID 用 `t()` 稳定 key） |
 | P1-6 | 对话授权不得替代高风险原生 Computer Use | **完成** |
 | P1-7 | HTTP Bearer 由 Electron 主进程注入；渲染进程不再缓存真实 token | **完成**（WS 按 getter 取 token，构造后立即清空局部变量；桌面仍为 `intercept`） |
 | P1-8 | 生产关 `/docs`；`/health` 精简 | **完成** |
@@ -125,6 +125,12 @@ P0–P12 已合入。本轮把 Run 列表、记忆、任务 HTTP 与 WS 收尾�
 |---|---|---|
 | P13-1 | Agent Run 列表/详情、记忆读写、任务保存走 `run_in_thread` | **完成** |
 | P13-2 | WS 运行结束/失败/中断读步骤走 `run_in_thread` | **完成** |
+
+## P14 — 设置面板稳定 key（本轮落地）
+
+| ID | 事项 | 状态 |
+|---|---|---|
+| P14-1 | `activePanel` / 设置页 tab ID 从中文改为 `settings`/`memory`/`runs` 等 `t()` key | **完成**（界面仍显示中文；命令面板用 `t(panel)`） |
 
 ## 版本建议
 

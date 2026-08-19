@@ -331,7 +331,7 @@ export function useSessionEvents({
             : [waitingRun, ...items]);
         }
         setNotice('计划草稿已就绪，请审核、编辑或确认后再执行');
-        setActivePanel('运行');
+        setActivePanel('runs');
       }
       if (event.type === 'plan_updated' && event.run_id) {
         if (event.agent_run) {

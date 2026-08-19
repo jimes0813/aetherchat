@@ -7,14 +7,14 @@ describe('SettingsPage', () => {
   it('lists every settings tab and switches on click', () => {
     const onChangeTab = vi.fn();
     render(
-      <SettingsPage activeTab="设置" onChangeTab={onChangeTab} onBackToChat={vi.fn()}>
+      <SettingsPage activeTab="settings" onChangeTab={onChangeTab} onBackToChat={vi.fn()}>
         <div>设置内容</div>
       </SettingsPage>,
     );
 
     expect(screen.getByTestId('settings-page')).toBeTruthy();
     expect(screen.getByTestId('settings-content').className).toContain('overflow-y-auto');
-    for (const [, key] of SETTINGS_TABS) {
+    for (const key of SETTINGS_TABS) {
       const label = key === 'settings'
         ? '设置'
         : key === 'models'
@@ -30,8 +30,8 @@ describe('SettingsPage', () => {
     expect(screen.getByRole('tab', { name: '治理（实验）' })).toBeTruthy();
 
     fireEvent.click(screen.getByRole('tab', { name: '模型' }));
-    expect(onChangeTab).toHaveBeenCalledWith('模型');
+    expect(onChangeTab).toHaveBeenCalledWith('models');
     fireEvent.click(screen.getByRole('tab', { name: '运行' }));
-    expect(onChangeTab).toHaveBeenCalledWith('运行');
+    expect(onChangeTab).toHaveBeenCalledWith('runs');
   });
 });

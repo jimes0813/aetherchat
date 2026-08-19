@@ -25,7 +25,7 @@ describe('ActivityRail', () => {
 
     fireEvent.click(screen.getByLabelText('设置'));
     expect(onOpenSettings).toHaveBeenCalled();
-    expect(setActivePanel).toHaveBeenCalledWith('设置');
+    expect(setActivePanel).toHaveBeenCalledWith('settings');
 
     const rail = screen.getByLabelText('设置').closest('aside');
     expect(rail?.lastElementChild).toBe(screen.getByLabelText('设置'));
