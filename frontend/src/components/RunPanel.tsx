@@ -279,7 +279,7 @@ export function RunPanel({
   };
 
   const verifyConfiguredModels = async () => {
-    if (!await confirmAction('连接验证会向每个已配置且已启用的模型发送一条最小测试请求，可能产生少量 API 费用。确定继续吗？')) return;
+    if (!await confirmAction(ui('连接验证会向每个已配置且已启用的模型发送一条最小测试请求，可能产生少量 API 费用。确定继续吗？'))) return;
     setVerifyingModels(true);
     try {
       const models = await fetchJson<ModelConfig[]>(`${API_BASE}/models/`);

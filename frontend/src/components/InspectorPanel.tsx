@@ -395,7 +395,7 @@ export function InspectorPanel(props: InspectorProps) {
   };
 
   const deleteMcpConnection = async (connection: MCPConnection) => {
-    if (!await confirmAction(`删除 MCP 连接器“${connection.name}”及其本机凭据引用吗？`, { danger: true })) return;
+    if (!await confirmAction(ui('删除 MCP 连接器“{name}”及其本机凭据引用吗？', { name: connection.name }), { danger: true })) return;
     await fetchJson(`${props.apiBase}/mcp-connections/${connection.id}`, { method: 'DELETE' });
     setMcpConnections((items) => items.filter((item) => item.id !== connection.id));
     setMcpStatus('连接器已删除');
@@ -583,7 +583,7 @@ export function InspectorPanel(props: InspectorProps) {
   };
 
   const deleteKnowledge = async (attachment: KnowledgeAttachment) => {
-    if (!await confirmAction(`从项目资料库删除“${attachment.name}”吗？历史消息中的引用名称会保留。`, { danger: true })) return;
+    if (!await confirmAction(ui('从项目资料库删除“{name}”吗？历史消息中的引用名称会保留。', { name: attachment.name }), { danger: true })) return;
     await fetchJson(`${props.apiBase}/knowledge/${props.sessionId}/attachments/${attachment.id}`, { method: 'DELETE' });
     setKnowledgeResults((rows) => rows.filter((row) => row.attachment_id !== attachment.id));
     if (knowledgePreview?.attachment.id === attachment.id) {
@@ -632,7 +632,7 @@ export function InspectorPanel(props: InspectorProps) {
   };
 
   const restoreArtifactVersion = async (version: number) => {
-    if (!props.selectedArtifactPath || !await confirmAction(`将当前工件恢复到版本 v${version}？恢复会创建一个新版本，不会删除历史。`)) return;
+    if (!props.selectedArtifactPath || !await confirmAction(ui('将当前工件恢复到版本 v{version}？恢复会创建一个新版本，不会删除历史。', { version }))) return;
     try {
       const encodedPath = artifactPathUrl(props.selectedArtifactPath);
       await fetchJson(`${props.apiBase}/artifacts/${encodedPath}/restore`, {

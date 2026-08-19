@@ -244,7 +244,7 @@ export function PluginCenter({ apiBase, sessionId }: { apiBase: string; sessionI
   };
 
   const uninstall = async (plugin: PluginItem) => {
-    if (!await confirmAction(`确定卸载插件“${plugin.name}”吗？`, { danger: true })) return;
+    if (!await confirmAction(ui('确定卸载插件“{name}”吗？', { name: plugin.name }), { danger: true })) return;
     try {
       await fetchJson(`${apiBase}/plugins/${encodeURIComponent(plugin.id)}`, { method: 'DELETE' });
       setPlugins((current) => current.filter((item) => item.id !== plugin.id));

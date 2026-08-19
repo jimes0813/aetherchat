@@ -6,7 +6,7 @@
 
 ## 本轮执行范围
 
-P0–P9 已合入。本轮收口数据目录：打包桌面与 XDG 文档路径对齐显示，不搬迁已有库。Windows CSC 仍阻塞。
+P0–P10 已合入。本轮把确认框与命令面板文案纳入 i18n 门禁。Windows CSC 仍阻塞。
 
 ## P0 — 一周内（本轮落地）
 
@@ -31,7 +31,7 @@ P0–P9 已合入。本轮收口数据目录：打包桌面与 XDG 文档路径�
 | P1-2 | 消息列表虚拟化（content-visibility + 只渲染最近 80 条）；历史默认 100 条 | **完成** |
 | P1-3 | steer 写走 `to_thread`；消息列表异步化；插件调用从 run 抽出 | **完成**（`stream_user_message` 约 120 行；orchestrator stream_* 均 ≤400） |
 | P1-4 | 设置页收成 4 组 | **完成** |
-| P1-5 | 自绘对话框替换 `window.confirm` | **完成** |
+| P1-5 | 自绘对话框替换 `window.confirm` | **完成**（确认文案走 `ui(...)`，门禁覆盖 confirmAction 与命令面板） |
 | P1-6 | 对话授权不得替代高风险原生 Computer Use | **完成** |
 | P1-7 | HTTP Bearer 由 Electron 主进程注入；渲染进程不再缓存真实 token | **完成**（WS 按 getter 取 token，构造后立即清空局部变量；桌面仍为 `intercept`） |
 | P1-8 | 生产关 `/docs`；`/health` 精简 | **完成** |
@@ -104,6 +104,13 @@ P0–P9 已合入。本轮收口数据目录：打包桌面与 XDG 文档路径�
 |---|---|---|
 | P10-1 | 打包桌面与独立后端共用数据目录探测：显式 env → 已有 sqlite 的 `userData/backend-data` → XDG | **完成** |
 | P10-2 | 关于框、运行面板、Linux 打包说明与 local-audit MCP 显示/解析同一路径 | **完成**（不搬迁现有 `backend-data` 库） |
+
+## P11 — 确认框与命令面板 i18n（本轮落地）
+
+| ID | 事项 | 状态 |
+|---|---|---|
+| P11-1 | `confirmAction` 用户文案全部走 `ui(...)`，并写入 en-US 映射 | **完成** |
+| P11-2 | 命令面板标签/hint 走 `ui(...)`；`check_i18n_coverage.mjs` 覆盖 `.ts` 与 confirmAction | **完成** |
 
 ## 版本建议
 

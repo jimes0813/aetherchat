@@ -30,15 +30,24 @@ function englishUiKeys() {
   return keys;
 }
 
-function collectTsxFiles(directory) {
+function collectSourceFiles(directory) {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const entryPath = path.join(directory, entry.name);
-    if (entry.isDirectory()) return collectTsxFiles(entryPath);
-    if (!entry.name.endsWith('.tsx') || entry.name.includes('.test.') || entry.name.includes('.spec.')) {
+    if (entry.isDirectory()) return collectSourceFiles(entryPath);
+    if (entry.name.includes('.test.') || entry.name.includes('.spec.')) {
       return [];
     }
-    return [entryPath];
+    if (entry.name.endsWith('.tsx') || entry.name.endsWith('.ts')) {
+      return [entryPath];
+    }
+    return [];
   });
+}
+
+function isUiOrTranslateCall(expression) {
+  return ts.isCallExpression(expression)
+    && ts.isIdentifier(expression.expression)
+    && (expression.expression.text === 'ui' || expression.expression.text === 't' || expression.expression.text === 'localize');
 }
 
 function location(sourceFile, node) {
@@ -91,9 +100,10 @@ function renderedChineseLiterals(expression) {
 
 const problems = [];
 const translatedUi = englishUiKeys();
-for (const fileName of collectTsxFiles(sourceRoot)) {
+for (const fileName of collectSourceFiles(sourceRoot)) {
   const sourceText = fs.readFileSync(fileName, 'utf8');
-  const sourceFile = ts.createSourceFile(fileName, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const kind = fileName.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+  const sourceFile = ts.createSourceFile(fileName, sourceText, ts.ScriptTarget.Latest, true, kind);
 
   function visit(node) {
     if (ts.isJsxText(node)) {
@@ -139,6 +149,25 @@ for (const fileName of collectTsxFiles(sourceRoot)) {
       }
     }
 
+    if (ts.isCallExpression(node)
+      && ts.isIdentifier(node.expression)
+      && node.expression.text === 'confirmAction'
+      && node.arguments.length > 0) {
+      const message = node.arguments[0];
+      if (ts.isStringLiteral(message) || ts.isNoSubstitutionTemplateLiteral(message) || ts.isTemplateExpression(message)) {
+        if (cjkPattern.test(message.getText(sourceFile))) {
+          problems.push(`${location(sourceFile, message)} confirmAction(...) must use ui(...) / t(...): ${JSON.stringify(message.getText(sourceFile))}`);
+        }
+      } else if (isUiOrTranslateCall(message)) {
+        const textArgument = message.arguments[0];
+        if ((ts.isStringLiteral(textArgument) || ts.isNoSubstitutionTemplateLiteral(textArgument))
+          && cjkPattern.test(textArgument.text)
+          && !translatedUi.has(textArgument.text)) {
+          problems.push(`${location(sourceFile, textArgument)} confirmAction ui(...) has no en-US mapping: ${JSON.stringify(textArgument.text)}`);
+        }
+      }
+    }
+
     ts.forEachChild(node, visit);
   }
 
@@ -151,4 +180,4 @@ if (problems.length > 0) {
   process.exit(1);
 }
 
-console.log('i18n coverage gate passed: no untranslated Chinese JSX text or visible attributes.');
+console.log('i18n coverage gate passed: JSX, confirmAction, and command-palette ui(...) strings have en-US mappings.');

@@ -11,7 +11,7 @@ export function buildCommandItems(input: {
   tasks: Task[];
   artifacts: Artifact[];
   modelConfigs: ModelConfig[];
-  ui: (key: string) => string;
+  ui: (key: string, values?: Record<string, string | number>) => string;
   setActivePanel: (panel: typeof SETTINGS_PANELS[number]) => void;
   selectConversation: (id: string) => void;
   setSelectedArtifactPath: (path: string) => void;
@@ -19,8 +19,8 @@ export function buildCommandItems(input: {
 }): CommandItem[] {
   const panels = SETTINGS_PANELS.map((panel) => ({
     id: `panel-${panel}`,
-    label: `打开${panel}面板`,
-    hint: '命令',
+    label: input.ui('打开{panel}面板', { panel: input.ui(panel) }),
+    hint: input.ui('命令'),
     run: () => input.setActivePanel(panel),
   }));
   return [
@@ -34,19 +34,19 @@ export function buildCommandItems(input: {
     ...input.conversations.map((conversation) => ({
       id: `conversation-${conversation.id}`,
       label: conversation.title,
-      hint: `会话 · ${conversation.summary}`,
+      hint: input.ui('会话 · {summary}', { summary: conversation.summary }),
       run: () => input.selectConversation(conversation.id),
     })),
     ...input.tasks.map((task) => ({
       id: `task-${task.id}`,
       label: task.title,
-      hint: `任务 · ${task.status}`,
+      hint: input.ui('任务 · {status}', { status: task.status }),
       run: () => input.setActivePanel('任务'),
     })),
     ...input.artifacts.map((artifact) => ({
       id: `artifact-${artifact.path}`,
       label: artifact.path,
-      hint: `工件 · ${artifact.kind}`,
+      hint: input.ui('工件 · {kind}', { kind: artifact.kind }),
       run: () => {
         input.setSelectedArtifactPath(artifact.path);
         input.setActivePanel('工件');
@@ -55,7 +55,7 @@ export function buildCommandItems(input: {
     ...input.modelConfigs.map((model) => ({
       id: `model-${model.name}`,
       label: model.name,
-      hint: `模型 · ${model.model}`,
+      hint: input.ui('模型 · {model}', { model: model.model }),
       run: () => input.setActivePanel('模型'),
     })),
   ];
