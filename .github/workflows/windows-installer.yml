@@ -22,7 +22,11 @@ jobs:
       contents: write
     env:
       AETHERCHAT_ALLOW_UNAUTHENTICATED: '1'
-      AETHERCHAT_REQUIRE_CODE_SIGNING: '0'
+      WINDOWS_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+      WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+      CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+      AETHERCHAT_REQUIRE_CODE_SIGNING: ${{ secrets.WINDOWS_CSC_LINK != '' && '1' || '0' }}
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
     steps:

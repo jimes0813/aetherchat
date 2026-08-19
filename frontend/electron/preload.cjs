@@ -21,6 +21,8 @@ contextBridge.exposeInMainWorld('aetherRuntime', {
   platform: argumentValue('aether-platform', process.platform),
   quickEntryShortcut: argumentValue('aether-quick-entry-shortcut'),
   chromiumSandbox: argumentValue('aether-chromium-sandbox', 'on'),
+  installChannel: argumentValue('aether-install-channel', 'development'),
+  installPath: argumentValue('aether-install-path'),
   authIntercept: argumentValue('aether-auth-intercept') === '1',
   getApiToken: () => ipcRenderer.invoke('aether-runtime:api-token'),
   openExternal: (url, options = {}) => ipcRenderer.invoke(

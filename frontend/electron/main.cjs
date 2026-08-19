@@ -30,6 +30,11 @@ const {
 const { sanitizeBackendProxyEnv } = require('./backend-env.cjs');
 const { registerTerminationHandlers, terminateChildProcess } = require('./lifecycle.cjs');
 const { createMediaPermissionHandlers } = require('./media-permission.cjs');
+const {
+  describeInstallChannel,
+  detectInstallChannel,
+  isChromiumSandboxDegraded,
+} = require('./install-channel.cjs');
 
 const isDev = !app.isPackaged;
 let backendProcess = null;
@@ -614,6 +619,50 @@ function applyBackendReadiness(result) {
   backendRequestId = result?.ready ? '' : String(result?.requestId || '');
 }
 
+function currentInstallChannel() {
+  return detectInstallChannel({
+    packaged: app.isPackaged,
+    execPath: process.execPath,
+    appImageEnv: process.env.APPIMAGE || '',
+    noSandbox: process.argv.includes('--no-sandbox'),
+  });
+}
+
+async function maybeWarnDegradedSandbox() {
+  if (!app.isPackaged) return;
+  const channel = currentInstallChannel();
+  const sandboxOff = isChromiumSandboxDegraded(channel, process.argv.includes('--no-sandbox'));
+  if (!sandboxOff) return;
+  const ackPath = path.join(app.getPath('userData'), 'degraded-sandbox-ack.json');
+  try {
+    if (fs.existsSync(ackPath)) return;
+  } catch {
+    return;
+  }
+  await dialog.showMessageBox({
+    type: 'warning',
+    title: '降级模式：Chromium 沙箱已关闭',
+    message: '当前是用户本地安装，未启用 Chromium setuid 沙箱。',
+    detail: [
+      `通道：${describeInstallChannel(channel)}`,
+      `可执行文件：${process.execPath}`,
+      '这适合本机 RC，不适合把安装包发给他人。',
+      '公开或共享安装请使用 Deb：/usr/bin/aetherchat → /opt/AetherChat，chrome-sandbox 为 root:root 4755。',
+      '关于页会持续显示安装通道与沙箱状态。',
+    ].join('\n'),
+    buttons: ['知道了'],
+  });
+  try {
+    fs.writeFileSync(ackPath, `${JSON.stringify({
+      acknowledged: true,
+      channel,
+      at: new Date().toISOString(),
+    })}\n`);
+  } catch (error) {
+    console.warn('Unable to persist degraded-sandbox acknowledgement:', error);
+  }
+}
+
 function createWindow() {
   const existing = BrowserWindow.getAllWindows()[0];
   if (existing) {
@@ -642,7 +691,9 @@ function createWindow() {
         `--aether-app-version=${app.getVersion()}`,
         `--aether-platform=${process.platform}`,
         `--aether-quick-entry-shortcut=${quickEntryShortcut}`,
-        `--aether-chromium-sandbox=${process.argv.includes('--no-sandbox') ? 'off' : 'on'}`,
+        `--aether-chromium-sandbox=${isChromiumSandboxDegraded(currentInstallChannel(), process.argv.includes('--no-sandbox')) ? 'off' : 'on'}`,
+        `--aether-install-channel=${currentInstallChannel()}`,
+        `--aether-install-path=${process.execPath}`,
         '--aether-auth-intercept=1',
       ],
     },
@@ -727,16 +778,21 @@ const menu = Menu.buildFromTemplate([
     submenu: [{ label: '检查签名更新', click: () => checkForSignedUpdate() }, { type: 'separator' }, {
       label: '关于 AetherChat',
       click: () => {
-        const sandboxOff = process.argv.includes('--no-sandbox');
+        const channel = currentInstallChannel();
+        const sandboxOff = isChromiumSandboxDegraded(
+          channel,
+          process.argv.includes('--no-sandbox'),
+        );
         dialog.showMessageBox({
           type: 'info',
           title: '关于 AetherChat',
           message: `AetherChat ${app.getVersion()}`,
           detail: [
             '多模型中文协作桌面工作台 · 本地 RC',
-            `通道：${app.isPackaged ? 'packaged' : 'development'}`,
+            `通道：${describeInstallChannel(channel)}`,
+            `可执行文件：${process.execPath}`,
             `平台：${process.platform}/${process.arch}`,
-            `Chromium 沙箱：${sandboxOff ? '已关闭（用户解包安装，降级模式）' : '已启用'}`,
+            `Chromium 沙箱：${sandboxOff ? '已关闭（降级模式）' : '已启用'}`,
             `数据目录：${app.getPath('userData')}`,
           ].join('\n'),
           buttons: ['确定'],
@@ -1170,6 +1226,7 @@ app.whenReady().then(async () => {
   }
   const win = createWindow();
   flushLaunchIntent(win);
+  await maybeWarnDegradedSandbox();
   startAutomationReviewPolling();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

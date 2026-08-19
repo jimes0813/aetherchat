@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +33,7 @@ def test_public_rc_preflight_writes_reports(tmp_path, monkeypatch):
         "sys.argv",
         ["public_rc_preflight.py", "--json-out", str(json_out), "--md-out", str(md_out)],
     )
+    monkeypatch.setenv("AETHERCHAT_RELEASE_KEYS_DIR", str(tmp_path / "empty-keys"))
     # Ensure no secrets required for a clean operator report
     for name in preflight.REQUIRED_SECRETS:
         monkeypatch.delenv(name, raising=False)
@@ -54,6 +56,7 @@ def test_linux_rc_ready_with_ed25519_without_windows(monkeypatch):
     private_b64, public_b64 = security.generate_ed25519_keypair_b64()
     monkeypatch.setenv("AETHERCHAT_RELEASE_PRIVATE_KEY_B64", private_b64)
     monkeypatch.setenv("AETHERCHAT_RELEASE_PUBLIC_KEY_B64", public_b64)
+    monkeypatch.setenv("AETHERCHAT_RELEASE_KEYS_DIR", str(PROJECT_ROOT / "tests" / "fixtures" / "missing-release-keys"))
     for name in ("WINDOWS_CSC_LINK", "WINDOWS_CSC_KEY_PASSWORD"):
         monkeypatch.delenv(name, raising=False)
 
@@ -86,6 +89,20 @@ def test_linux_rc_ready_with_ed25519_without_windows(monkeypatch):
                 evidence_path.unlink()
         else:
             evidence_path.write_text(original, encoding="utf-8")
+
+
+def test_offline_key_dir_fills_env_without_printing(tmp_path, monkeypatch, capsys):
+    preflight = _load("public_rc_preflight", PROJECT_ROOT / "scripts" / "public_rc_preflight.py")
+    key_dir = tmp_path / "keys"
+    key_dir.mkdir()
+    (key_dir / "AETHERCHAT_RELEASE_PRIVATE_KEY_B64.txt").write_text("offline-private\n")
+    monkeypatch.setenv("AETHERCHAT_RELEASE_KEYS_DIR", str(key_dir))
+    monkeypatch.delenv("AETHERCHAT_RELEASE_PRIVATE_KEY_B64", raising=False)
+    preflight._load_offline_secrets()
+    assert os.environ["AETHERCHAT_RELEASE_PRIVATE_KEY_B64"] == "offline-private"
+    captured = capsys.readouterr()
+    assert "offline-private" not in captured.out
+    assert "offline-private" not in captured.err
 
 
 def test_release_evidence_passes_secrets_when_env_pair_present(monkeypatch):

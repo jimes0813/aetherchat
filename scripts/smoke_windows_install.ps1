@@ -36,7 +36,13 @@ function Stop-InstalledProcesses {
 $Arguments = "/S /D=$InstallDir"
 $First = Start-Process -FilePath $Installer -ArgumentList $Arguments -Wait -PassThru
 if ($First.ExitCode -ne 0) { throw "Silent install failed with $($First.ExitCode)" }
-if (-not (Test-Path (Join-Path $InstallDir "AetherChat.exe"))) { throw "Installed executable is missing" }
+$InstalledExe = Join-Path $InstallDir "AetherChat.exe"
+if (-not (Test-Path $InstalledExe)) { throw "Installed executable is missing" }
+$Signature = Get-AuthenticodeSignature $InstalledExe
+Write-Host "Authenticode status: $($Signature.Status)"
+if ($env:AETHERCHAT_REQUIRE_CODE_SIGNING -eq "1" -and $Signature.Status -ne "Valid") {
+  throw "Installed executable signature is not valid: $($Signature.Status)"
+}
 Stop-InstalledProcesses -Root $InstallDir
 
 # Create user data only after the fresh-install check so later failures are

@@ -1545,5 +1545,3 @@ async def test_computer_use_stable_and_fuzzy_selectors_can_refresh_stale_snapsho
     assert point == (50, 32)
     assert snapshot_id == "refreshed"
     assert retried is True
-
-

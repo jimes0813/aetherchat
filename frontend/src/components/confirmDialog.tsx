@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useI18n } from '../i18n';
 import { useDialogFocus } from './useDialogFocus';
 
 export type ConfirmOptions = {
@@ -35,6 +36,7 @@ export function confirmAction(message: string, options: ConfirmOptions = {}): Pr
 }
 
 export function ConfirmHost() {
+  const { ui } = useI18n();
   const [request, setRequest] = useState<ConfirmRequest | null>(null);
   useEffect(() => {
     const listener = (next: ConfirmRequest | null) => setRequest(next);
@@ -64,7 +66,7 @@ export function ConfirmHost() {
         onKeyDown={dialogFocus.onKeyDown}
       >
         <h2 id={`confirm-title-${request.id}`} className="text-sm font-semibold text-[#2f2a24]">
-          {request.title || '请确认'}
+          {request.title || ui('请确认')}
         </h2>
         <p id={`confirm-body-${request.id}`} className="mt-2 text-sm leading-6 text-[#5c534b]">
           {request.message}
@@ -75,7 +77,7 @@ export function ConfirmHost() {
             className="h-8 rounded-md border border-[#cfc4b7] px-3 text-xs text-[#5c534b]"
             onClick={() => close(false)}
           >
-            {request.cancelLabel || '取消'}
+            {request.cancelLabel || ui('取消')}
           </button>
           <button
             type="button"
@@ -83,7 +85,7 @@ export function ConfirmHost() {
             className={`h-8 rounded-md px-3 text-xs text-white ${request.danger ? 'bg-[#8a3028]' : 'bg-[#2f2a24]'}`}
             onClick={() => close(true)}
           >
-            {request.confirmLabel || '确定'}
+            {request.confirmLabel || ui('确定')}
           </button>
         </div>
       </section>

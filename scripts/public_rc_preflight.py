@@ -38,6 +38,28 @@ def _load_release_security():
     return module
 
 
+def _load_offline_secrets() -> None:
+    """Fill missing env secrets from ~/.aetherchat-release-keys/*.txt. Never prints values."""
+    key_dir = Path(
+        os.environ.get("AETHERCHAT_RELEASE_KEYS_DIR")
+        or (Path.home() / ".aetherchat-release-keys")
+    )
+    if not key_dir.is_dir():
+        return
+    for name in REQUIRED_SECRETS:
+        if (os.environ.get(name) or "").strip():
+            continue
+        path = key_dir / f"{name}.txt"
+        if not path.is_file():
+            continue
+        try:
+            value = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if value:
+            os.environ[name] = value
+
+
 def _secret_status(name: str) -> dict[str, Any]:
     value = os.environ.get(name) or ""
     present = bool(value.strip())
@@ -72,6 +94,7 @@ def _gh_secret_names() -> list[str] | None:
 
 
 def evaluate_public_rc_preflight() -> dict[str, Any]:
+    _load_offline_secrets()
     release_security = _load_release_security()
     env_secrets = [_secret_status(name) for name in REQUIRED_SECRETS]
     env_all = all(item["present"] for item in env_secrets)

@@ -42,6 +42,20 @@ def test_linux_desktop_entry_and_icon_match_electron_package():
     assert "--no-sandbox" not in launcher
     assert "--disable-setuid-sandbox" not in launcher
 
+
+def test_user_unpacked_launcher_documents_explicit_degraded_no_sandbox():
+    launcher = (PROJECT_ROOT / "scripts" / "aetherchat-user-launch.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "Explicit degraded mode" in launcher
+    assert 'USER_UNPACKED="$DATA_DIR/current/aetherchat-frontend"' in launcher
+    assert 'exec "$USER_UNPACKED" --no-sandbox' in launcher
+    assert 'exec "$USER_APPIMAGE" --no-sandbox' in launcher
+    system = launcher.split('readonly APP_DIR="/opt/AetherChat"', 1)[1]
+    assert "--no-sandbox" not in system
+    assert 'exec "$APP" "$@"' in system
+    assert "4755" in system
+
     package = json.loads(
         (PROJECT_ROOT / "frontend" / "package.json").read_text(
             encoding="utf-8"
@@ -70,6 +84,19 @@ def test_release_workflow_fails_fast_when_signing_secrets_are_missing():
     assert "linux_rc" in workflow
     assert "fromJSON(needs.release-preflight.outputs.matrix)" in workflow
     assert "INCLUDE_WINDOWS" in workflow
+
+
+def test_windows_installer_workflow_signs_when_csc_secret_present():
+    workflow = (PROJECT_ROOT / ".github" / "workflows" / "windows-installer.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}" in workflow
+    assert "AETHERCHAT_REQUIRE_CODE_SIGNING:" in workflow
+    smoke = (PROJECT_ROOT / "scripts" / "smoke_windows_install.ps1").read_text(
+        encoding="utf-8"
+    )
+    assert "Get-AuthenticodeSignature" in smoke
+    assert 'AETHERCHAT_REQUIRE_CODE_SIGNING -eq "1"' in smoke
 
 
 def _encoded_keys():

@@ -14,6 +14,7 @@ import {
   Trash2,
   Users,
 } from 'lucide-react';
+import { DegradedInstallBanner } from './DegradedInstallBanner';
 import { useDialogFocus } from './useDialogFocus';
 import { API_BASE, formatDateTime, taskStatusLabel } from './shared';
 import { fetchJson } from '../api/client';
@@ -662,6 +663,8 @@ interface DesktopStatusBarProps {
 export function DesktopStatusBar({ connection, budgetRemaining, runQueuePosition, onCancelQueuedRun, uiLocale, sandbox, tokenStatus, onRefreshToken, onToggleLanguage }: DesktopStatusBarProps) {
   const { t, ui } = useI18n();
   return (
+    <>
+      <DegradedInstallBanner />
     <footer className="flex h-7 items-center gap-4 border-t border-[#cfc4b7] bg-[#2f2a24] px-3 text-[11px] text-[#e7dfd3]">
       <span className="flex items-center gap-1"><FolderOpen size={12} /> {ui('本地工作区')}</span>
       <span>{t('sandbox', { value: sandbox })}</span>
@@ -679,7 +682,13 @@ export function DesktopStatusBar({ connection, budgetRemaining, runQueuePosition
       )}
       <span>{t('budget', { value: budgetRemaining.toFixed(2) })}</span>
       {window.aetherRuntime?.chromiumSandbox === 'off' && (
-        <span title={ui('用户解包安装未启用 setuid chrome-sandbox')}>{ui('降级：无 Chromium 沙箱')}</span>
+        <span
+          className="rounded bg-[#8a4036] px-1.5 py-0.5 text-[10px] text-white"
+          title={ui('用户解包安装未启用 setuid chrome-sandbox')}
+        >
+          {ui('降级：无 Chromium 沙箱')}
+          {window.aetherRuntime?.installChannel ? ` · ${window.aetherRuntime.installChannel}` : ''}
+        </span>
       )}
       <button onClick={onRefreshToken} title={ui('刷新本地 WebSocket 授权，不显示或复制令牌')} className="rounded bg-[#8d5f35] px-1.5 py-0.5 text-[10px] text-white">{tokenStatus}</button>
       <button onClick={onToggleLanguage} title={t('switchUiLanguage')} aria-label={t('switchUiLanguage')} className="rounded bg-[#8d5f35] px-1.5 py-0.5 text-[10px] text-white">{uiLocale === 'zh-CN' ? 'EN' : ui('中文')}</button>
@@ -688,5 +697,6 @@ export function DesktopStatusBar({ connection, budgetRemaining, runQueuePosition
       )}
       <span className="ml-auto">AetherChat Desktop · {ui('多模型 Agent 工作台')}</span>
     </footer>
+    </>
   );
 }

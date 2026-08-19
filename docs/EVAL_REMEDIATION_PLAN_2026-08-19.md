@@ -6,7 +6,7 @@
 
 ## 本轮执行范围
 
-上一轮完成 **P0 全部**。本轮完成 **P1 全部**（`stream_user_message` 仍偏长，WebSocket 连接时仍取一次 token）。P2 留待后续批次。
+P0、P1 已合入。本轮推进 **P2 本机可落地部分**：用户安装降级模式明示、Windows 烟测按需校验 Authenticode、本机签名更新清单。Windows CSC / 三平台同一 tag / 已发布清单仍需维护者密钥与确认。
 
 ## P0 — 一周内（本轮落地）
 
@@ -39,7 +39,13 @@
 
 ## P2 — 一季度（1.0 资格）
 
-Windows CSC、三平台同一 tag、已发布 `update-manifest.signed.json`、Windows 安装烟测、用户安装降级模式明示。
+| ID | 事项 | 状态 |
+|---|---|---|
+| P2-1 | Windows CSC 配置到 GitHub Secrets | **阻塞**（本机无 Authenticode 证书；CI 在 secret 存在时才会强制签名） |
+| P2-2 | 三平台同一 `v*` tag | **阻塞**（需维护者推送 tag；未强推 origin） |
+| P2-3 | 已发布 `update-manifest.signed.json` | **本机可签**（`scripts/sign_local_linux_manifest.sh`；GitHub Release 上传仍待 tag） |
+| P2-4 | Windows 安装/升级/卸载烟测记录 Authenticode | **完成**（无 CSC 时记录状态；`REQUIRE_CODE_SIGNING=1` 时失败） |
+| P2-5 | 用户安装降级模式明示 | **完成**（通道探测、首次警告、工作台横幅、关于页、用户启动器注释） |
 
 ## 版本建议
 

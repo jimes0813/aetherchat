@@ -122,6 +122,8 @@ declare global {
       platform?: string;
       quickEntryShortcut?: string;
       chromiumSandbox?: 'on' | 'off' | string;
+      installChannel?: 'development' | 'system-deb' | 'user-appimage' | 'user-unpacked' | 'windows-nsis' | 'packaged' | string;
+      installPath?: string;
       authIntercept?: boolean;
       getApiToken?: () => Promise<string>;
       openExternal?: (
