@@ -330,19 +330,33 @@ async def ws_endpoint(
                 await agent_run_service.observe_async(run["id"], event)
                 await send_payload(event)
         except asyncio.CancelledError:
-            agent_run_service.finish(run["id"], disconnected=True)
+            await agent_run_service.database.run_in_thread(
+                agent_run_service.finish, run["id"], disconnected=True
+            )
             raise
         except WebSocketDisconnect:
-            agent_run_service.finish(run["id"], disconnected=True)
+            await agent_run_service.database.run_in_thread(
+                agent_run_service.finish, run["id"], disconnected=True
+            )
             raise
         except Exception as exc:
-            agent_run_service.database.update_agent_run(run["id"], "failed", error=str(exc)[:2000])
-            agent_run_service.database.append_agent_event(
-                run["id"], "run_failed", {"error": str(exc)[:2000]}
+            await agent_run_service.database.run_in_thread(
+                agent_run_service.database.update_agent_run,
+                run["id"],
+                "failed",
+                error=str(exc)[:2000],
+            )
+            await agent_run_service.database.run_in_thread(
+                agent_run_service.database.append_agent_event,
+                run["id"],
+                "run_failed",
+                {"error": str(exc)[:2000]},
             )
             raise
         else:
-            completed = agent_run_service.finish(run["id"])
+            completed = await agent_run_service.database.run_in_thread(
+                agent_run_service.finish, run["id"]
+            )
             await send_payload({
                 "type": "agent_run_update", "agent_run": completed,
                 "request_id": action.get("_request_id"),
@@ -796,7 +810,8 @@ async def ws_endpoint(
                         continue
                     if requested_step_id:
                         current_run = (
-                            agent_run_service.database.get_agent_run(
+                            await agent_run_service.database.run_in_thread(
+                                agent_run_service.database.get_agent_run,
                                 active_run_id,
                                 include_events=False,
                             )

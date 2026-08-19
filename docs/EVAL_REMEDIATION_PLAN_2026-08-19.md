@@ -6,7 +6,7 @@
 
 ## 本轮执行范围
 
-P0–P11 已合入。本轮把流式/调度器 SQLite 写移出事件循环。Windows CSC 仍阻塞。
+P0–P12 已合入。本轮把 Run 列表、记忆、任务 HTTP 与 WS 收尾写也移出事件循环。Windows CSC 仍阻塞。
 
 ## P0 — 一周内（本轮落地）
 
@@ -118,6 +118,13 @@ P0–P11 已合入。本轮把流式/调度器 SQLite 写移出事件循环。Wi
 |---|---|---|
 | P12-1 | `observe` 对重复 delta 不再写库；WS/后台 Job 非 delta 走 `observe_async` | **完成** |
 | P12-2 | `/health/ready`、会话 CRUD、自动化表读写、调度器 materialize/claim/heartbeat 走 `run_in_thread` | **完成** |
+
+## P13 — 其余 HTTP/WS SQLite 让出事件循环（本轮落地）
+
+| ID | 事项 | 状态 |
+|---|---|---|
+| P13-1 | Agent Run 列表/详情、记忆读写、任务保存走 `run_in_thread` | **完成** |
+| P13-2 | WS 运行结束/失败/中断读步骤走 `run_in_thread` | **完成** |
 
 ## 版本建议
 

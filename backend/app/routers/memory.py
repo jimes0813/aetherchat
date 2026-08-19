@@ -19,12 +19,18 @@ class MemoryPatch(BaseModel):
 
 @router.get("/{session_id}")
 async def get_memory(session_id: UUID):
-    return memory_service.database.get_memory(str(session_id))
+    return await memory_service.database.run_in_thread(
+        memory_service.database.get_memory, str(session_id)
+    )
 
 
 @router.patch("/{session_id}")
 async def update_memory(session_id: UUID, payload: MemoryPatch):
     try:
-        return memory_service.update(str(session_id), payload.model_dump(exclude_none=True))
+        return await memory_service.database.run_in_thread(
+            memory_service.update,
+            str(session_id),
+            payload.model_dump(exclude_none=True),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

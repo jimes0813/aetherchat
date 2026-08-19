@@ -100,6 +100,11 @@ def _save_tasks():
     chat_database.sync_tasks(fake_tasks)
 
 
+async def _save_tasks_async():
+    _write_tasks(fake_tasks)
+    await chat_database.run_in_thread(chat_database.sync_tasks, fake_tasks)
+
+
 def delete_session_tasks(session_id: str) -> int:
     retained = [
         task for task in fake_tasks
@@ -241,7 +246,7 @@ async def claim_task(task_id: UUID, by: str = "model:claude"):
                     )
                 updated = task.model_copy(update={"status": "claimed", "claimed_by": by or "demo-user"})
                 fake_tasks[index] = updated
-                _save_tasks()
+                await _save_tasks_async()
                 return _public_task(updated)
     raise HTTPException(status_code=404, detail="Task not found")
 
@@ -266,7 +271,7 @@ async def create_task(payload: TaskCreate):
         depends_on=dependencies,
     )
     fake_tasks.append(task)
-    _save_tasks()
+    await _save_tasks_async()
     return _public_task(task)
 
 @router.patch("/{task_id}")
@@ -291,6 +296,6 @@ async def update_task(task_id: UUID, payload: TaskUpdate):
                 raise HTTPException(status_code=409, detail="Task dependencies are not complete")
             updated = candidate
             fake_tasks[index] = updated
-            _save_tasks()
+            await _save_tasks_async()
             return _public_task(updated)
     raise HTTPException(status_code=404, detail="Task not found")
