@@ -1381,6 +1381,12 @@ async function openSettingsTab(page: Page, tab: string) {
   }
 }
 
+async function acceptConfirmDialog(page: Page) {
+  const dialog = page.getByRole('alertdialog');
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', { name: '确定' }).click();
+}
+
 /** Phase-2 rail defaults: expand advanced panels so legacy e2e panel titles stay reachable. */
 async function installWorkspaceUiDefaults(page: Page, options?: {
   dismissFirstRun?: boolean;
@@ -1758,7 +1764,8 @@ test.describe('AetherChat Frontend E2E', () => {
   test('opens generated files and reveals their containing directory', async ({ page }) => {
     await expect(page.getByText('本次生成的文件')).toBeVisible();
     await expect(page.getByText('cover.png', { exact: true })).toBeVisible();
-    await expect(page.getByText(/保存位置：.*generated\/comfyui\/cover\.png/)).toBeVisible();
+    await expect(page.getByText('已保存到本机')).toBeVisible();
+    await expect(page.getByText(/保存位置：.*generated\/comfyui\/cover\.png/)).toHaveCount(0);
     await page.getByRole('button', { name: '预览文件 cover.png' }).click();
     await expect(page.getByRole('img', { name: 'cover.png' })).toBeVisible();
     await page.getByRole('button', { name: '打开文件 cover.png' }).click();
@@ -1794,7 +1801,6 @@ test.describe('AetherChat Frontend E2E', () => {
     await expect(page.getByTestId('chat-search-results')).toContainText('Qwen 与 ComfyUI 调用记录');
 
     await page.getByPlaceholder('搜索全部聊天内容、会话标题或 Agent').fill('');
-    page.once('dialog', (dialog) => dialog.accept());
     const deleteRequest = page.waitForRequest((request) => (
       new URL(request.url()).pathname === '/sessions/22222222-2222-4222-8222-222222222222'
       && request.method() === 'DELETE'
@@ -1803,6 +1809,7 @@ test.describe('AetherChat Frontend E2E', () => {
       .locator('#aether-main-content > section')
       .getByRole('button', { name: '删除会话 本地模型协作排查' })
       .click();
+    await acceptConfirmDialog(page);
     await deleteRequest;
     await expect(page.getByText('会话“本地模型协作排查”已删除')).toBeVisible();
     await expect(page.getByText('本地模型协作排查', { exact: true })).toHaveCount(0);
@@ -2084,8 +2091,8 @@ test.describe('AetherChat Frontend E2E', () => {
     await panel.getByRole('button', { name: '基础检查' }).click();
     await expect(panel.getByText('已配置 2/3 个模型，其中 1 个始终参与；基础检查不会调用模型 API')).toBeVisible();
 
-    page.once('dialog', (confirmation) => void confirmation.accept());
     await panel.getByRole('button', { name: '验证模型（可能计费）' }).click();
+    await acceptConfirmDialog(page);
     await expect(panel.getByText('已验证 1 个启用模型，通过 1 个')).toBeVisible();
     expect(verificationPaths).toEqual(['/models/deepseek/verify']);
   });
@@ -2409,8 +2416,8 @@ test.describe('AetherChat Frontend E2E', () => {
 
     await expect(page.getByText('当前文件缺失 · 可从历史恢复')).toBeVisible();
     await expect(page.getByTestId('artifact-preview')).toContainText('可恢复的历史内容。');
-    page.once('dialog', (dialog) => void dialog.accept());
     await page.getByRole('button', { name: '恢复 v1', exact: true }).click();
+    await acceptConfirmDialog(page);
 
     await expect(page.getByText('工件已加载')).toBeVisible();
     await expect(page.getByRole('button', { name: '恢复 v1', exact: true })).toHaveCount(0);
