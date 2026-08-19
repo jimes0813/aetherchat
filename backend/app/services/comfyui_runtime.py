@@ -361,9 +361,9 @@ class ComfyUIRuntimeService:
                 and (process is None or process.returncode is not None)
             ):
                 command, root = self._command(base_url, workflow_roots)
-                data_root = Path(
-                    os.getenv("AETHERCHAT_DATA_DIR", Path.home() / ".aetherchat")
-                ).expanduser().resolve()
+                from ..data_dir import default_data_dir
+
+                data_root = default_data_dir().expanduser().resolve()
                 log_root = data_root / "comfyui-logs"
                 log_root.mkdir(parents=True, exist_ok=True)
                 log_handle = (log_root / "comfyui.log").open("ab", buffering=0)

@@ -27,7 +27,7 @@ const {
   probeBackendLiveness,
   waitForBackendReadiness,
 } = require('./backend-readiness.cjs');
-const { sanitizeBackendProxyEnv } = require('./backend-env.cjs');
+const { resolveBackendDataDir, sanitizeBackendProxyEnv } = require('./backend-env.cjs');
 const { registerTerminationHandlers, terminateChildProcess } = require('./lifecycle.cjs');
 const { createMediaPermissionHandlers } = require('./media-permission.cjs');
 const {
@@ -479,12 +479,22 @@ function backendExecutablePath() {
   return path.join(__dirname, '../../backend/dist/aetherchat-backend', executable);
 }
 
+function currentBackendDataDir() {
+  return resolveBackendDataDir({
+    userData: app.getPath('userData'),
+    home: app.getPath('home'),
+    platform: process.platform,
+    env: process.env,
+    existsSync: (candidate) => fs.existsSync(candidate),
+  });
+}
+
 function startBackend(port) {
   const exePath = backendExecutablePath();
   if (!fs.existsSync(exePath)) return false;
   if (backendProcess && !backendProcess.killed) return true;
 
-  const dataDir = path.join(app.getPath('userData'), 'backend-data');
+  const dataDir = currentBackendDataDir();
   fs.mkdirSync(dataDir, { recursive: true });
   const noProxyEntries = (process.env.NO_PROXY || process.env.no_proxy || '')
     .split(',')
@@ -694,6 +704,7 @@ function createWindow() {
         `--aether-chromium-sandbox=${isChromiumSandboxDegraded(currentInstallChannel(), process.argv.includes('--no-sandbox')) ? 'off' : 'on'}`,
         `--aether-install-channel=${currentInstallChannel()}`,
         `--aether-install-path=${process.execPath}`,
+        `--aether-data-dir=${currentBackendDataDir()}`,
         '--aether-auth-intercept=1',
       ],
     },
@@ -791,7 +802,8 @@ const menu = Menu.buildFromTemplate([
               `可执行文件：${process.execPath}`,
               `平台：${process.platform}/${process.arch}`,
               `Chromium 沙箱：${sandboxOff ? '已关闭（降级模式）' : '已启用'}`,
-              `数据目录：${app.getPath('userData')}`,
+              `后端数据：${currentBackendDataDir()}`,
+              `Electron 配置：${app.getPath('userData')}`,
             ].join('\n'),
             buttons: ['确定'],
           });

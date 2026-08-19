@@ -161,9 +161,17 @@ export function RunPanel({
   const frontendDetail = window.aetherRuntime?.appVersion
     ? `AetherChat ${window.aetherRuntime.appVersion} · 本地桌面前端`
     : '本地桌面前端';
+  const dataDir = window.aetherRuntime?.dataDir || '';
+  const dataDirRow: RunCheckRow = {
+    name: ui('后端数据目录'),
+    detail: dataDir || ui('未由桌面主进程报告'),
+    status: dataDir ? ui('已报告') : ui('未知'),
+    tone: dataDir ? 'ok' : 'warn',
+  };
   const [rows, setRows] = useState<RunCheckRow[]>([
     { name: '后端 API', detail: API_BASE, status: '未检查', tone: 'neutral' },
     { name: '桌面前端', detail: frontendDetail, status: '已加载', tone: 'ok' },
+    dataDirRow,
     { name: '模型配置', detail: `${API_BASE}/models/`, status: '未检查', tone: 'neutral' },
     { name: '工具仓', detail: `${API_BASE}/tools/`, status: '未检查', tone: 'neutral' },
     { name: '插件中心', detail: `${API_BASE}/plugins/`, status: '未检查', tone: 'neutral' },
@@ -175,6 +183,7 @@ export function RunPanel({
     setChecking(true);
     const nextRows: RunCheckRow[] = [
       { name: '桌面前端', detail: frontendDetail, status: '已加载', tone: 'ok' },
+      dataDirRow,
       {
         name: 'WebSocket',
         detail: '/ws/v1/sessions/:id',

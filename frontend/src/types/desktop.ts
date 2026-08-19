@@ -124,6 +124,7 @@ declare global {
       chromiumSandbox?: 'on' | 'off' | string;
       installChannel?: 'development' | 'system-deb' | 'user-appimage' | 'user-unpacked' | 'windows-nsis' | 'packaged' | string;
       installPath?: string;
+      dataDir?: string;
       authIntercept?: boolean;
       getApiToken?: () => Promise<string>;
       openExternal?: (

@@ -6,7 +6,7 @@
 
 ## 本轮执行范围
 
-P0–P8 已合入。本轮把执行环与计划 DAG 再拆到单文件 ≤400。Windows CSC 仍阻塞。
+P0–P9 已合入。本轮收口数据目录：打包桌面与 XDG 文档路径对齐显示，不搬迁已有库。Windows CSC 仍阻塞。
 
 ## P0 — 一周内（本轮落地）
 
@@ -97,6 +97,13 @@ P0–P8 已合入。本轮把执行环与计划 DAG 再拆到单文件 ≤400。
 |---|---|---|
 | P9-1 | 模型轮次循环抽到 `stream_turns.py`，伪工具文本恢复抽到 `stream_pseudo.py` | **完成**（provider 380，turns 393，pseudo 84） |
 | P9-2 | 计划批处理抽到 `stream_plan_batch.py`，就绪步骤抽到 `stream_plan_ready.py` | **完成**（plan 384，batch 121，ready 112） |
+
+## P10 — 数据目录一致性（本轮落地）
+
+| ID | 事项 | 状态 |
+|---|---|---|
+| P10-1 | 打包桌面与独立后端共用数据目录探测：显式 env → 已有 sqlite 的 `userData/backend-data` → XDG | **完成** |
+| P10-2 | 关于框、运行面板、Linux 打包说明与 local-audit MCP 显示/解析同一路径 | **完成**（不搬迁现有 `backend-data` 库） |
 
 ## 版本建议
 

@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('aetherRuntime', {
   chromiumSandbox: argumentValue('aether-chromium-sandbox', 'on'),
   installChannel: argumentValue('aether-install-channel', 'development'),
   installPath: argumentValue('aether-install-path'),
+  dataDir: argumentValue('aether-data-dir'),
   authIntercept: argumentValue('aether-auth-intercept') === '1',
   getApiToken: () => ipcRenderer.invoke('aether-runtime:api-token'),
   openExternal: (url, options = {}) => ipcRenderer.invoke(

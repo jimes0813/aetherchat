@@ -49,7 +49,9 @@ class LocalModelRuntimeService:
 
     @staticmethod
     def _log_root() -> Path:
-        return Path(os.environ.get("AETHERCHAT_DATA_DIR", Path.home() / ".aetherchat")) / "model-logs"
+        from ..data_dir import default_data_dir
+
+        return default_data_dir() / "model-logs"
 
     def _log_path_for(self, name: str) -> Path:
         return self._log_root() / f"{name}.log"

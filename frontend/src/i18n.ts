@@ -542,6 +542,10 @@ const englishUi: Record<string, string> = {
   '当前是用户本地安装，Chromium 沙箱已关闭（降级模式）。这适合本机 RC，不适合发给他人。系统 Deb（/opt/AetherChat）才会启用 setuid 沙箱。':
     'This is a user-local install with the Chromium sandbox off (degraded mode). It is fine for a local RC, not for sharing. The system Deb (/opt/AetherChat) enables the setuid sandbox.',
   '知道了': 'Got it',
+  '后端数据目录': 'Backend data directory',
+  '未由桌面主进程报告': 'Not reported by the desktop process',
+  '已报告': 'Reported',
+  '未知': 'Unknown',
   '显示更早的 {count} 条消息': 'Show {count} earlier messages',
   '对话与模型': 'Chat and models',
   '知识与记忆': 'Knowledge and memory',

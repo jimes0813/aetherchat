@@ -26,7 +26,7 @@ Deb 构建会强制记录 `chrome-sandbox` 为 root 所有、模式 4755；CI �
 
 - 支持聊天、模型配置、插件、任务、工件、文档读写以及 Electron 屏幕截图。
 - 版本化工件支持隔离 HTML/SVG 预览、diff/恢复，以及 DOCX/XLSX/PPTX 导出；Office 输出依赖已经包含在 PyInstaller 后端中。
-- 本地数据由 Electron 放在用户应用数据目录；独立后端默认使用 `$XDG_DATA_HOME/aetherchat` 或 `~/.local/share/aetherchat`。
+- 聊天库、工件和知识库由 `AETHERCHAT_DATA_DIR` 决定。打包桌面若已在 `userData/backend-data`（Linux 上通常是 `~/.config/aetherchat-frontend/backend-data`）找到 `aetherchat.sqlite3`，继续使用该目录，避免把现有会话拆到别处；否则与独立后端一样使用 `$XDG_DATA_HOME/aetherchat` 或 `~/.local/share/aetherchat`。帮助 → 关于与运行面板会显示实际路径。Electron 自己的缓存仍在 `userData`。
 - Linux X11 会通过系统 `libX11`/`libXtst` 提供完整 `computer_20251124` 截图与键鼠动作，包括移动、单/双/三击、右/中键、拖拽、滚动、文本、组合键、按键保持、等待和区域放大；每次动作后自动截图复核，并可在 App 内立即接管和撤销会话授权。Windows 继续使用 UI Automation 与 Win32 输入。Wayland 会保持 fail-closed，除非桌面会话提供兼容的 X11/XTest 环境。
 - 模型密钥通过 Secret Service 系统密钥环保存；`vault.json` 只保留引用。首次启动会把旧版明文条目迁移到密钥环。若桌面环境没有可用的 Secret Service，应用会拒绝持久化新密钥，而不是回退为明文。
 - 安装包注册 `aetherchat://` 协议，并在桌面菜单提供“快速输入”操作。可用 `xdg-open 'aetherchat://chat?prompt=检查报告&mode=project'` 聚焦并填入当前会话，或使用 `aetherchat://new` 新建会话；深链不会自动发送。

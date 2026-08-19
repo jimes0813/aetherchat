@@ -5,12 +5,13 @@ import json
 import re
 import sqlite3
 import sys
+from collections.abc import Iterator
 from contextlib import closing, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from io import TextIOWrapper
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 from urllib.request import ProxyHandler, Request, build_opener
 
 import anyio
@@ -26,8 +27,14 @@ class AuditSettings:
 
 
 def _default_data_dir() -> Path:
-    candidate = Path.home() / ".config" / "aetherchat-frontend" / "backend-data"
-    return candidate.resolve()
+    try:
+        from app.data_dir import default_data_dir
+    except ImportError:
+        backend_root = Path(__file__).resolve().parents[1] / "backend"
+        if str(backend_root) not in sys.path:
+            sys.path.insert(0, str(backend_root))
+        from app.data_dir import default_data_dir
+    return default_data_dir().resolve()
 
 
 _settings = AuditSettings(

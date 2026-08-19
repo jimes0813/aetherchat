@@ -22,8 +22,10 @@ command: /opt/AetherChat/resources/backend/aetherchat-backend
 args:
   local-audit-mcp
   --data-dir
-  /home/jimes0813/.config/aetherchat-frontend/backend-data
+  $AETHERCHAT_DATA_DIR
 ```
+
+`--data-dir` 可省略。服务器会按与桌面相同的规则解析：显式 `AETHERCHAT_DATA_DIR`，否则已有 `aetherchat.sqlite3` 的打包目录（`~/.config/aetherchat-frontend/backend-data`），否则 `$XDG_DATA_HOME/aetherchat`。实际路径以应用「关于」页为准。
 
 For source-tree development, run the server with the repository virtual
 environment and `mcp_servers/aetherchat_local_audit.py` directly.
