@@ -91,7 +91,8 @@ def test_liveness_endpoint_does_not_query_database(client, monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
-    assert response.json()["automation"]["scheduler_running"] is True
+    assert "automation" not in response.json()
+    assert "run_dispatcher" not in response.json()
 
 
 def test_readiness_endpoint_reports_optional_dependencies_without_blocking(

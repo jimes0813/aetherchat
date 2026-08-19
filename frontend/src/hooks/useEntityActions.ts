@@ -1,4 +1,5 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
+import { confirmAction } from '../components/confirmDialog';
 import { API_BASE, isConfiguredModel } from '../components/shared';
 import { fetchJson, withApiAuth } from '../api/client';
 import { connectWS } from '../ws/client';
@@ -263,7 +264,7 @@ export function useEntityActions({
   };
 
   const deleteTool = async (tool: ToolItem) => {
-    if (!window.confirm(`确定删除工具“${tool.name}”吗？此操作无法撤销。`)) return;
+    if (!await confirmAction(`确定删除工具“${tool.name}”吗？此操作无法撤销。`, { danger: true })) return;
     await fetchJson(`${API_BASE}/tools/${tool.id}`, { method: 'DELETE' });
     removeTool(tool.id);
     setNotice('工具已删除');
@@ -309,7 +310,7 @@ export function useEntityActions({
   };
 
   const deleteModel = async (model: ModelConfig) => {
-    if (!window.confirm(`确定删除模型“${model.name}”吗？本地密钥不会显示，但该模型配置将被移除。`)) return;
+    if (!await confirmAction(`确定删除模型“${model.name}”吗？本地密钥不会显示，但该模型配置将被移除。`, { danger: true })) return;
     await fetchJson(`${API_BASE}/models/${encodeURIComponent(model.name)}`, { method: 'DELETE' });
     removeModelConfig(model.name);
     setNotice('模型配置已删除');
@@ -318,7 +319,7 @@ export function useEntityActions({
   const deleteConversation = async (conversationId: string) => {
     const conversation = conversations.find((item) => item.id === conversationId);
     if (!conversation) return;
-    if (!window.confirm(`确定删除会话“${conversation.title}”吗？该会话的消息、任务、资料和生成文件将一并删除。`)) return;
+    if (!await confirmAction(`确定删除会话“${conversation.title}”吗？该会话的消息、任务、资料和生成文件将一并删除。`, { danger: true })) return;
     try {
       await fetchJson(`${API_BASE}/sessions/${conversationId}`, {
         method: 'DELETE',

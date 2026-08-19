@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { GitBranch, Play, SquareTerminal } from 'lucide-react';
 import { fetchJson } from '../api/client';
+import { confirmAction } from './confirmDialog';
 import { useI18n } from '../i18n';
 import { useSessionStore } from '../stores/sessionStore';
 import { API_BASE, isConfiguredModel } from './shared';
@@ -120,7 +121,7 @@ export function RunPanel({
   onRejectPlan,
 }: RunPanelProps) {
   const { ui } = useI18n();
-  const { connection } = useSessionStore();
+  const connection = useSessionStore((state) => state.connection);
   const [checking, setChecking] = useState(false);
   const [verifyingModels, setVerifyingModels] = useState(false);
   const [lastChecked, setLastChecked] = useState<string>('尚未检查');
@@ -269,7 +270,7 @@ export function RunPanel({
   };
 
   const verifyConfiguredModels = async () => {
-    if (!window.confirm('连接验证会向每个已配置且已启用的模型发送一条最小测试请求，可能产生少量 API 费用。确定继续吗？')) return;
+    if (!await confirmAction('连接验证会向每个已配置且已启用的模型发送一条最小测试请求，可能产生少量 API 费用。确定继续吗？')) return;
     setVerifyingModels(true);
     try {
       const models = await fetchJson<ModelConfig[]>(`${API_BASE}/models/`);
@@ -579,8 +580,8 @@ export function RunPanel({
                         {ui('确认并执行')}
                       </button>
                       <button
-                        onClick={() => {
-                          if (window.confirm(ui('拒绝该计划并结束本次运行？'))) {
+                        onClick={async () => {
+                          if (await confirmAction(ui('拒绝该计划并结束本次运行？'), { danger: true })) {
                             onRejectPlan(run);
                           }
                         }}

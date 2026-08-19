@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Images, Puzzle, Trash2 } from 'lucide-react';
 import { asArray, fetchJson } from '../api/client';
+import { confirmAction } from './confirmDialog';
 import { useI18n } from '../i18n';
 import type { PluginInvokeResult, PluginItem } from '../types';
 
@@ -243,7 +244,7 @@ export function PluginCenter({ apiBase, sessionId }: { apiBase: string; sessionI
   };
 
   const uninstall = async (plugin: PluginItem) => {
-    if (!window.confirm(`确定卸载插件“${plugin.name}”吗？`)) return;
+    if (!await confirmAction(`确定卸载插件“${plugin.name}”吗？`, { danger: true })) return;
     try {
       await fetchJson(`${apiBase}/plugins/${encodeURIComponent(plugin.id)}`, { method: 'DELETE' });
       setPlugins((current) => current.filter((item) => item.id !== plugin.id));

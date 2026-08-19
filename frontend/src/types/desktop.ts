@@ -122,6 +122,7 @@ declare global {
       platform?: string;
       quickEntryShortcut?: string;
       chromiumSandbox?: 'on' | 'off' | string;
+      authIntercept?: boolean;
       getApiToken?: () => Promise<string>;
       openExternal?: (
         url: string,

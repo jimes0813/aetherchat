@@ -32,7 +32,7 @@ import { SessionProjectSelect } from './components/SessionProjectSelect';
 import { fetchJson, setApiAuthToken } from './api/client';
 import { MODE_TO_SETTING, SETTING_TO_MODE } from './app/collaborationModes';
 import { useI18n } from './i18n';
-import { useSessionStore } from './stores/sessionStore';
+import { useWorkbenchSession } from './stores/useWorkbenchSession';
 import { useSessionEvents } from './hooks/useSessionEvents';
 import { useSessionLoaders, type StoredSession } from './hooks/useSessionLoaders';
 import { useAgentActions } from './hooks/useAgentActions';
@@ -79,10 +79,10 @@ function App() {
     setModelConfigs,
     upsertModelConfig,
     removeModelConfig,
-    settings: workspaceSettings,
+    workspaceSettings,
     updateSettings,
     selectConversation,
-  } = useSessionStore();
+  } = useWorkbenchSession();
   const { locale, t, ui } = useI18n();
   const approvalActivity = useRef<Record<string, { model: string; toolName: string }>>({});
   const [authToken, setAuthToken] = useState('');
@@ -133,13 +133,14 @@ function App() {
     let cancelled = false;
     const initializeAuth = async () => {
       try {
-        const desktopToken = await window.aetherRuntime?.getApiToken?.();
+        const intercept = Boolean(window.aetherRuntime?.authIntercept);
+        const desktopToken = intercept ? 'intercept' : await window.aetherRuntime?.getApiToken?.();
         const data = desktopToken
           ? { access_token: desktopToken }
           : await fetchJson<{ access_token?: string }>(`${API_BASE}/auth/token`, { method: 'POST' });
         if (!data.access_token) throw new Error('后端未返回本机访问令牌');
         if (cancelled) return;
-        setApiAuthToken(data.access_token);
+        if (!intercept) setApiAuthToken(data.access_token);
         setAuthToken(data.access_token);
         setTokenStatus('本机授权');
       } catch (error) {
@@ -242,7 +243,7 @@ function App() {
     if (!authReady || !authToken) return undefined;
     return window.aetherRuntime?.onBackgroundChange?.(() => {
       fetchJson<Message[]>(
-        `${API_BASE}/sessions/${sessionId}/messages?limit=5000`,
+        `${API_BASE}/sessions/${sessionId}/messages?limit=100`,
       ).then(setMessages).catch(() => undefined);
       fetchJson<AgentRun[]>(
         `${API_BASE}/agent-runs?session_id=${encodeURIComponent(sessionId)}`,
@@ -348,12 +349,13 @@ function App() {
   }, [pendingLaunchIntent, authReady, authToken]);
   const fetchToken = async () => {
     try {
-      const desktopToken = await window.aetherRuntime?.getApiToken?.();
+      const intercept = Boolean(window.aetherRuntime?.authIntercept);
+      const desktopToken = intercept ? 'intercept' : await window.aetherRuntime?.getApiToken?.();
       const data = desktopToken
         ? { access_token: desktopToken }
         : await fetchJson<{ access_token?: string }>(`${API_BASE}/auth/token`, { method: 'POST' });
       if (!data.access_token) throw new Error('后端未返回访问令牌');
-      setApiAuthToken(data.access_token);
+      if (!intercept) setApiAuthToken(data.access_token);
       setAuthToken(data.access_token);
       setTokenStatus('授权已刷新');
       setNotice('本地会话授权已刷新，WebSocket 正在重连');

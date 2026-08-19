@@ -30,7 +30,7 @@ interface TaskBoardProps {
 }
 
 export const TaskBoard = ({ onPatchTask }: TaskBoardProps) => {
-  const { tasks } = useSessionStore();
+  const tasks = useSessionStore((state) => state.tasks);
   const { ui } = useI18n();
 
   return (

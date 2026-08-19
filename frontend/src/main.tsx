@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import App from './App'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { StartupGate } from './components/StartupGate'
+import { ConfirmHost } from './components/confirmDialog'
 import './index.css'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
@@ -12,6 +13,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         scope="AetherChat"
         fallbackClassName="m-6 rounded-lg border border-[#d9b6af] bg-[#f8ece9] p-6 text-[#67372f]"
       >
+        <ConfirmHost />
         <App />
       </ErrorBoundary>
     </StartupGate>

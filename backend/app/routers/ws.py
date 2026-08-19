@@ -668,7 +668,7 @@ async def ws_endpoint(
             targets=targets,
         )
         orchestrator.queue_steer(steer)
-        user_message = orchestrator.record_steer_message(steer["content"])
+        _steer_record, user_message = orchestrator.record_steer_message(steer["content"])
         user_event = {"type": "message_complete", "message": user_message}
         agent_run_service.observe(active_run_id, user_event)
         await send_payload({
@@ -678,6 +678,7 @@ async def ws_endpoint(
             "targets": steer["targets"],
         })
         await send_payload(user_event)
+        await orchestrator.persist_steer_message(_steer_record)
 
     try:
         while True:

@@ -643,6 +643,7 @@ function createWindow() {
         `--aether-platform=${process.platform}`,
         `--aether-quick-entry-shortcut=${quickEntryShortcut}`,
         `--aether-chromium-sandbox=${process.argv.includes('--no-sandbox') ? 'off' : 'on'}`,
+        '--aether-auth-intercept=1',
       ],
     },
   });
@@ -673,6 +674,17 @@ function createWindow() {
       // Invalid and non-HTTP navigation is denied.
     }
   });
+  const session = win.webContents.session;
+  session.webRequest.onBeforeSendHeaders(
+    { urls: [`http://127.0.0.1:${backendPort}/*`, `http://localhost:${backendPort}/*`] },
+    (details, callback) => {
+      const headers = { ...details.requestHeaders };
+      if (!headers.Authorization && !headers.authorization) {
+        headers.Authorization = `Bearer ${apiAccessToken}`;
+      }
+      callback({ requestHeaders: headers });
+    },
+  );
   const mediaPermissions = createMediaPermissionHandlers((webContents) => webContents === win.webContents);
   win.webContents.session.setPermissionRequestHandler(mediaPermissions.requestHandler);
   win.webContents.session.setPermissionCheckHandler(mediaPermissions.checkHandler);

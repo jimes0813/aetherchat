@@ -7,6 +7,7 @@ from typing import Any
 
 from ...models.schemas import ToolCall, ToolDefinition
 from ..approval_service import approval_policy, approval_service
+from ..computer_use_consent import conversation_computer_use_approval
 from ..git_workspace_service import (
     WORKSPACE_TOOL_NAMES,
 )
@@ -20,10 +21,30 @@ from ..tool_loop import (
     tool_loop,
 )
 from ..tool_registry import tool_registry
+from ._constants import _COMPUTER_USE_LOCK
 from .receipts import ReceiptsMixin
 
 
 class ToolsMixin:
+    async def _invoke_plugin_tool(
+        self,
+        tool_name: str,
+        caller: str,
+        arguments: dict[str, Any],
+    ) -> Any:
+        invoke = plugin_registry.invoke_tool(
+            tool_name,
+            self.session_id,
+            caller,
+            arguments,
+            project_id=self.project_id,
+        )
+        if tool_name.startswith("plugin__desktop_control__"):
+            async with _COMPUTER_USE_LOCK:
+                with conversation_computer_use_approval():
+                    return await invoke
+        return await invoke
+
     async def _authorize_model_tool(
         self,
         queue: asyncio.Queue[dict],

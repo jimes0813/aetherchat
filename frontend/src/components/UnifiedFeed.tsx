@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronRight, ExternalLink, Eye, FileText, FolderOpen } from 'lucide-react';
 import { useSessionStore } from '../stores/sessionStore';
 import type { ApprovalRequest, GeneratedFile, GeneratedFileView, Message, ReasoningStep } from '../types';
@@ -7,6 +7,7 @@ import { useI18n } from '../i18n';
 import { ApprovalPrompt } from './ApprovalPrompt';
 import { ChatEmptyState } from './ChatEmptyState';
 import { parseToolActivity } from './toolDisplay';
+import { StreamBubbles } from './StreamBubbles';
 import {
   displayGeneratedFileName,
   technicalGeneratedFiles,
@@ -329,7 +330,7 @@ const ExecutionReceipt = ({
   );
 };
 
-export const UnifiedFeed = ({
+export const UnifiedFeed = memo(function UnifiedFeed({
   approvals = [],
   hasConfiguredModel = true,
   hasLocalModel = false,
@@ -339,10 +340,8 @@ export const UnifiedFeed = ({
   onOpenRunHistory,
   onPickExample,
   onApprovalDecision,
-}: UnifiedFeedProps) => {
-  const {
-    messages,
-  } = useSessionStore();
+}: UnifiedFeedProps) {
+  const messages = useSessionStore((state) => state.messages);
   const visibleMessages = useMemo(() => messages
     .map((message) => message.role === 'assistant'
       ? { ...message, content: withoutLegacyModelRequests(message) }
@@ -363,7 +362,10 @@ export const UnifiedFeed = ({
     if (scroller) scroller.scrollTop = scroller.scrollHeight;
   }, [approvals.length, visibleMessages.length]);
 
+  const [showEarlier, setShowEarlier] = useState(false);
   const isEmpty = visibleMessages.length === 0;
+  const hiddenCount = visibleMessages.length > 80 && !showEarlier ? visibleMessages.length - 80 : 0;
+  const renderedMessages = hiddenCount ? visibleMessages.slice(hiddenCount) : visibleMessages;
 
   return (
     <div ref={scrollRef} className={`aether-chat-scroll flex-1 overflow-auto px-4 ${isEmpty ? 'flex flex-col' : 'py-6'}`}>
@@ -378,10 +380,24 @@ export const UnifiedFeed = ({
           />
         )}
 
-        {visibleMessages.map((msg) => {
+        {hiddenCount > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowEarlier(true)}
+            className="mx-auto mb-2 block text-xs text-[#8b8176] hover:text-[#5d3b20]"
+          >
+            {ui('显示更早的 {count} 条消息', { count: hiddenCount })}
+          </button>
+        )}
+
+        {renderedMessages.map((msg) => {
           const isUser = msg.role === 'user' || msg.author_model === 'user';
           return (
-          <article key={msg.id} className={isUser ? 'flex justify-end' : 'block'}>
+          <article
+            key={msg.id}
+            className={isUser ? 'flex justify-end' : 'block'}
+            style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 8rem' }}
+          >
             {isUser ? (
               <div className="max-w-[min(36rem,85%)] rounded-2xl bg-[#ece4d8] px-4 py-2.5 text-[15px] leading-6 text-[#2f2a24]">
                 <SafeMarkdown content={msg.content} />
@@ -439,6 +455,8 @@ export const UnifiedFeed = ({
           );
         })}
 
+        <StreamBubbles />
+
         {approvals.filter((item) => !item.decision).slice(0, 1).map((approval) => (
           onApprovalDecision
             ? (
@@ -485,4 +503,4 @@ export const UnifiedFeed = ({
       </div>
     </div>
   );
-};
+});

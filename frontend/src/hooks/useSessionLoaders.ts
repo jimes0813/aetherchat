@@ -118,7 +118,7 @@ export function useSessionLoaders({
   };
 
   const loadMessages = () => {
-    fetchJson<unknown>(`${API_BASE}/sessions/${sessionId}/messages?limit=5000`)
+    fetchJson<unknown>(`${API_BASE}/sessions/${sessionId}/messages?limit=100`)
       .then((value) => setMessages(asArray<Message>(value)))
       .catch(() => setMessages([]));
   };

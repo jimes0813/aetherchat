@@ -1,0 +1,45 @@
+import { useShallow } from 'zustand/react/shallow';
+import { useSessionStore } from './sessionStore';
+
+/** App-level session fields. Omits per-token streams so the shell does not rerender on deltas. */
+export function useWorkbenchSession() {
+  return useSessionStore(useShallow((state) => ({
+    sessionId: state.sessionId,
+    conversations: state.conversations,
+    providers: state.providers,
+    tasks: state.tasks,
+    artifacts: state.artifacts,
+    modelConfigs: state.modelConfigs,
+    budget: state.budget,
+    connection: state.connection,
+    activePanel: state.activePanel,
+    setActivePanel: state.setActivePanel,
+    selectedArtifactPath: state.selectedArtifactPath,
+    setSelectedArtifactPath: state.setSelectedArtifactPath,
+    setConnection: state.setConnection,
+    addMessage: state.addMessage,
+    setMessages: state.setMessages,
+    setConversations: state.setConversations,
+    addDelta: state.addDelta,
+    addReasoningStep: state.addReasoningStep,
+    resetStream: state.resetStream,
+    finishStream: state.finishStream,
+    setBudget: state.setBudget,
+    setTasks: state.setTasks,
+    updateTask: state.updateTask,
+    setArtifacts: state.setArtifacts,
+    setMergeProposals: state.setMergeProposals,
+    updateMergeProposal: state.updateMergeProposal,
+    setTools: state.setTools,
+    upsertTool: state.upsertTool,
+    removeTool: state.removeTool,
+    setToolRuns: state.setToolRuns,
+    addToolRun: state.addToolRun,
+    setModelConfigs: state.setModelConfigs,
+    upsertModelConfig: state.upsertModelConfig,
+    removeModelConfig: state.removeModelConfig,
+    workspaceSettings: state.settings,
+    updateSettings: state.updateSettings,
+    selectConversation: state.selectConversation,
+  })));
+}

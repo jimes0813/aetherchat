@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import {
   Archive,
   Brain,
@@ -17,6 +18,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
+import { confirmAction } from './confirmDialog';
 import { AutomationPanel } from './AutomationPanel';
 import { TaskBoard } from './TaskBoard';
 import { SafeMarkdown } from './SafeMarkdown';
@@ -175,7 +177,18 @@ export function InspectorPanel(props: InspectorProps) {
     modelConfigs,
     settings: workspaceSettings,
     providers,
-  } = useSessionStore();
+  } = useSessionStore(useShallow((state) => ({
+    activePanel: state.activePanel,
+    setActivePanel: state.setActivePanel,
+    artifacts: state.artifacts,
+    tasks: state.tasks,
+    mergeProposals: state.mergeProposals,
+    tools: state.tools,
+    toolRuns: state.toolRuns,
+    modelConfigs: state.modelConfigs,
+    settings: state.settings,
+    providers: state.providers,
+  })));
   const { t, ui } = useI18n();
   const activePanelLabel = activePanel ? ({
     记忆: t('memory'), 资料: t('knowledge'), 任务: t('tasks'), 自动化: t('automations'), 工件: t('artifacts'), 合并: t('changes'),
@@ -382,7 +395,7 @@ export function InspectorPanel(props: InspectorProps) {
   };
 
   const deleteMcpConnection = async (connection: MCPConnection) => {
-    if (!window.confirm(`删除 MCP 连接器“${connection.name}”及其本机凭据引用吗？`)) return;
+    if (!await confirmAction(`删除 MCP 连接器“${connection.name}”及其本机凭据引用吗？`, { danger: true })) return;
     await fetchJson(`${props.apiBase}/mcp-connections/${connection.id}`, { method: 'DELETE' });
     setMcpConnections((items) => items.filter((item) => item.id !== connection.id));
     setMcpStatus('连接器已删除');
@@ -570,7 +583,7 @@ export function InspectorPanel(props: InspectorProps) {
   };
 
   const deleteKnowledge = async (attachment: KnowledgeAttachment) => {
-    if (!window.confirm(`从项目资料库删除“${attachment.name}”吗？历史消息中的引用名称会保留。`)) return;
+    if (!await confirmAction(`从项目资料库删除“${attachment.name}”吗？历史消息中的引用名称会保留。`, { danger: true })) return;
     await fetchJson(`${props.apiBase}/knowledge/${props.sessionId}/attachments/${attachment.id}`, { method: 'DELETE' });
     setKnowledgeResults((rows) => rows.filter((row) => row.attachment_id !== attachment.id));
     if (knowledgePreview?.attachment.id === attachment.id) {
@@ -619,7 +632,7 @@ export function InspectorPanel(props: InspectorProps) {
   };
 
   const restoreArtifactVersion = async (version: number) => {
-    if (!props.selectedArtifactPath || !window.confirm(`将当前工件恢复到版本 v${version}？恢复会创建一个新版本，不会删除历史。`)) return;
+    if (!props.selectedArtifactPath || !await confirmAction(`将当前工件恢复到版本 v${version}？恢复会创建一个新版本，不会删除历史。`)) return;
     try {
       const encodedPath = artifactPathUrl(props.selectedArtifactPath);
       await fetchJson(`${props.apiBase}/artifacts/${encodedPath}/restore`, {

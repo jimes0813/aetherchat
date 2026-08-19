@@ -54,6 +54,7 @@ class ConnectionMixin:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 15000")
+        connection.execute("PRAGMA journal_mode = WAL")
         return connection
 
     def readiness_probe(self) -> dict[str, Any]:

@@ -3,6 +3,11 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from app.services.computer_use_consent import (
+    ComputerUseConsentError,
+    conversation_computer_use_approval,
+    require_computer_use_consent,
+)
 from app.services.computer_use_service import ComputerUseError, ComputerUseService
 
 
@@ -95,3 +100,16 @@ async def test_takeover_interrupts_wait_and_releases_the_mouse(monkeypatch):
         await task
     assert releases[-1] == ("left", False)
     assert service.action_history()["events"][-1]["phase"] == "interrupted"
+
+
+@pytest.mark.asyncio
+async def test_chat_approval_does_not_skip_high_risk_native_consent(monkeypatch):
+    monkeypatch.delenv("AETHERCHAT_TEST_AUTO_APPROVE_COMPUTER_USE", raising=False)
+    monkeypatch.delenv("AETHERCHAT_COMPUTER_CONSENT_URL", raising=False)
+    monkeypatch.delenv("AETHERCHAT_COMPUTER_CONSENT_TOKEN", raising=False)
+    with conversation_computer_use_approval():
+        await require_computer_use_consent("观察屏幕", "screenshot", risk="screen_read")
+        with pytest.raises(ComputerUseConsentError, match="未获授权"):
+            await require_computer_use_consent("写入本机文档", "notes.txt", risk="file_write")
+        with pytest.raises(ComputerUseConsentError, match="未获授权"):
+            await require_computer_use_consent("控制当前桌面", "left_click", risk="computer_control")

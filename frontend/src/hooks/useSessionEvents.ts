@@ -87,7 +87,13 @@ export function useSessionEvents({
   useEffect(() => {
     if (!authReady || !authToken) return;
     setConnection('connecting');
-    wsClient.current = connectWS(sessionId, (event: WSMessage) => {
+    let cancelled = false;
+    const start = async () => {
+      const token = authToken === 'intercept'
+        ? String(await window.aetherRuntime?.getApiToken?.() || '')
+        : authToken;
+      if (cancelled || !token) return;
+      wsClient.current = connectWS(sessionId, (event: WSMessage) => {
       if (event.type === 'stream_resync_required') {
         setAgentActivity({});
         loadTasks();
@@ -449,17 +455,22 @@ export function useSessionEvents({
       }
       if (event.type === 'ack' || ((event as any).type === 'system' && (event as any).content === 'Connected')) setConnection('online');
       if ((event as any).type === 'system' && (event as any).content === 'Disconnected') setConnection('offline');
-    }, authToken || undefined, API_BASE);
-    loadTasks();
-    loadMessages();
-    loadTaskEvents();
-    loadAgentRuns();
-    loadGitRepositories();
-    loadArtifacts();
-    loadMerges();
-    loadTools();
-    loadModels();
-    return () => wsClient.current?.close();
+      }, token, API_BASE);
+      loadTasks();
+      loadMessages();
+      loadTaskEvents();
+      loadAgentRuns();
+      loadGitRepositories();
+      loadArtifacts();
+      loadMerges();
+      loadTools();
+      loadModels();
+    };
+    void start();
+    return () => {
+      cancelled = true;
+      wsClient.current?.close();
+    };
   }, [sessionId, authToken, authReady]);
 
   return { wsClient };

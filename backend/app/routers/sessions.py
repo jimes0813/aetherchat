@@ -85,8 +85,12 @@ async def search_messages(
 
 
 @router.get("/{session_id}/messages")
-async def list_messages(session_id: UUID, limit: int = 1000):
-    return chat_database.list_messages(str(session_id), limit)
+async def list_messages(session_id: UUID, limit: int = 100):
+    return await chat_database.run_in_thread(
+        chat_database.list_messages,
+        str(session_id),
+        limit,
+    )
 
 
 @router.get("/{session_id}/task-events")

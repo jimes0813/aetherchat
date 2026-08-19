@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode } from 'react';
+import { Fragment, memo, type ReactNode } from 'react';
 
 
 const safeLink = (value: string) => {
@@ -35,7 +35,7 @@ interface SafeMarkdownProps {
   className?: string;
 }
 
-export function SafeMarkdown({ content, className = '' }: SafeMarkdownProps) {
+export const SafeMarkdown = memo(function SafeMarkdown({ content, className = '' }: SafeMarkdownProps) {
   const lines = String(content || '').replace(/\r\n?/g, '\n').split('\n');
   const blocks: ReactNode[] = [];
   let index = 0;
@@ -110,4 +110,4 @@ export function SafeMarkdown({ content, className = '' }: SafeMarkdownProps) {
   }
 
   return <div className={`text-sm leading-7 text-[#4a4037] ${className}`}>{blocks}</div>;
-}
+});

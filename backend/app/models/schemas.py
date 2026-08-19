@@ -187,10 +187,8 @@ class HealthStatus(BaseModel):
     status: str
     service: str
     redis: bool = False
-    automation: dict[str, Any] = Field(default_factory=dict)
-    run_dispatcher: dict[str, Any] = Field(default_factory=dict)
 
-    model_config = {"extra": "allow"}
+    model_config = {"extra": "forbid"}
 
 
 class ReadinessStatus(BaseModel):

@@ -31,6 +31,19 @@ afterEach(() => {
 });
 
 
+describe('UnifiedFeed streaming bubbles', () => {
+  it('renders live token text from the stream store', () => {
+    useSessionStore.setState((state) => ({
+      messages: [],
+      streams: { Qwen: '正在生成封面…' },
+      settings: { ...state.settings, uiLocale: 'zh-CN' },
+    }));
+    render(<UnifiedFeed />);
+    expect(screen.getByTestId('stream-bubble')).toBeTruthy();
+    expect(screen.getByText('正在生成封面…')).toBeTruthy();
+  });
+});
+
 describe('UnifiedFeed generated files', () => {
   it('shows human file names and hides metadata json cards', () => {
     useSessionStore.setState((state) => ({

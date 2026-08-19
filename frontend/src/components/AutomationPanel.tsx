@@ -12,6 +12,7 @@ import {
   ShieldCheck,
   Trash2,
 } from 'lucide-react';
+import { confirmAction } from './confirmDialog';
 import { useI18n } from '../i18n';
 import type {
   AutomationSchedule,
@@ -199,7 +200,7 @@ export function AutomationPanel({
   };
 
   const deleteSchedule = async (schedule: AutomationSchedule) => {
-    if (!window.confirm(ui('删除这个定时任务？已产生的运行记录会保留。'))) return;
+    if (!await confirmAction(ui('删除这个定时任务？已产生的运行记录会保留。'), { danger: true })) return;
     setBusy(`schedule:${schedule.id}`);
     try {
       await request(

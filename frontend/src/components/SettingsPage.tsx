@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { useI18n } from '../i18n';
-import { SETTINGS_TABS, type SettingsTabId } from './settingsTabs';
+import { SETTINGS_GROUPS, type SettingsTabId } from './settingsTabs';
 
 type SettingsPageProps = {
   activeTab: SettingsTabId;
@@ -34,21 +34,28 @@ export function SettingsPage({
           aria-label={ui('设置分组')}
           className="min-h-0 flex-1 overflow-auto p-1.5"
         >
-          {SETTINGS_TABS.map(([id, key]) => (
-            <button
-              key={id}
-              type="button"
-              role="tab"
-              aria-selected={activeTab === id}
-              onClick={() => onChangeTab(id)}
-              className={`mb-0.5 flex h-7 w-full items-center rounded-md px-2 text-left text-xs ${
-                activeTab === id
-                  ? 'bg-[#2f2a24] font-medium text-white'
-                  : 'text-[#5b4532] hover:bg-[#e7ddd0]'
-              }`}
-            >
-              {t(key)}
-            </button>
+          {SETTINGS_GROUPS.map((group) => (
+            <div key={group.id} className="mb-2">
+              <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-[#8b8176]">
+                {ui(group.label)}
+              </div>
+              {group.tabs.map(([id, key]) => (
+                <button
+                  key={id}
+                  type="button"
+                  role="tab"
+                  aria-selected={activeTab === id}
+                  onClick={() => onChangeTab(id)}
+                  className={`mb-0.5 flex h-7 w-full items-center rounded-md px-2 text-left text-xs ${
+                    activeTab === id
+                      ? 'bg-[#2f2a24] font-medium text-white'
+                      : 'text-[#5b4532] hover:bg-[#e7ddd0]'
+                  }`}
+                >
+                  {t(key)}
+                </button>
+              ))}
+            </div>
           ))}
         </nav>
       </aside>

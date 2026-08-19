@@ -12,7 +12,6 @@ from ...providers.base import LLMProvider, get_provider
 from ..approval_service import approval_policy
 from ..chat_database import chat_database
 from ..chat_references import resolve_chat_references
-from ..computer_use_consent import conversation_computer_use_approval
 from ..context_builder import build_messages_for_provider, estimate_tokens
 from ..git_workspace_service import (
     WORKSPACE_TOOL_NAMES,
@@ -31,7 +30,7 @@ from ..tool_loop import (
     FILE_WRITE_TOOLS,
 )
 from ..tool_registry import ToolInvoke, tool_registry
-from ._constants import _COMPUTER_USE_LOCK, BROWSER_OPEN_TOOL, MAX_MODEL_TURNS, PSEUDO_TOOL_CALL_RE
+from ._constants import BROWSER_OPEN_TOOL, MAX_MODEL_TURNS, PSEUDO_TOOL_CALL_RE
 
 
 class RunMixin:
@@ -58,7 +57,7 @@ class RunMixin:
             return
         self._run_steers.append(dict(steer))
 
-    def record_steer_message(self, content: str) -> dict:
+    def record_steer_message(self, content: str) -> tuple[Message, dict]:
         message = Message(
             id=uuid4(),
             session_id=UUID(self.session_id),
@@ -68,9 +67,11 @@ class RunMixin:
             created_at=datetime.now(UTC),
         )
         self.conversation_history.append(ChatMessage(role="user", content=message.content))
-        chat_database.save_message(message, mode=self.mode)
+        return message, message.model_dump(mode="json")
+
+    async def persist_steer_message(self, message: Message) -> None:
+        await chat_database.run_in_thread(chat_database.save_message, message, mode=self.mode)
         memory_service.refresh(self.session_id, user_content=message.content)
-        return message.model_dump(mode="json")
 
     def _consume_steers(self, model: str) -> list[dict]:
         selected: list[dict] = []
@@ -1092,24 +1093,11 @@ class RunMixin:
                         if plugin_match is not None:
                             started_at = datetime.now(UTC).isoformat()
                             try:
-                                if tool_name.startswith("plugin__desktop_control__"):
-                                    async with _COMPUTER_USE_LOCK:
-                                        with conversation_computer_use_approval():
-                                            plugin_result = await plugin_registry.invoke_tool(
-                                                tool_name,
-                                                self.session_id,
-                                                f"model:{name}",
-                                                arguments,
-                                                project_id=self.project_id,
-                                            )
-                                else:
-                                    plugin_result = await plugin_registry.invoke_tool(
-                                        tool_name,
-                                        self.session_id,
-                                        f"model:{name}",
-                                        arguments,
-                                        project_id=self.project_id,
-                                    )
+                                plugin_result = await self._invoke_plugin_tool(
+                                    tool_name,
+                                    f"model:{name}",
+                                    arguments,
+                                )
                                 plugin_result = await self._complete_desktop_action(
                                     tool_name,
                                     plugin_result,

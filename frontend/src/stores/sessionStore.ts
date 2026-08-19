@@ -195,12 +195,17 @@ export const useSessionStore = create<SessionState>()(persist((set) => ({
     providers: state.providers.filter((provider) => provider.name !== name),
   })),
   updateSettings: (settings) => set((state) => ({ settings: { ...state.settings, ...settings } })),
-  addDelta: (model, delta) => set((state) => ({
-    streams: { ...state.streams, [model]: `${state.streams[model] ?? ''}${delta}` },
-    providers: state.providers.map((provider) => (
-      provider.name === model ? { ...provider, status: 'thinking' } : provider
-    )),
-  })),
+  addDelta: (model, delta) => set((state) => {
+    const streams = { ...state.streams, [model]: `${state.streams[model] ?? ''}${delta}` };
+    const provider = state.providers.find((item) => item.name === model);
+    if (!provider || provider.status === 'thinking') return { streams };
+    return {
+      streams,
+      providers: state.providers.map((item) => (
+        item.name === model ? { ...item, status: 'thinking' as const } : item
+      )),
+    };
+  }),
   addReasoningStep: (model, step, reset = false) => set((state) => {
     const current = reset ? [] : state.reasoningStreams[model] ?? [];
     const last = current[current.length - 1];

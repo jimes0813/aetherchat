@@ -6,7 +6,7 @@
 
 ## 本轮执行范围
 
-本轮完成 **P0 全部**，并留下 P1/P2 清单供后续批次。
+上一轮完成 **P0 全部**。本轮完成 **P1 全部**（`stream_user_message` 仍偏长，WebSocket 连接时仍取一次 token）。P2 留待后续批次。
 
 ## P0 — 一周内（本轮落地）
 
@@ -23,19 +23,19 @@
 
 **不做本轮**：强推 origin 的 12 个历史提交（需维护者确认远程策略）。本轮改动单独提交。
 
-## P1 — 一个月（下一批）
+## P1 — 一个月（本轮落地）
 
-| ID | 事项 |
-|---|---|
-| P1-1 | 流式气泡：streams 离开全量 zustand，selector + memo |
-| P1-2 | 消息列表虚拟化；历史默认 100 条 |
-| P1-3 | 剩余 SQLite 写走 `to_thread`；拆 `stream_user_message` |
-| P1-4 | 设置页收成 4 组 |
-| P1-5 | 自绘对话框替换 `window.confirm`；i18n 稳定 key |
-| P1-6 | 对话授权不得替代原生 Computer Use broker |
-| P1-7 | Bearer 留在主进程 |
-| P1-8 | 生产关 `/docs`；`/health` 精简 |
-| P1-9 | 拆 `test_basic.py` |
+| ID | 事项 | 状态 |
+|---|---|---|
+| P1-1 | 流式气泡：streams 离开全量 zustand，selector + memo | **完成** |
+| P1-2 | 消息列表虚拟化（content-visibility + 只渲染最近 80 条）；历史默认 100 条 | **完成** |
+| P1-3 | steer 写走 `to_thread`；消息列表异步化；插件调用从 run 抽出 | **完成**（ack/用户气泡先发，落库后置；`stream_user_message` 仍偏长） |
+| P1-4 | 设置页收成 4 组 | **完成** |
+| P1-5 | 自绘对话框替换 `window.confirm` | **完成** |
+| P1-6 | 对话授权不得替代高风险原生 Computer Use | **完成** |
+| P1-7 | HTTP Bearer 由 Electron 主进程注入；渲染进程不再缓存真实 token | **完成**（WebSocket 仍在连接时取一次 token） |
+| P1-8 | 生产关 `/docs`；`/health` 精简 | **完成** |
+| P1-9 | 拆 `test_basic.py`（fixtures 入 conftest，插件/Comfy/桌面测抽出） | **完成** |
 
 ## P2 — 一季度（1.0 资格）
 

@@ -43,7 +43,9 @@ async def require_computer_use_consent(
         and os.environ.get("AETHERCHAT_TEST_AUTO_APPROVE_COMPUTER_USE") == "1"
     ):
         return
-    if _conversation_approval.get():
+    # Chat-card approval may skip native prompts only for low-risk observation.
+    # Keyboard/mouse, file writes and app launches always go through Electron.
+    if _conversation_approval.get() and risk in {"screen_read", "file_read"}:
         return
 
     url = os.environ.get("AETHERCHAT_COMPUTER_CONSENT_URL", "").strip()

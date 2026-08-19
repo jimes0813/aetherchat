@@ -25,6 +25,8 @@ describe('SettingsPage', () => {
       if (label) expect(screen.getByRole('tab', { name: label })).toBeTruthy();
     }
     expect(screen.getAllByRole('tab')).toHaveLength(SETTINGS_TABS.length);
+    expect(screen.getByText('对话与模型')).toBeTruthy();
+    expect(screen.getByText('高级')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('tab', { name: '模型' }));
     expect(onChangeTab).toHaveBeenCalledWith('模型');
