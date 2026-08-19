@@ -6,7 +6,7 @@
 
 ## 本轮执行范围
 
-P0–P3 已合入。本轮推进原计划 **P2 #20/#21** 与剩余顶栏打磨：chunk 拆分、治理降为实验、收束顶栏与 GTK 菜单。Windows CSC 仍阻塞。
+P0–P4 已合入。本轮推进 P1 余项：按域再拆 `test_basic.py`，并把 `stream_user_message` 执行环抽到独立 mixin。Windows CSC 仍阻塞。
 
 ## P0 — 一周内（本轮落地）
 
@@ -29,13 +29,13 @@ P0–P3 已合入。本轮推进原计划 **P2 #20/#21** 与剩余顶栏打磨�
 |---|---|---|
 | P1-1 | 流式气泡：streams 离开全量 zustand，selector + memo | **完成** |
 | P1-2 | 消息列表虚拟化（content-visibility + 只渲染最近 80 条）；历史默认 100 条 | **完成** |
-| P1-3 | steer 写走 `to_thread`；消息列表异步化；插件调用从 run 抽出 | **完成**（ack/用户气泡先发，落库后置；`stream_user_message` 仍偏长） |
+| P1-3 | steer 写走 `to_thread`；消息列表异步化；插件调用从 run 抽出 | **完成**（执行环已抽到 `stream_exec.py`；`stream_user_message` 本身约 120 行） |
 | P1-4 | 设置页收成 4 组 | **完成** |
 | P1-5 | 自绘对话框替换 `window.confirm` | **完成** |
 | P1-6 | 对话授权不得替代高风险原生 Computer Use | **完成** |
 | P1-7 | HTTP Bearer 由 Electron 主进程注入；渲染进程不再缓存真实 token | **完成**（WebSocket 仍在连接时取一次 token） |
 | P1-8 | 生产关 `/docs`；`/health` 精简 | **完成** |
-| P1-9 | 拆 `test_basic.py`（fixtures 入 conftest，插件/Comfy/桌面测抽出） | **完成** |
+| P1-9 | 拆 `test_basic.py`（fixtures 入 conftest，插件/Comfy/桌面测抽出） | **完成**（续拆 ws / orchestrator / agent；主文件仍约 1700 行） |
 
 ## P2 — 一季度（1.0 资格）
 
@@ -62,6 +62,13 @@ P0–P3 已合入。本轮推进原计划 **P2 #20/#21** 与剩余顶栏打磨�
 | P4-2 | 治理页标为高级实验，不作为默认设置入口 | **完成** |
 | P4-3 | 收束顶栏：去掉模式回显与重复「新建默认」 | **完成** |
 | P4-4 | GTK「运行」菜单并入帮助，去掉与顶栏重复的打开工作台 | **完成** |
+
+## P5 — P1 余项收口（本轮落地）
+
+| ID | 事项 | 状态 |
+|---|---|---|
+| P5-1 | 再拆 `test_basic.py` 为 ws / orchestrator / agent | **完成** |
+| P5-2 | `stream_user_message` 执行环抽到 `orchestrator/stream_exec.py` | **完成** |
 
 ## 版本建议
 
