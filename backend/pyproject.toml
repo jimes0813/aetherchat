@@ -50,6 +50,8 @@ module = [
     "app.services.orchestrator.plan",
     "app.services.orchestrator.receipts",
     "app.services.orchestrator.run",
+    "app.services.orchestrator.stream_exec",
+    "app.services.orchestrator.stream_plan",
     "app.services.orchestrator.tools",
 ]
 disable_error_code = ["attr-defined", "has-type", "assignment", "no-any-return", "index", "union-attr"]

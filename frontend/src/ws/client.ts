@@ -12,7 +12,7 @@ const CURSOR_RESET_CLOSE_CODE = 4009;
 export function connectWS(
   sessionId: string,
   onMessage: (data: WSMessage) => void,
-  token?: string,
+  token?: string | (() => Promise<string> | string),
   apiBase = 'http://localhost:8000',
 ) {
   const createRequestId = () => globalThis.crypto?.randomUUID?.()
@@ -36,63 +36,84 @@ export function connectWS(
 
   const open = () => {
     if (closedByClient) return;
-    url.searchParams.set('stream_id', streamState.streamId);
-    url.searchParams.set('cursor', String(eventWatermark.snapshot().highestSequence));
-    let socket: WebSocket;
-    try {
-      const protocols = token ? ['aetherchat', `aetherchat.auth.${token}`] : undefined;
-      socket = new WebSocket(url.toString(), protocols);
-    } catch (error) {
-      console.error('WS connection error', error);
-      onMessage({ type: 'system', content: 'Disconnected' });
-      reconnectTimer = window.setTimeout(open, 1000);
-      return;
-    }
-    ws = socket;
-
-    socket.onmessage = (event) => {
-      if (socket !== ws || closedByClient) return;
+    void (async () => {
+      if (closedByClient) return;
+      url.searchParams.set('stream_id', streamState.streamId);
+      url.searchParams.set('cursor', String(eventWatermark.snapshot().highestSequence));
+      let auth = '';
       try {
-        const msg: unknown = JSON.parse(event.data);
-        if (eventWatermark.accept(msg)) {
-          const cursor = eventWatermark.snapshot().highestSequence;
-          if (cursor !== streamState.cursor) {
-            streamState = { ...streamState, cursor };
-            persistEventStreamState(sessionId, streamState);
+        auth = String(typeof token === 'function' ? await token() : (token || ''));
+      } catch (error) {
+        console.error('WS token error', error);
+        onMessage({ type: 'system', content: 'Disconnected' });
+        reconnectTimer = window.setTimeout(open, 1000);
+        return;
+      }
+      if (closedByClient) {
+        auth = '';
+        return;
+      }
+      let socket: WebSocket;
+      try {
+        const protocols = auth ? ['aetherchat', `aetherchat.auth.${auth}`] : undefined;
+        auth = '';
+        socket = new WebSocket(url.toString(), protocols);
+      } catch (error) {
+        console.error('WS connection error', error);
+        onMessage({ type: 'system', content: 'Disconnected' });
+        reconnectTimer = window.setTimeout(open, 1000);
+        return;
+      }
+      if (closedByClient) {
+        socket.close();
+        return;
+      }
+      ws = socket;
+
+      socket.onmessage = (event) => {
+        if (socket !== ws || closedByClient) return;
+        try {
+          const msg: unknown = JSON.parse(event.data);
+          if (eventWatermark.accept(msg)) {
+            const cursor = eventWatermark.snapshot().highestSequence;
+            if (cursor !== streamState.cursor) {
+              streamState = { ...streamState, cursor };
+              persistEventStreamState(sessionId, streamState);
+            }
+            onMessage(msg as WSMessage);
           }
-          onMessage(msg as WSMessage);
+        } catch (e) {
+          console.error('WS parse error', e);
         }
-      } catch (e) {
-        console.error('WS parse error', e);
-      }
-    };
+      };
 
-    socket.onopen = () => {
-      if (socket !== ws || closedByClient) return;
-      reconnectAttempts = 0;
-      onMessage({ type: 'system', content: 'Connected' });
-    };
+      socket.onopen = () => {
+        if (socket !== ws || closedByClient) return;
+        reconnectAttempts = 0;
+        onMessage({ type: 'system', content: 'Connected' });
+      };
 
-    socket.onerror = (e) => {
-      console.error('WS error', e);
-    };
+      socket.onerror = (e) => {
+        console.error('WS error', e);
+      };
 
-    socket.onclose = (event) => {
-      if (socket !== ws || closedByClient) return;
-      ws = null;
-      if (event.code === CURSOR_RESET_CLOSE_CODE) {
-        streamState = newEventStreamState(sessionId);
-        eventWatermark.reset(0, streamState.streamId);
-        onMessage({
-          type: 'stream_resync_required',
-          content: 'Event cursor expired; refreshing the session snapshot',
-        });
-      }
-      onMessage({ type: 'system', content: 'Disconnected' });
-      const delay = Math.min(5000, 500 + reconnectAttempts * 500);
-      reconnectAttempts += 1;
-      reconnectTimer = window.setTimeout(open, delay);
-    };
+      socket.onclose = (event) => {
+        if (socket !== ws || closedByClient) return;
+        ws = null;
+        if (event.code === CURSOR_RESET_CLOSE_CODE) {
+          streamState = newEventStreamState(sessionId);
+          eventWatermark.reset(0, streamState.streamId);
+          onMessage({
+            type: 'stream_resync_required',
+            content: 'Event cursor expired; refreshing the session snapshot',
+          });
+        }
+        onMessage({ type: 'system', content: 'Disconnected' });
+        const delay = Math.min(5000, 500 + reconnectAttempts * 500);
+        reconnectAttempts += 1;
+        reconnectTimer = window.setTimeout(open, delay);
+      };
+    })();
   };
 
   open();

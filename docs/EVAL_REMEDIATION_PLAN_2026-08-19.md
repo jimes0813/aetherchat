@@ -6,7 +6,7 @@
 
 ## 本轮执行范围
 
-P0–P4 已合入。本轮推进 P1 余项：按域再拆 `test_basic.py`，并把 `stream_user_message` 执行环抽到独立 mixin。Windows CSC 仍阻塞。
+P0–P5 已合入。本轮推进 P1 余项：WebSocket 不再把 Bearer 常驻在 `connectWS` 选项里；计划批处理从 `stream_exec` 抽到 `stream_plan`。Windows CSC 仍阻塞。
 
 ## P0 — 一周内（本轮落地）
 
@@ -33,9 +33,9 @@ P0–P4 已合入。本轮推进 P1 余项：按域再拆 `test_basic.py`，并�
 | P1-4 | 设置页收成 4 组 | **完成** |
 | P1-5 | 自绘对话框替换 `window.confirm` | **完成** |
 | P1-6 | 对话授权不得替代高风险原生 Computer Use | **完成** |
-| P1-7 | HTTP Bearer 由 Electron 主进程注入；渲染进程不再缓存真实 token | **完成**（WebSocket 仍在连接时取一次 token） |
+| P1-7 | HTTP Bearer 由 Electron 主进程注入；渲染进程不再缓存真实 token | **完成**（WS 按 getter 取 token，构造后立即清空局部变量；桌面仍为 `intercept`） |
 | P1-8 | 生产关 `/docs`；`/health` 精简 | **完成** |
-| P1-9 | 拆 `test_basic.py`（fixtures 入 conftest，插件/Comfy/桌面测抽出） | **完成**（续拆 ws / orchestrator / agent；主文件仍约 1700 行） |
+| P1-9 | 拆 `test_basic.py`（fixtures 入 conftest，插件/Comfy/桌面测抽出） | **完成**（续拆 ws / orchestrator / agent；`test_basic.py` 仍约 1715，`test_basic_orchestrator.py` 约 2576） |
 
 ## P2 — 一季度（1.0 资格）
 
@@ -69,6 +69,13 @@ P0–P4 已合入。本轮推进 P1 余项：按域再拆 `test_basic.py`，并�
 |---|---|---|
 | P5-1 | 再拆 `test_basic.py` 为 ws / orchestrator / agent | **完成** |
 | P5-2 | `stream_user_message` 执行环抽到 `orchestrator/stream_exec.py` | **完成** |
+
+## P6 — P1 余项收口（本轮落地）
+
+| ID | 事项 | 状态 |
+|---|---|---|
+| P6-1 | WebSocket 连接 token 改为 getter，握手后清空局部 auth | **完成** |
+| P6-2 | 计划批处理从 `stream_exec.py` 抽到 `orchestrator/stream_plan.py` | **完成**（`stream_exec.py` 仍约 1332 行，未到 ≤400） |
 
 ## 版本建议
 
