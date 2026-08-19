@@ -6,7 +6,7 @@
 
 ## 本轮执行范围
 
-P0–P2 本机项已合入。本轮推进测评 **P2 打磨**：上翻历史不被拽回、首次向导/语音浮层焦点陷阱。Windows CSC / 三平台 tag 仍阻塞。
+P0–P3 已合入。本轮推进原计划 **P2 #20/#21** 与剩余顶栏打磨：chunk 拆分、治理降为实验、收束顶栏与 GTK 菜单。Windows CSC 仍阻塞。
 
 ## P0 — 一周内（本轮落地）
 
@@ -42,8 +42,8 @@ P0–P2 本机项已合入。本轮推进测评 **P2 打磨**：上翻历史不�
 | ID | 事项 | 状态 |
 |---|---|---|
 | P2-1 | Windows CSC 配置到 GitHub Secrets | **阻塞**（本机无 Authenticode 证书；CI 在 secret 存在时才会强制签名） |
-| P2-2 | 三平台同一 `v*` tag | **阻塞**（需维护者推送 tag；未强推 origin） |
-| P2-3 | 已发布 `update-manifest.signed.json` | **本机可签**（`scripts/sign_local_linux_manifest.sh`；GitHub Release 上传仍待 tag） |
+| P2-2 | 三平台同一 `v*` tag | **部分完成**（`v0.2.0-rc.7` Linux x64+arm64；Windows 仍缺 CSC） |
+| P2-3 | 已发布 `update-manifest.signed.json` | **完成（Linux RC）**（prerelease，不走 `/releases/latest`） |
 | P2-4 | Windows 安装/升级/卸载烟测记录 Authenticode | **完成**（无 CSC 时记录状态；`REQUIRE_CODE_SIGNING=1` 时失败） |
 | P2-5 | 用户安装降级模式明示 | **完成**（通道探测、首次警告、工作台横幅、关于页、用户启动器注释） |
 
@@ -53,6 +53,15 @@ P0–P2 本机项已合入。本轮推进测评 **P2 打磨**：上翻历史不�
 |---|---|---|
 | P3-1 | 上翻历史时新消息不强制滚到底 | **完成** |
 | P3-2 | 首次向导、语音浮层焦点陷阱 | **完成** |
+
+## P4 — 计划 P2 余项（本轮落地）
+
+| ID | 事项 | 状态 |
+|---|---|---|
+| P4-1 | 前端 manualChunks + `sourcemap: hidden` | **完成** |
+| P4-2 | 治理页标为高级实验，不作为默认设置入口 | **完成** |
+| P4-3 | 收束顶栏：去掉模式回显与重复「新建默认」 | **完成** |
+| P4-4 | GTK「运行」菜单并入帮助，去掉与顶栏重复的打开工作台 | **完成** |
 
 ## 版本建议
 

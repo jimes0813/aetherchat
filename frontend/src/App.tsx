@@ -467,8 +467,6 @@ function App() {
     hasApproval: approvals.some((item) => item.session_id === sessionId && !item.decision),
   });
 
-  const spendPct = Math.min(100, Math.max(0, ((budget.total - budget.remaining) / budget.total) * 100));
-
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
@@ -578,9 +576,6 @@ function App() {
             providerCount={providers.length}
             activeProviderCount={modelConfigs.filter(isConfiguredModel).length}
             budgetRemaining={budget.remaining}
-            spendPct={spendPct}
-            mode={workspaceSettings.mode}
-            mergeRule={workspaceSettings.mergeRule}
             onOpenSearch={() => setCommandOpen(true)}
           />
           )}
@@ -605,18 +600,9 @@ function App() {
               <SessionProjectSelect
                 projects={governanceProjects}
                 value={activeProjectId}
-                preferredProjectId={preferredProjectId}
                 onChangeSessionProject={(projectId) => void bindSessionProject(projectId)}
-                onChangePreferred={(projectId) => updateSettings({ preferredProjectId: projectId })}
               />
             </div>
-            <span className="ml-auto shrink-0 text-[11px] text-[#8b8176]">
-              {ui('当前: {mode}', {
-                mode: locale === 'en-US'
-                  ? ui(currentMode === 'casual' ? '休闲' : currentMode === 'roundtable' ? '圆桌' : '项目')
-                  : currentMode,
-              })}
-            </span>
           </div>
           )}
           {mainView === 'chat' && (

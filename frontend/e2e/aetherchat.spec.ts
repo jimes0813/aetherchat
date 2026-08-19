@@ -1679,7 +1679,7 @@ test.describe('AetherChat Frontend E2E', () => {
     const composer = page.locator('textarea[data-aether-composer]');
     await expect(composer).toHaveValue('对比 Claude 并完善交付闭环');
     await expect(composer).toBeFocused();
-    await expect(page.getByText('当前: casual')).toBeVisible();
+    await expect(page.getByRole('button', { name: '休闲' })).toHaveAttribute('aria-pressed', 'true');
     await expect(page.getByText('已从 AetherChat 链接载入输入内容')).toBeVisible();
   });
 
@@ -1734,13 +1734,13 @@ test.describe('AetherChat Frontend E2E', () => {
   });
 
   test('switches collaboration modes', async ({ page }) => {
-    await expect(page.getByText('当前: project')).toBeVisible();
+    await expect(page.getByRole('button', { name: '项目', exact: true })).toHaveAttribute('aria-pressed', 'true');
     await page.getByRole('button', { name: '休闲' }).click();
-    await expect(page.getByText('当前: casual')).toBeVisible();
+    await expect(page.getByRole('button', { name: '休闲' })).toHaveAttribute('aria-pressed', 'true');
     await page.getByRole('button', { name: '圆桌' }).click();
-    await expect(page.getByText('当前: roundtable')).toBeVisible();
+    await expect(page.getByRole('button', { name: '圆桌' })).toHaveAttribute('aria-pressed', 'true');
     await page.getByRole('button', { name: '项目', exact: true }).click();
-    await expect(page.getByText('当前: project')).toBeVisible();
+    await expect(page.getByRole('button', { name: '项目', exact: true })).toHaveAttribute('aria-pressed', 'true');
   });
 
   test('restores chat history and task records from the workspace tabs', async ({ page }) => {

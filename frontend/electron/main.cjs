@@ -762,43 +762,42 @@ const menu = Menu.buildFromTemplate([
   { label: '编辑', submenu: [{ role: 'undo', label: '撤销' }, { role: 'redo', label: '重做' }, { type: 'separator' }, { role: 'copy', label: '复制' }, { role: 'paste', label: '粘贴' }] },
   { label: '视图', submenu: [{ role: 'reload', label: '刷新' }, ...(isDev ? [{ role: 'toggleDevTools', label: '开发者工具' }] : []), { role: 'togglefullscreen', label: '全屏' }] },
   {
-    label: '运行',
+    label: '帮助',
     submenu: [
-      { label: '打开工作台', click: () => createWindow() },
       {
         label: process.platform === 'darwin'
           ? '快速输入（Cmd+Option+Space）'
           : '快速输入（Ctrl+Alt+Space）',
         click: () => activateLaunchIntent(quickEntryIntent()),
       },
-    ],
-  },
-  {
-    label: '帮助',
-    submenu: [{ label: '检查签名更新', click: () => checkForSignedUpdate() }, { type: 'separator' }, {
-      label: '关于 AetherChat',
-      click: () => {
-        const channel = currentInstallChannel();
-        const sandboxOff = isChromiumSandboxDegraded(
-          channel,
-          process.argv.includes('--no-sandbox'),
-        );
-        dialog.showMessageBox({
-          type: 'info',
-          title: '关于 AetherChat',
-          message: `AetherChat ${app.getVersion()}`,
-          detail: [
-            '多模型中文协作桌面工作台 · 本地 RC',
-            `通道：${describeInstallChannel(channel)}`,
-            `可执行文件：${process.execPath}`,
-            `平台：${process.platform}/${process.arch}`,
-            `Chromium 沙箱：${sandboxOff ? '已关闭（降级模式）' : '已启用'}`,
-            `数据目录：${app.getPath('userData')}`,
-          ].join('\n'),
-          buttons: ['确定'],
-        });
+      { type: 'separator' },
+      { label: '检查签名更新', click: () => checkForSignedUpdate() },
+      { type: 'separator' },
+      {
+        label: '关于 AetherChat',
+        click: () => {
+          const channel = currentInstallChannel();
+          const sandboxOff = isChromiumSandboxDegraded(
+            channel,
+            process.argv.includes('--no-sandbox'),
+          );
+          dialog.showMessageBox({
+            type: 'info',
+            title: '关于 AetherChat',
+            message: `AetherChat ${app.getVersion()}`,
+            detail: [
+              '多模型中文协作桌面工作台 · 本地 RC',
+              `通道：${describeInstallChannel(channel)}`,
+              `可执行文件：${process.execPath}`,
+              `平台：${process.platform}/${process.arch}`,
+              `Chromium 沙箱：${sandboxOff ? '已关闭（降级模式）' : '已启用'}`,
+              `数据目录：${app.getPath('userData')}`,
+            ].join('\n'),
+            buttons: ['确定'],
+          });
+        },
       },
-    }],
+    ],
   },
 ]);
 

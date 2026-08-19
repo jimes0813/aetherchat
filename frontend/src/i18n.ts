@@ -6,7 +6,7 @@ export type UiLocale = 'zh-CN' | 'en-US';
 const resources = {
   'zh-CN': {
     chat: '对话', memory: '记忆', knowledge: '资料', tasks: '任务', artifacts: '文件', changes: '变更',
-    tools: '工具', plugins: '插件', connections: '连接', computer: '电脑', models: '模型', runs: '运行', automations: '自动化', settings: '设置', instructions: '规范', governance: '治理',
+    tools: '工具', plugins: '插件', connections: '连接', computer: '电脑', models: '模型', runs: '运行', automations: '自动化', settings: '设置', instructions: '规范', governance: '治理（实验）',
     feedTitle: '统一对话流', feedDescription: '这里只显示你的请求与模型最终答复；运行细节保留在审计记录中。', live: '实时协作',
     emptyTitle: '有什么可以帮忙的？', emptyDescription: '直接提问，或从下面选一个开始。', you: '你',
     allModels: '@全部模型', addAttachment: '添加附件', composerPlaceholder: '问点什么，输入 @ 引用本对话中的消息、图片或文档…',
@@ -31,7 +31,7 @@ const resources = {
   },
   'en-US': {
     chat: 'Chat', memory: 'Memory', knowledge: 'Knowledge', tasks: 'Tasks', artifacts: 'Artifacts', changes: 'Changes',
-    tools: 'Tools', plugins: 'Plugins', connections: 'Connections', computer: 'Computer', models: 'Models', runs: 'Runs', automations: 'Automations', settings: 'Settings', instructions: 'Rules', governance: 'Governance',
+    tools: 'Tools', plugins: 'Plugins', connections: 'Connections', computer: 'Computer', models: 'Models', runs: 'Runs', automations: 'Automations', settings: 'Settings', instructions: 'Rules', governance: 'Governance (experimental)',
     feedTitle: 'Unified conversation', feedDescription: 'Only your requests and final model responses appear here; run details stay in the audit log.', live: 'Live collaboration',
     emptyTitle: 'How can I help?', emptyDescription: 'Ask a question, or pick a starting prompt.', you: 'You',
     allModels: '@All models', addAttachment: 'Add attachment', composerPlaceholder: 'Ask anything, or type @ to cite a message, image, or document in this chat…',
@@ -203,6 +203,7 @@ const englishUi: Record<string, string> = {
   '创建工作流': 'Create workflow',
   'Webhook token（仅显示一次）：': 'Webhook token (shown once):',
   '平台治理 · Phase 3': 'Platform governance · Phase 3',
+  '实验能力：单用户桌面默认不需要租户、RBAC 或 SSO。': 'Experimental: a single-user desktop does not need tenants, RBAC, or SSO.',
   '租户 → 项目作用域 / RBAC / 白名单 / 审计导出与保留。默认本机单租户 + 默认项目。': 'Tenant → project scope / RBAC / allowlists / audit export and retention. Defaults to one local tenant and one default project.',
   '当前策略（{tenant}）': 'Current policy ({tenant})',
   '运行时门禁：{status}': 'Runtime gate: {status}',

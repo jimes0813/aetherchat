@@ -242,6 +242,9 @@ export function PlatformGovernancePanel({ apiBase }: PlatformGovernancePanelProp
         <div className="min-w-0 flex-1">
           <h2 className="text-sm font-semibold">{ui('平台治理 · Phase 3')}</h2>
           <p className="mt-1 text-xs leading-5 text-[#7a7065]">
+            {ui('实验能力：单用户桌面默认不需要租户、RBAC 或 SSO。')}
+          </p>
+          <p className="mt-1 text-xs leading-5 text-[#7a7065]">
             {ui('租户 → 项目作用域 / RBAC / 白名单 / 审计导出与保留。默认本机单租户 + 默认项目。')}
           </p>
         </div>

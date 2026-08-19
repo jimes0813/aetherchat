@@ -510,9 +510,6 @@ interface CommandHeaderProps {
   providerCount: number;
   activeProviderCount: number;
   budgetRemaining: number;
-  spendPct: number;
-  mode: string;
-  mergeRule: string;
   onOpenSearch: () => void;
 }
 
@@ -521,9 +518,6 @@ export function CommandHeader({
   providerCount,
   activeProviderCount,
   budgetRemaining,
-  spendPct,
-  mode,
-  mergeRule,
   onOpenSearch,
 }: CommandHeaderProps) {
   const { ui } = useI18n();
@@ -534,7 +528,6 @@ export function CommandHeader({
           <span>AetherChat</span>
           <span className="hidden sm:inline"> · {ui('中文协作工作台')}</span>
         </div>
-        <div className="hidden truncate text-[10px] text-[#7a7065] xl:block">{ui('模式：{mode} · 合并规则：{rule}', { mode: ui(mode), rule: ui(mergeRule) })}</div>
       </div>
       <button onClick={onOpenSearch} className="mx-auto hidden h-7 min-w-[12rem] max-w-md flex-1 items-center gap-1.5 rounded-md border border-[#d8cfc3] bg-white px-2 text-left text-[11px] text-[#8b8176] lg:flex">
         <Search size={12} />
