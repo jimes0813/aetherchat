@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useDialogFocus } from './useDialogFocus';
 import { fetchJson } from '../api/client';
 import { useI18n } from '../i18n';
 import type { ModelConfig } from '../types';
@@ -280,9 +281,13 @@ export function FirstRunWizard({
     dismissFirstRunWizard();
     onDismiss();
   };
+  const dialogFocus = useDialogFocus<HTMLDivElement>(true, finish);
 
   return (
     <div
+      ref={dialogFocus.containerRef}
+      tabIndex={-1}
+      onKeyDown={dialogFocus.onKeyDown}
       className="aether-modal-backdrop"
       role="dialog"
       aria-modal="true"
@@ -447,6 +452,7 @@ export function FirstRunWizard({
               </button>
               <button
                 type="button"
+                data-dialog-initial-focus
                 className="rounded-lg bg-[#8d5f35] px-3 py-2 text-sm text-white"
                 onClick={() => setStep(2)}
               >

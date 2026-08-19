@@ -8,6 +8,7 @@ import { ApprovalPrompt } from './ApprovalPrompt';
 import { ChatEmptyState } from './ChatEmptyState';
 import { parseToolActivity } from './toolDisplay';
 import { StreamBubbles } from './StreamBubbles';
+import { useStickToBottom } from './useStickToBottom';
 import {
   displayGeneratedFileName,
   technicalGeneratedFiles,
@@ -356,11 +357,7 @@ export const UnifiedFeed = memo(function UnifiedFeed({
     )), [messages]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const { t, ui } = useI18n();
-
-  useEffect(() => {
-    const scroller = scrollRef.current;
-    if (scroller) scroller.scrollTop = scroller.scrollHeight;
-  }, [approvals.length, visibleMessages.length]);
+  const stickToBottom = useStickToBottom(scrollRef, approvals.length, visibleMessages.length);
 
   const [showEarlier, setShowEarlier] = useState(false);
   const isEmpty = visibleMessages.length === 0;
@@ -383,7 +380,10 @@ export const UnifiedFeed = memo(function UnifiedFeed({
         {hiddenCount > 0 && (
           <button
             type="button"
-            onClick={() => setShowEarlier(true)}
+            onClick={() => {
+              stickToBottom.release();
+              setShowEarlier(true);
+            }}
             className="mx-auto mb-2 block text-xs text-[#8b8176] hover:text-[#5d3b20]"
           >
             {ui('显示更早的 {count} 条消息', { count: hiddenCount })}

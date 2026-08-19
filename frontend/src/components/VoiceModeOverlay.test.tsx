@@ -56,4 +56,28 @@ describe('VoiceModeOverlay', () => {
     expect(onInterrupt).toHaveBeenCalled();
     expect(screen.getByTestId('voice-transcript').textContent).toContain('帮我看看这段报错');
   });
+
+  it('traps Escape on the dialog', () => {
+    const onClose = vi.fn();
+    render(
+      <VoiceModeOverlay
+        open
+        phase="listening"
+        muted={false}
+        showTranscript={false}
+        error=""
+        level={0}
+        userTurns={[]}
+        assistantText=""
+        sttLabel="Whisper"
+        ttsLabel="Piper"
+        onClose={onClose}
+        onToggleMute={vi.fn()}
+        onToggleTranscript={vi.fn()}
+        onInterrupt={vi.fn()}
+      />,
+    );
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    expect(onClose).toHaveBeenCalled();
+  });
 });

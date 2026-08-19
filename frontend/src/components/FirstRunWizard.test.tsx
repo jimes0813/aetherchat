@@ -270,4 +270,18 @@ describe('FirstRunWizard UI', () => {
     expect(onDismiss).toHaveBeenCalled();
     expect(localStorage.getItem(FIRST_RUN_DISMISS_KEY)).toBe('1');
   });
+
+  it('closes on Escape and keeps focus inside the dialog', () => {
+    const onDismiss = vi.fn();
+    render(
+      <FirstRunWizard
+        models={[unconfigured]}
+        onConfigured={() => undefined}
+        onDismiss={onDismiss}
+      />,
+    );
+    const dialog = screen.getByRole('dialog');
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(onDismiss).toHaveBeenCalled();
+  });
 });

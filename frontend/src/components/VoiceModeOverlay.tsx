@@ -1,6 +1,7 @@
-import { useEffect } from 'react';
+import { useEffect, type KeyboardEvent } from 'react';
 import { AudioLines, Mic, MicOff, X } from 'lucide-react';
 import { useI18n } from '../i18n';
+import { useDialogFocus } from './useDialogFocus';
 import type { VoicePhase } from './voiceSession';
 
 type VoiceModeOverlayProps = {
@@ -46,14 +47,12 @@ export function VoiceModeOverlay({
   onInterrupt,
 }: VoiceModeOverlayProps) {
   const { ui } = useI18n();
+  const dialogFocus = useDialogFocus<HTMLDivElement>(open, onClose);
 
   useEffect(() => {
     if (!open) return undefined;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        onClose();
-      } else if (event.key.toLowerCase() === 'm' && !event.metaKey && !event.ctrlKey) {
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key.toLowerCase() === 'm' && !event.metaKey && !event.ctrlKey) {
         event.preventDefault();
         onToggleMute();
       } else if (event.key === ' ') {
@@ -63,7 +62,11 @@ export function VoiceModeOverlay({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, onInterrupt, onToggleMute, open, phase]);
+  }, [onInterrupt, onToggleMute, open, phase]);
+
+  const onDialogKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    dialogFocus.onKeyDown(event);
+  };
 
   if (!open) return null;
 
@@ -82,13 +85,27 @@ export function VoiceModeOverlay({
   };
 
   return (
-    <div className="aether-voice-overlay" role="dialog" aria-modal="true" aria-label={ui('语音对话')}>
+    <div
+      ref={dialogFocus.containerRef}
+      tabIndex={-1}
+      onKeyDown={onDialogKeyDown}
+      className="aether-voice-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label={ui('语音对话')}
+    >
       <div className="aether-voice-top">
         <div>
           <div className="aether-voice-kicker">{ui('本地 · Live')}</div>
           <div className="aether-voice-voice">{ttsLabel}</div>
         </div>
-        <button type="button" className="aether-voice-icon-btn" onClick={onClose} aria-label={ui('结束语音对话')}>
+        <button
+          type="button"
+          data-dialog-initial-focus
+          className="aether-voice-icon-btn"
+          onClick={onClose}
+          aria-label={ui('结束语音对话')}
+        >
           <X size={18} />
         </button>
       </div>

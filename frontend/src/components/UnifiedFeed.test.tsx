@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import { useSessionStore } from '../stores/sessionStore';
 import type { Message, ReasoningStep } from '../types';
@@ -106,5 +106,33 @@ describe('UnifiedFeed execution receipt', () => {
       'data-execution-status',
       'verified',
     );
+  });
+});
+
+describe('UnifiedFeed stick-to-bottom', () => {
+  const userMessage = (id: string): Message => ({
+    id,
+    session_id: '11111111-1111-4111-8111-111111111111',
+    author_model: 'user',
+    role: 'user',
+    content: `消息 ${id}`,
+    created_at: '2026-08-13T00:00:00Z',
+  });
+
+  it('does not yank the scroller when the user has moved up through history', () => {
+    useSessionStore.setState((state) => ({
+      messages: [userMessage('1')],
+      settings: { ...state.settings, uiLocale: 'zh-CN' },
+    }));
+    const { container } = render(<UnifiedFeed />);
+    const scroller = container.querySelector('.aether-chat-scroll') as HTMLDivElement;
+    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, get: () => 2000 });
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, get: () => 400 });
+    scroller.scrollTop = 80;
+    fireEvent.scroll(scroller);
+    useSessionStore.setState((state) => ({
+      messages: [...state.messages, userMessage('2')],
+    }));
+    expect(scroller.scrollTop).toBe(80);
   });
 });
