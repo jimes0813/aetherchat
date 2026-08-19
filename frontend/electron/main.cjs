@@ -642,6 +642,7 @@ function createWindow() {
         `--aether-app-version=${app.getVersion()}`,
         `--aether-platform=${process.platform}`,
         `--aether-quick-entry-shortcut=${quickEntryShortcut}`,
+        `--aether-chromium-sandbox=${process.argv.includes('--no-sandbox') ? 'off' : 'on'}`,
       ],
     },
   });
@@ -713,13 +714,22 @@ const menu = Menu.buildFromTemplate([
     label: '帮助',
     submenu: [{ label: '检查签名更新', click: () => checkForSignedUpdate() }, { type: 'separator' }, {
       label: '关于 AetherChat',
-      click: () => dialog.showMessageBox({
-        type: 'info',
-        title: '关于 AetherChat',
-        message: `AetherChat ${app.getVersion()}`,
-        detail: '多模型中文协作桌面工作台\n前端与本机后端一体运行',
-        buttons: ['确定'],
-      }),
+      click: () => {
+        const sandboxOff = process.argv.includes('--no-sandbox');
+        dialog.showMessageBox({
+          type: 'info',
+          title: '关于 AetherChat',
+          message: `AetherChat ${app.getVersion()}`,
+          detail: [
+            '多模型中文协作桌面工作台 · 本地 RC',
+            `通道：${app.isPackaged ? 'packaged' : 'development'}`,
+            `平台：${process.platform}/${process.arch}`,
+            `Chromium 沙箱：${sandboxOff ? '已关闭（用户解包安装，降级模式）' : '已启用'}`,
+            `数据目录：${app.getPath('userData')}`,
+          ].join('\n'),
+          buttons: ['确定'],
+        });
+      },
     }],
   },
 ]);

@@ -109,13 +109,13 @@ describe('FirstRunWizard UI', () => {
   it('saves llama managed preset then starts and verifies', async () => {
     const created: ModelConfig = {
       ...configured,
-      name: 'Qwen',
+      name: 'local-llama',
       type: 'local',
-      model: 'Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_P.gguf',
+      model: 'qwen.gguf',
       base_url: 'http://127.0.0.1:8080/v1',
       local_runtime: 'llama_cpp',
-      model_path: '/home/jimes0813/Qwen/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_P.gguf',
-      runtime_executable: '/home/jimes0813/llama.cpp-cuda/build/bin/llama-server',
+      model_path: '/models/qwen.gguf',
+      runtime_executable: '/usr/local/bin/llama-server',
       has_api_key: true,
     };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -161,6 +161,12 @@ describe('FirstRunWizard UI', () => {
     fireEvent.click(screen.getByRole('button', { name: '开始配置' }));
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'local-llama' } });
     expect(screen.getByText(/llama.cpp 托管/)).toBeTruthy();
+    fireEvent.change(screen.getByPlaceholderText('/path/to/model.gguf'), {
+      target: { value: '/models/qwen.gguf' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('/path/to/llama-server'), {
+      target: { value: '/usr/local/bin/llama-server' },
+    });
     fireEvent.click(screen.getByRole('button', { name: '保存并启动验证' }));
 
     await waitFor(() => {
@@ -181,7 +187,12 @@ describe('FirstRunWizard UI', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: '开始配置' }));
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'local-llama' } });
-    // GGUF path uses dedicated placeholder; model ID also ends with .gguf
+    fireEvent.change(screen.getByPlaceholderText('可与 GGUF 文件名一致'), {
+      target: { value: 'local-gguf' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('/path/to/llama-server'), {
+      target: { value: '/usr/local/bin/llama-server' },
+    });
     const ggufInput = screen.getByPlaceholderText('/path/to/model.gguf');
     fireEvent.change(ggufInput, { target: { value: '' } });
     fireEvent.click(screen.getByRole('button', { name: '保存并启动验证' }));

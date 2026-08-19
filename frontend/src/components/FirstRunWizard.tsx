@@ -13,9 +13,8 @@ import { API_BASE, isConfiguredModel } from './shared';
 
 export const FIRST_RUN_DISMISS_KEY = 'aetherchat.first_run.dismissed.v1';
 
-export const DEFAULT_LLAMA_SERVER = '/home/jimes0813/llama.cpp-cuda/build/bin/llama-server';
-export const DEFAULT_GGUF_PATH =
-  '/home/jimes0813/Qwen/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_P.gguf';
+export const DEFAULT_LLAMA_SERVER = '';
+export const DEFAULT_GGUF_PATH = '';
 export const DEFAULT_LOCAL_BASE_URL = 'http://127.0.0.1:8080/v1';
 
 export type FirstRunWizardProps = {
@@ -64,15 +63,15 @@ const PRESETS: Preset[] = [
   {
     id: 'local-llama',
     label: '本机 llama.cpp 自动托管（推荐）',
-    name: 'Qwen',
+    name: 'local-llama',
     type: 'local',
-    model: 'Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q4_K_P.gguf',
+    model: '',
     base_url: DEFAULT_LOCAL_BASE_URL,
     persona: '本地中文推理模型',
     local_runtime: 'llama_cpp',
     requires_api_key: false,
-    model_path: DEFAULT_GGUF_PATH,
-    runtime_executable: DEFAULT_LLAMA_SERVER,
+    model_path: '',
+    runtime_executable: '',
     runtime_args: '--n-gpu-layers\n-1\n--ctx-size\n8192\n--flash-attn\non',
   },
   {
@@ -152,8 +151,8 @@ export function FirstRunWizard({
     setName(next.name);
     setModelId(next.model);
     setBaseUrl(next.base_url);
-    setModelPath(next.model_path || DEFAULT_GGUF_PATH);
-    setRuntimeExecutable(next.runtime_executable || DEFAULT_LLAMA_SERVER);
+    setModelPath(next.model_path || '');
+    setRuntimeExecutable(next.runtime_executable || '');
     setRuntimeArgs(next.runtime_args || '');
     setError('');
     setVerifySample('');
@@ -165,14 +164,16 @@ export function FirstRunWizard({
       setError('请先粘贴 API 密钥');
       return;
     }
-    if (!name.trim() || !modelId.trim() || !baseUrl.trim()) {
+    if (!name.trim() || !baseUrl.trim() || (!isLlamaManaged && !modelId.trim())) {
       setError('模型名称、模型 ID 和接口地址不能为空');
       return;
     }
+    const ggufName = modelPath.trim().split(/[/\\]/).pop() || '';
+    const resolvedModel = modelId.trim() || ggufName.replace(/\.gguf$/i, '');
     if (isLlamaManaged) {
       const formError = validateLlamaManagedForm({
         name,
-        model: modelId,
+        model: resolvedModel,
         base_url: baseUrl,
         model_path: modelPath,
         runtime_executable: runtimeExecutable,
@@ -199,7 +200,7 @@ export function FirstRunWizard({
       if (isLlamaManaged) {
         payload = buildLlamaManagedPayload({
           name,
-          model: modelId,
+          model: resolvedModel,
           base_url: baseUrl,
           model_path: modelPath,
           runtime_executable: runtimeExecutable,

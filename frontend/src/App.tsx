@@ -6,12 +6,8 @@ import { isSettingsTab, type SettingsTabId } from './components/settingsTabs';
 import { ModelWorkingStrip, type AgentActivityItem } from './components/ModelWorkingStrip';
 import { UnifiedFeed } from './components/UnifiedFeed';
 import { ErrorBoundary } from './components/ErrorBoundary';
-
 import { InspectorPanel } from './components/InspectorPanel';
-import {
-  FirstRunWizard,
-  shouldShowFirstRunWizard,
-} from './components/FirstRunWizard';
+import { FirstRunWizard, shouldShowFirstRunWizard } from './components/FirstRunWizard';
 import {
   ActivityRail,
   CommandHeader,
@@ -21,8 +17,8 @@ import {
   MainViewTabs,
   TaskHistory,
   WorkspaceSidebar,
-  type CommandItem,
 } from './components/chrome';
+import { buildCommandItems } from './app/commandItems';
 import { API_BASE, isConfiguredModel } from './components/shared';
 import {
   createGovernanceProject,
@@ -469,8 +465,7 @@ function App() {
     hasApproval: approvals.some((item) => item.session_id === sessionId && !item.decision),
   });
 
-  const spent = useMemo(() => budget.total - budget.remaining, [budget]);
-  const spendPct = Math.min(100, Math.max(0, (spent / budget.total) * 100));
+  const spendPct = Math.min(100, Math.max(0, ((budget.total - budget.remaining) / budget.total) * 100));
 
   useEffect(() => {
     const handleShortcut = (event: KeyboardEvent) => {
@@ -489,54 +484,17 @@ function App() {
     return () => window.removeEventListener('keydown', handleShortcut);
   }, [setActivePanel, voice.open]);
 
-  const commandItems = useMemo<CommandItem[]>(() => {
-    const panels = (['记忆', '资料', '任务', '自动化', '工件', '合并', '工具', '插件', '连接', '电脑', '模型', '运行', '设置', '语音', '规范', '治理'] as const).map((panel) => ({
-      id: `panel-${panel}`,
-      label: `打开${panel}面板`,
-      hint: '命令',
-      run: () => setActivePanel(panel),
-    }));
-    const conversationItems = conversations.map((conversation) => ({
-      id: `conversation-${conversation.id}`,
-      label: conversation.title,
-      hint: `会话 · ${conversation.summary}`,
-      run: () => selectConversation(conversation.id),
-    }));
-    const taskItems = tasks.map((task) => ({
-      id: `task-${task.id}`,
-      label: task.title,
-      hint: `任务 · ${task.status}`,
-      run: () => setActivePanel('任务'),
-    }));
-    const artifactItems = artifacts.map((artifact) => ({
-      id: `artifact-${artifact.path}`,
-      label: artifact.path,
-      hint: `工件 · ${artifact.kind}`,
-      run: () => {
-        setSelectedArtifactPath(artifact.path);
-        setActivePanel('工件');
-      },
-    }));
-    const modelItems = modelConfigs.map((model) => ({
-      id: `model-${model.name}`,
-      label: model.name,
-      hint: `模型 · ${model.model}`,
-      run: () => setActivePanel('模型'),
-    }));
-    return [
-      {
-        id: 'voice-live',
-        label: ui('开始语音对话'),
-        hint: ui('本地 · Live'),
-        run: () => { void voice.start(); },
-      },
-      ...panels,
-      ...conversationItems,
-      ...taskItems,
-      ...artifactItems,
-      ...modelItems,
-    ];
-  }, [artifacts, conversations, modelConfigs, selectConversation, setActivePanel, setSelectedArtifactPath, tasks, ui, voice]);
+  const commandItems = useMemo(() => buildCommandItems({
+    conversations,
+    tasks,
+    artifacts,
+    modelConfigs,
+    ui,
+    setActivePanel,
+    selectConversation,
+    setSelectedArtifactPath,
+    startVoice: () => { void voice.start(); },
+  }), [artifacts, conversations, modelConfigs, selectConversation, setActivePanel, setSelectedArtifactPath, tasks, ui, voice]);
 
   const {
     inspectGeneratedFile,

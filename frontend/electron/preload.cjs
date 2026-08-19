@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('aetherRuntime', {
   appVersion: argumentValue('aether-app-version'),
   platform: argumentValue('aether-platform', process.platform),
   quickEntryShortcut: argumentValue('aether-quick-entry-shortcut'),
+  chromiumSandbox: argumentValue('aether-chromium-sandbox', 'on'),
   getApiToken: () => ipcRenderer.invoke('aether-runtime:api-token'),
   openExternal: (url, options = {}) => ipcRenderer.invoke(
     'aether-external:open',

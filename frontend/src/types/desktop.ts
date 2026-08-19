@@ -121,6 +121,7 @@ declare global {
       appVersion?: string;
       platform?: string;
       quickEntryShortcut?: string;
+      chromiumSandbox?: 'on' | 'off' | string;
       getApiToken?: () => Promise<string>;
       openExternal?: (
         url: string,

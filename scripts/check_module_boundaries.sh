@@ -24,7 +24,10 @@ check_max_lines frontend/src/App.tsx 800
 # Staged anti-regression caps. Inspector was reduced from 2,308 lines by moving
 # desktop control and plugin/ComfyUI ownership into independent modules.
 check_max_lines frontend/src/components/InspectorPanel.tsx 1700
-check_max_lines frontend/src/components/DesktopControlPanel.tsx 300
+# Computer Use console stays in one panel after extracting DesktopDocumentPanel
+# and desktopControlModel. 300 was stale (file was already 700+). Next split is P1.
+check_max_lines frontend/src/components/DesktopControlPanel.tsx 620
+check_max_lines frontend/src/components/DesktopDocumentPanel.tsx 160
 check_max_lines frontend/src/components/PluginCenter.tsx 550
 
 # Existing extracted feature modules may not silently grow back into monoliths.

@@ -7,6 +7,11 @@ import { useI18n } from '../i18n';
 import { ApprovalPrompt } from './ApprovalPrompt';
 import { ChatEmptyState } from './ChatEmptyState';
 import { parseToolActivity } from './toolDisplay';
+import {
+  displayGeneratedFileName,
+  technicalGeneratedFiles,
+  visibleGeneratedFiles,
+} from './generatedFiles';
 
 interface UnifiedFeedProps {
   approvals?: ApprovalRequest[];
@@ -149,7 +154,7 @@ const GeneratedFileCard = ({
           onClick={() => onInspect?.(file)}
           className="min-w-0 flex-1 text-left disabled:cursor-default"
         >
-          <div className="truncate text-sm font-semibold text-[#4b3c30]">{file.name}</div>
+          <div className="truncate text-sm font-semibold text-[#4b3c30]">{displayGeneratedFileName(file)}</div>
           <div className="mt-0.5 text-[11px] text-[#776a5f]">
             {mimeType}
             {fileSize(file.size_bytes) ? ` · ${fileSize(file.size_bytes)}` : ''}
@@ -193,9 +198,8 @@ const GeneratedFileCard = ({
           )}
         </div>
       </div>
-      <div className="mt-2 break-all rounded-md bg-white/70 px-2 py-1.5 font-mono text-[11px] leading-4 text-[#67584c]">
-        <span className="font-sans font-semibold">{ui('保存位置：')}</span>
-        {locationLoading ? ui('正在读取本机路径…') : (resolved.location || ui('未返回保存位置'))}
+      <div className="mt-2 rounded-md bg-white/70 px-2 py-1.5 text-[11px] leading-4 text-[#67584c]">
+        {locationLoading ? ui('正在读取本机路径…') : ui('已保存到本机')}
       </div>
       {previewError && (
         <div className="mt-2 text-xs text-[#9a3e32]">{previewError}</div>
@@ -403,12 +407,12 @@ export const UnifiedFeed = ({
                   files={msg.generated_files || []}
                   onOpenRunHistory={onOpenRunHistory}
                 />
-                {msg.generated_files && msg.generated_files.length > 0 && (
+                {visibleGeneratedFiles(msg.generated_files).length > 0 && (
                   <div className="mt-3 space-y-2" aria-label={ui('本次生成的文件')}>
                     <div className="text-[11px] font-semibold text-[#796b5e]">
                       {ui('本次生成的文件')}
                     </div>
-                    {msg.generated_files.map((file, index) => (
+                    {visibleGeneratedFiles(msg.generated_files).map((file, index) => (
                       <GeneratedFileCard
                         key={`${file.path || file.url || file.name}-${index}`}
                         file={file}
@@ -417,6 +421,16 @@ export const UnifiedFeed = ({
                         onOpen={onOpenGeneratedFile}
                       />
                     ))}
+                    {technicalGeneratedFiles(msg.generated_files).length > 0 && (
+                      <details className="text-[11px] text-[#8b8176]">
+                        <summary className="cursor-pointer">{ui('技术细节')}</summary>
+                        <ul className="mt-1 list-disc pl-4">
+                          {technicalGeneratedFiles(msg.generated_files).map((file) => (
+                            <li key={file.path || file.name}>{displayGeneratedFileName(file)}</li>
+                          ))}
+                        </ul>
+                      </details>
+                    )}
                   </div>
                 )}
               </div>

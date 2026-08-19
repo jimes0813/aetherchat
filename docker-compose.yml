@@ -20,7 +20,9 @@ services:
       - "127.0.0.1:8000:8000"
     environment:
       REDIS_URL: redis://redis:6379/0
-      AETHERCHAT_ENABLE_DEMO_AUTH: "1"
+      # Demo auth is off by default. Set AETHERCHAT_ENABLE_DEMO_AUTH=1 only for
+      # local UI debugging without Electron. Do not mount docker.sock here.
+      AETHERCHAT_ENABLE_DEMO_AUTH: ${AETHERCHAT_ENABLE_DEMO_AUTH:-0}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -29,7 +31,6 @@ services:
         condition: service_started
     volumes:
       - ./backend:/app
-      - /var/run/docker.sock:/var/run/docker.sock
 
 volumes:
   redisdata:

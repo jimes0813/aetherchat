@@ -19,6 +19,7 @@ import { API_BASE, formatDateTime, taskStatusLabel } from './shared';
 import { fetchJson } from '../api/client';
 import { useI18n } from '../i18n';
 import { useSessionStore } from '../stores/sessionStore';
+import { partitionConversations } from './conversationHygiene';
 import type { Conversation, Task, TaskEvent, WorkspaceSettings } from '../types';
 
 export type CommandItem = {
@@ -156,6 +157,9 @@ export function ConversationHistory({
 }: ConversationHistoryProps) {
   const { ui } = useI18n();
   const [query, setQuery] = useState('');
+  const [showDiagnostic, setShowDiagnostic] = useState(false);
+  const { visible, diagnostic } = partitionConversations(conversations);
+  const listed = showDiagnostic ? conversations : visible;
   const [results, setResults] = useState<SessionSearchHit[]>([]);
   const [searching, setSearching] = useState(false);
   useEffect(() => {
@@ -194,7 +198,7 @@ export function ConversationHistory({
             <h2 className="text-base font-semibold">{ui('历史聊天')}</h2>
             <p className="mt-1 text-xs text-[#7a7065]">{ui('选择会话后恢复消息、任务和工作区状态')}</p>
           </div>
-          <span className="text-xs text-[#8b8176]">{ui('{count} 个会话', { count: conversations.length })}</span>
+          <span className="text-xs text-[#8b8176]">{ui('{count} 个会话', { count: listed.length })}</span>
         </div>
         <label data-aether-search-shell className="mb-4 flex h-10 items-center gap-2 rounded-lg border border-[#d8cfc3] bg-white px-3">
           <Search size={15} className="text-[#776b60]" />
@@ -232,7 +236,7 @@ export function ConversationHistory({
         )}
         {!query.trim() && (
         <div className="divide-y divide-[#e3dbd0] border-y border-[#e3dbd0]">
-          {conversations.map((conversation) => (
+          {listed.map((conversation) => (
             <div key={conversation.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-stretch">
               <button
                 type="button"
@@ -272,8 +276,19 @@ export function ConversationHistory({
               </button>
             </div>
           ))}
-          {!conversations.length && <div className="py-12 text-center text-sm text-[#8b8176]">{ui('暂无历史会话')}</div>}
+          {!listed.length && <div className="py-12 text-center text-sm text-[#8b8176]">{ui('暂无历史会话')}</div>}
         </div>
+        )}
+        {!query.trim() && diagnostic.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowDiagnostic((current) => !current)}
+            className="mt-3 text-xs text-[#8b8176] hover:text-[#5d3b20]"
+          >
+            {showDiagnostic
+              ? ui('隐藏诊断会话')
+              : ui('显示诊断会话（{count}）', { count: diagnostic.length })}
+          </button>
         )}
       </div>
     </div>
@@ -359,6 +374,9 @@ export function WorkspaceSidebar({
 }: WorkspaceSidebarProps) {
   const { ui } = useI18n();
   const [projectDraft, setProjectDraft] = useState<string | null>(null);
+  const [showDiagnostic, setShowDiagnostic] = useState(false);
+  const { visible, diagnostic } = partitionConversations(conversations);
+  const listed = showDiagnostic ? conversations : visible;
   const submitProject = () => {
     const name = projectDraft?.trim();
     if (!name || !onNewProject) {
@@ -448,7 +466,7 @@ export function WorkspaceSidebar({
 
       <div className="mt-3 px-3 pb-1 text-[11px] text-[#8b8176]">{ui('对话')}</div>
       <div className="min-h-0 flex-1 overflow-auto px-1.5 pb-2">
-        {conversations.map((conversation) => (
+        {listed.map((conversation) => (
           <div key={conversation.id} className="group relative">
             <button
               type="button"
@@ -470,6 +488,17 @@ export function WorkspaceSidebar({
             </button>
           </div>
         ))}
+        {diagnostic.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowDiagnostic((current) => !current)}
+            className="mt-2 w-full rounded-md px-2 py-1 text-left text-[11px] text-[#8b8176] hover:bg-[#e8ddd0]"
+          >
+            {showDiagnostic
+              ? ui('隐藏诊断会话')
+              : ui('显示诊断会话（{count}）', { count: diagnostic.length })}
+          </button>
+        )}
       </div>
     </aside>
   );
@@ -517,7 +546,7 @@ export function CommandHeader({
         </div>
         <div className="flex items-center gap-1.5 rounded-md border border-[#e1d9cd] bg-white px-1.5 py-0.5 text-[11px] text-[#7a7065]">
           <CircleDollarSign size={12} className="text-[#8d5f35]" />
-          <span>{ui('预算余额')}</span>
+          <span>{ui('会话额度')}</span>
           <span className="tabular-nums">${budgetRemaining.toFixed(2)}</span>
         </div>
         <div className="flex items-center gap-1 rounded-md bg-[#2f2a24] px-1.5 py-0.5 text-[11px] font-medium text-white">
@@ -649,6 +678,9 @@ export function DesktopStatusBar({ connection, budgetRemaining, runQueuePosition
         </button>
       )}
       <span>{t('budget', { value: budgetRemaining.toFixed(2) })}</span>
+      {window.aetherRuntime?.chromiumSandbox === 'off' && (
+        <span title={ui('用户解包安装未启用 setuid chrome-sandbox')}>{ui('降级：无 Chromium 沙箱')}</span>
+      )}
       <button onClick={onRefreshToken} title={ui('刷新本地 WebSocket 授权，不显示或复制令牌')} className="rounded bg-[#8d5f35] px-1.5 py-0.5 text-[10px] text-white">{tokenStatus}</button>
       <button onClick={onToggleLanguage} title={t('switchUiLanguage')} aria-label={t('switchUiLanguage')} className="rounded bg-[#8d5f35] px-1.5 py-0.5 text-[10px] text-white">{uiLocale === 'zh-CN' ? 'EN' : ui('中文')}</button>
       {window.aetherRuntime?.quickEntryShortcut && (

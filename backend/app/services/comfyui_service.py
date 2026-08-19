@@ -52,11 +52,14 @@ class ComfyUIError(RuntimeError):
 class ComfyUIService:
     def __init__(self) -> None:
         self.base_url = os.getenv("AETHERCHAT_COMFYUI_URL", "http://127.0.0.1:8188").rstrip("/")
-        roots = os.getenv(
-            "AETHERCHAT_COMFYUI_WORKFLOW_ROOTS",
-            "/home/jimes0813/comfy-spark/ComfyUI/user/default/workflows",
-        )
+        roots = os.getenv("AETHERCHAT_COMFYUI_WORKFLOW_ROOTS", "")
         self.workflow_roots = [Path(item).expanduser().resolve() for item in roots.split(":") if item]
+        if not self.workflow_roots:
+            discovered = (
+                Path.home() / "comfy-spark" / "ComfyUI" / "user" / "default" / "workflows"
+            ).resolve()
+            if discovered.is_dir():
+                self.workflow_roots = [discovered]
         output_roots = os.getenv("AETHERCHAT_COMFYUI_OUTPUT_ROOTS", "")
         self.output_roots = [
             Path(item).expanduser().resolve()

@@ -31,6 +31,27 @@ afterEach(() => {
 });
 
 
+describe('UnifiedFeed generated files', () => {
+  it('shows human file names and hides metadata json cards', () => {
+    useSessionStore.setState((state) => ({
+      messages: [{
+        ...assistantMessage([]),
+        generated_files: [
+          { name: 'cover.png', path: '/tmp/cover.png', mime_type: 'image/png', size_bytes: 12 },
+          { name: 'cover.metadata.json', path: '/tmp/cover.metadata.json', mime_type: 'application/json' },
+        ],
+      }],
+      settings: { ...state.settings, uiLocale: 'zh-CN' },
+    }));
+    render(<UnifiedFeed />);
+    expect(screen.getByText('cover.png')).toBeTruthy();
+    expect(screen.queryByLabelText('预览文件 cover.metadata.json')).toBeNull();
+    expect(screen.getByText('技术细节')).toBeTruthy();
+    expect(screen.getByText('已保存到本机')).toBeTruthy();
+    expect(screen.queryByText(/\/tmp\/cover\.png/)).toBeNull();
+  });
+});
+
 describe('UnifiedFeed execution receipt', () => {
   it('does not turn a final model step into a verified completion', () => {
     renderFeed([{ phase: 'final', detail: '最终答复已生成' }]);

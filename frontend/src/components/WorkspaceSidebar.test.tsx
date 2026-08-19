@@ -10,6 +10,13 @@ const conversations = [
     updatedAt: '昨天',
     projectId: 'p1',
   },
+  {
+    id: 's2',
+    title: '冒烟项目DAG-planned',
+    summary: '诊断会话',
+    updatedAt: '昨天',
+    projectId: 'p1',
+  },
 ];
 
 describe('WorkspaceSidebar', () => {
@@ -36,6 +43,10 @@ describe('WorkspaceSidebar', () => {
     expect(screen.getByRole('button', { name: '新建项目' })).toBeTruthy();
     expect(screen.getByText('封面项目')).toBeTruthy();
     expect(screen.getByRole('button', { name: '雨夜出图' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '冒烟项目DAG-planned' })).toBeNull();
+    expect(screen.getByRole('button', { name: /显示诊断会话/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /显示诊断会话/ }));
+    expect(screen.getByRole('button', { name: '冒烟项目DAG-planned' })).toBeTruthy();
     expect(screen.queryByText('这行摘要不应再出现在侧栏')).toBeNull();
     expect(screen.queryByText('aetherchat/main')).toBeNull();
     expect(screen.queryByText('多模型 Agent 工作台')).toBeNull();
