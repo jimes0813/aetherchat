@@ -6,7 +6,7 @@
 
 ## 本轮执行范围
 
-P0–P7 已合入。本轮继续拆执行环：`run_provider` 与工具调度离开 `stream_exec`。Windows CSC 仍阻塞。
+P0–P8 已合入。本轮把执行环与计划 DAG 再拆到单文件 ≤400。Windows CSC 仍阻塞。
 
 ## P0 — 一周内（本轮落地）
 
@@ -29,7 +29,7 @@ P0–P7 已合入。本轮继续拆执行环：`run_provider` 与工具调度离
 |---|---|---|
 | P1-1 | 流式气泡：streams 离开全量 zustand，selector + memo | **完成** |
 | P1-2 | 消息列表虚拟化（content-visibility + 只渲染最近 80 条）；历史默认 100 条 | **完成** |
-| P1-3 | steer 写走 `to_thread`；消息列表异步化；插件调用从 run 抽出 | **完成**（`stream_user_message` 约 120 行；`stream_exec.py` 166 行；`stream_provider.py` 仍约 722） |
+| P1-3 | steer 写走 `to_thread`；消息列表异步化；插件调用从 run 抽出 | **完成**（`stream_user_message` 约 120 行；orchestrator stream_* 均 ≤400） |
 | P1-4 | 设置页收成 4 组 | **完成** |
 | P1-5 | 自绘对话框替换 `window.confirm` | **完成** |
 | P1-6 | 对话授权不得替代高风险原生 Computer Use | **完成** |
@@ -75,7 +75,7 @@ P0–P7 已合入。本轮继续拆执行环：`run_provider` 与工具调度离
 | ID | 事项 | 状态 |
 |---|---|---|
 | P6-1 | WebSocket 连接 token 改为 getter，握手后清空局部 auth | **完成** |
-| P6-2 | 计划批处理从 `stream_exec.py` 抽到 `orchestrator/stream_plan.py` | **完成**（`stream_plan.py` 仍约 563 行） |
+| P6-2 | 计划批处理从 `stream_exec.py` 抽到 `orchestrator/stream_plan.py` | **完成** |
 
 ## P7 — 测试文件行数收口（本轮落地）
 
@@ -89,7 +89,14 @@ P0–P7 已合入。本轮继续拆执行环：`run_provider` 与工具调度离
 | ID | 事项 | 状态 |
 |---|---|---|
 | P8-1 | `run_provider` 抽到 `orchestrator/stream_provider.py` | **完成**（`stream_exec.py` 166 行） |
-| P8-2 | 工具调度抽到 `stream_tools.py`，授权后调用抽到 `stream_invoke.py` | **完成**（tools 354，invoke 230；`stream_provider.py` 仍约 722，未到 ≤400） |
+| P8-2 | 工具调度抽到 `stream_tools.py`，授权后调用抽到 `stream_invoke.py` | **完成**（tools 354，invoke 230） |
+
+## P9 — 执行环 ≤400 收口（本轮落地）
+
+| ID | 事项 | 状态 |
+|---|---|---|
+| P9-1 | 模型轮次循环抽到 `stream_turns.py`，伪工具文本恢复抽到 `stream_pseudo.py` | **完成**（provider 380，turns 393，pseudo 84） |
+| P9-2 | 计划批处理抽到 `stream_plan_batch.py`，就绪步骤抽到 `stream_plan_ready.py` | **完成**（plan 384，batch 121，ready 112） |
 
 ## 版本建议
 

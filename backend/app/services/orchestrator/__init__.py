@@ -27,8 +27,12 @@ from .run import RunMixin
 from .stream_exec import StreamExecMixin
 from .stream_invoke import StreamInvokeMixin
 from .stream_plan import StreamPlanMixin
+from .stream_plan_batch import StreamPlanBatchMixin
+from .stream_plan_ready import StreamPlanReadyMixin
 from .stream_provider import StreamProviderMixin
+from .stream_pseudo import StreamPseudoMixin
 from .stream_tools import StreamToolsMixin
+from .stream_turns import StreamTurnsMixin
 from .tools import ToolsMixin
 
 
@@ -61,7 +65,7 @@ class Facilitator:
         }
 
 
-class SessionOrchestrator(RunMixin, StreamExecMixin, StreamProviderMixin, StreamToolsMixin, StreamInvokeMixin, StreamPlanMixin, PlanMixin, ToolsMixin, ContextMixin, ReceiptsMixin):
+class SessionOrchestrator(RunMixin, StreamExecMixin, StreamProviderMixin, StreamTurnsMixin, StreamPseudoMixin, StreamToolsMixin, StreamInvokeMixin, StreamPlanMixin, StreamPlanBatchMixin, StreamPlanReadyMixin, PlanMixin, ToolsMixin, ContextMixin, ReceiptsMixin):
     def __init__(
         self,
         session_id: str,
