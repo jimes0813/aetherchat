@@ -6,7 +6,7 @@
 
 ## 本轮执行范围
 
-P0–P5 已合入。本轮推进 P1 余项：WebSocket 不再把 Bearer 常驻在 `connectWS` 选项里；计划批处理从 `stream_exec` 抽到 `stream_plan`。Windows CSC 仍阻塞。
+P0–P6 已合入。本轮再拆过长测试：`test_basic.py` 与 orchestrator 按域落到 1500 行内。Windows CSC 仍阻塞。
 
 ## P0 — 一周内（本轮落地）
 
@@ -35,7 +35,7 @@ P0–P5 已合入。本轮推进 P1 余项：WebSocket 不再把 Bearer 常驻�
 | P1-6 | 对话授权不得替代高风险原生 Computer Use | **完成** |
 | P1-7 | HTTP Bearer 由 Electron 主进程注入；渲染进程不再缓存真实 token | **完成**（WS 按 getter 取 token，构造后立即清空局部变量；桌面仍为 `intercept`） |
 | P1-8 | 生产关 `/docs`；`/health` 精简 | **完成** |
-| P1-9 | 拆 `test_basic.py`（fixtures 入 conftest，插件/Comfy/桌面测抽出） | **完成**（续拆 ws / orchestrator / agent；`test_basic.py` 仍约 1715，`test_basic_orchestrator.py` 约 2576） |
+| P1-9 | 拆 `test_basic.py`（fixtures 入 conftest，插件/Comfy/桌面测抽出） | **完成**（续拆 automation / plan / tool_loop；各文件均 <1500） |
 
 ## P2 — 一季度（1.0 资格）
 
@@ -76,6 +76,13 @@ P0–P5 已合入。本轮推进 P1 余项：WebSocket 不再把 Bearer 常驻�
 |---|---|---|
 | P6-1 | WebSocket 连接 token 改为 getter，握手后清空局部 auth | **完成** |
 | P6-2 | 计划批处理从 `stream_exec.py` 抽到 `orchestrator/stream_plan.py` | **完成**（`stream_exec.py` 仍约 1332 行，未到 ≤400） |
+
+## P7 — 测试文件行数收口（本轮落地）
+
+| ID | 事项 | 状态 |
+|---|---|---|
+| P7-1 | 自动化测抽到 `tests/test_basic_automation.py` | **完成**（`test_basic.py` 约 1434 行） |
+| P7-2 | 计划 DAG 抽到 `tests/test_basic_plan.py`，工具环抽到 `tests/test_basic_tool_loop.py` | **完成**（orchestrator 约 913，plan 约 947，tool_loop 约 856） |
 
 ## 版本建议
 
