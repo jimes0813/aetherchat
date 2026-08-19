@@ -115,6 +115,25 @@ def test_agent_run_state_events_retry_and_restart_recovery(tmp_path):
     assert recovered["events"][-1]["event_type"] == "recovery_required"
 
 
+def test_observe_writes_running_step_once_for_repeated_deltas(tmp_path, monkeypatch):
+    path = tmp_path / "agent-delta.sqlite3"
+    database = ChatDatabase(path)
+    service = AgentRunService(database)
+    session_id = str(uuid4())
+    run = service.create(session_id, {"content": "流式", "targets": ["coder"]})
+    calls = []
+    original = database.update_agent_step
+
+    def counted(run_id, model, status, **kwargs):
+        calls.append((run_id, model, status))
+        return original(run_id, model, status, **kwargs)
+
+    monkeypatch.setattr(database, "update_agent_step", counted)
+    service.observe(run["id"], {"type": "delta", "model": "coder", "delta": "一"})
+    service.observe(run["id"], {"type": "delta", "model": "coder", "delta": "二"})
+    assert calls == [(run["id"], "coder", "running")]
+
+
 def test_agent_run_execution_strategy_contract_is_explicit_and_validated(tmp_path):
     database = ChatDatabase(tmp_path / "agent-strategy.sqlite3")
     service = AgentRunService(database)

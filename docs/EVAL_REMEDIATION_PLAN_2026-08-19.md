@@ -6,7 +6,7 @@
 
 ## 本轮执行范围
 
-P0–P10 已合入。本轮把确认框与命令面板文案纳入 i18n 门禁。Windows CSC 仍阻塞。
+P0–P11 已合入。本轮把流式/调度器 SQLite 写移出事件循环。Windows CSC 仍阻塞。
 
 ## P0 — 一周内（本轮落地）
 
@@ -29,7 +29,7 @@ P0–P10 已合入。本轮把确认框与命令面板文案纳入 i18n 门禁�
 |---|---|---|
 | P1-1 | 流式气泡：streams 离开全量 zustand，selector + memo | **完成** |
 | P1-2 | 消息列表虚拟化（content-visibility + 只渲染最近 80 条）；历史默认 100 条 | **完成** |
-| P1-3 | steer 写走 `to_thread`；消息列表异步化；插件调用从 run 抽出 | **完成**（`stream_user_message` 约 120 行；orchestrator stream_* 均 ≤400） |
+| P1-3 | steer 写走 `to_thread`；消息列表异步化；插件调用从 run 抽出 | **完成**（会话/自动化路由与 `/health/ready` 也走 `run_in_thread`；delta 不再每 token 写库） |
 | P1-4 | 设置页收成 4 组 | **完成** |
 | P1-5 | 自绘对话框替换 `window.confirm` | **完成**（确认文案走 `ui(...)`，门禁覆盖 confirmAction 与命令面板） |
 | P1-6 | 对话授权不得替代高风险原生 Computer Use | **完成** |
@@ -111,6 +111,13 @@ P0–P10 已合入。本轮把确认框与命令面板文案纳入 i18n 门禁�
 |---|---|---|
 | P11-1 | `confirmAction` 用户文案全部走 `ui(...)`，并写入 en-US 映射 | **完成** |
 | P11-2 | 命令面板标签/hint 走 `ui(...)`；`check_i18n_coverage.mjs` 覆盖 `.ts` 与 confirmAction | **完成** |
+
+## P12 — 流式路径 SQLite 让出事件循环（本轮落地）
+
+| ID | 事项 | 状态 |
+|---|---|---|
+| P12-1 | `observe` 对重复 delta 不再写库；WS/后台 Job 非 delta 走 `observe_async` | **完成** |
+| P12-2 | `/health/ready`、会话 CRUD、自动化表读写、调度器 materialize/claim/heartbeat 走 `run_in_thread` | **完成** |
 
 ## 版本建议
 

@@ -38,6 +38,7 @@ from .routers import (
 from .services import tool_executor
 from .services.agent_run_service import agent_run_service
 from .services.automation_service import automation_service
+from .services.chat_database import chat_database
 from .services.comfyui_runtime import comfyui_runtime
 from .services.local_auth import allow_unauthenticated, demo_token_response, require_api_access
 from .services.local_model_runtime import local_model_runtime
@@ -201,13 +202,14 @@ async def health():
 
 @app.get("/health/ready", response_model=ReadinessStatus)
 async def readiness(request: Request):
-    result = readiness_service.evaluate(
+    result = await chat_database.run_in_thread(
+        readiness_service.evaluate,
         optional_statuses={
             "redis": "ready" if redis_client is not None else "unavailable",
             "automation": "ready" if automation_service.running else "unavailable",
             "comfyui": "not_probed",
             "local_models": "not_probed",
-        }
+        },
     )
     result["request_id"] = _request_id_from(request)
     return JSONResponse(

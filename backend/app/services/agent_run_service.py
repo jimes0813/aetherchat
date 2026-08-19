@@ -51,6 +51,7 @@ class AgentRunService:
             verification_service or execution_verification_service
         )
         self._approval_models: dict[str, str] = {}
+        self._observed_running_steps: set[tuple[str, str]] = set()
 
     @staticmethod
     def _canonical_json(value: Any) -> str:
@@ -862,12 +863,22 @@ class AgentRunService:
             {"request_ref": diagnostic_ref("request", normalized)},
         )
 
+    async def observe_async(self, run_id: str, event: dict[str, Any]) -> None:
+        """Persist run events without blocking the loop on every token delta."""
+        if str(event.get("type") or "") == "delta":
+            self.observe(run_id, event)
+            return
+        await self.database.run_in_thread(self.observe, run_id, event)
+
     def observe(self, run_id: str, event: dict[str, Any]) -> None:
         event_type = str(event.get("type") or "unknown")
         model = str(event.get("model") or "").strip()
         if event_type == "delta":
             if model:
-                self.database.update_agent_step(run_id, model, "running")
+                cache_key = (str(run_id), model)
+                if cache_key not in self._observed_running_steps:
+                    self.database.update_agent_step(run_id, model, "running")
+                    self._observed_running_steps.add(cache_key)
             return
 
         payload: dict[str, Any] = {"type": event_type}
@@ -1221,6 +1232,9 @@ class AgentRunService:
         return updated
 
     def finish(self, run_id: str, *, disconnected: bool = False) -> dict[str, Any] | None:
+        self._observed_running_steps = {
+            key for key in self._observed_running_steps if key[0] != str(run_id)
+        }
         current = self.database.get_agent_run(run_id, include_events=False)
         if current is None:
             return None

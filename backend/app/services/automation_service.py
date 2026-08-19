@@ -159,6 +159,9 @@ class AutomationService:
     def wake(self) -> None:
         self._wake.set()
 
+    async def _db(self, func, /, *args, **kwargs):
+        return await self.database.run_in_thread(func, *args, **kwargs)
+
     async def _poll_loop(self) -> None:
         try:
             while not self._stopping:
@@ -174,14 +177,17 @@ class AutomationService:
 
     async def run_cycle(self, now: datetime | None = None) -> list[dict[str, Any]]:
         current = (now or _utc_now()).astimezone(UTC)
-        materialized = self.database.materialize_due_automation_jobs(_iso(current))
+        materialized = await self._db(
+            self.database.materialize_due_automation_jobs, _iso(current)
+        )
         for job_id, task in list(self._active_tasks.items()):
             if task.done():
                 await asyncio.gather(task, return_exceptions=True)
                 self._active_tasks.pop(job_id, None)
 
         while len(self._active_tasks) < self.concurrency:
-            claimed = self.database.claim_background_job(
+            claimed = await self._db(
+                self.database.claim_background_job,
                 worker_id=self.worker_id,
                 now=_iso(current),
                 lease_expires_at=_iso(current + timedelta(seconds=self.lease_seconds)),
@@ -282,7 +288,8 @@ class AutomationService:
             while True:
                 await asyncio.sleep(delay)
                 now = _utc_now()
-                renewed = self.database.heartbeat_background_job(
+                renewed = await self._db(
+                    self.database.heartbeat_background_job,
                     job_id,
                     worker_id=self.worker_id,
                     now=_iso(now),
@@ -303,7 +310,7 @@ class AutomationService:
         session_id = str(job["session_id"])
         resources = self._resource_resolver(dict(job.get("action") or {}))
         while True:
-            current = self.database.get_background_job(job_id)
+            current = await self._db(self.database.get_background_job, job_id)
             if current is None or current.get("status") in {
                 "cancel_requested",
                 "cancelled",
@@ -348,7 +355,7 @@ class AutomationService:
         dispatch_cancelled = False
         try:
             dispatch_handle = await self._acquire_dispatch(job, parent)
-            current = self.database.get_background_job(job_id) or job
+            current = await self._db(self.database.get_background_job, job_id) or job
             if current.get("status") == "cancel_requested":
                 raise asyncio.CancelledError
             if current.get("lease_owner") != self.worker_id:
@@ -362,7 +369,8 @@ class AutomationService:
                 result = await self._executor(job)
             else:
                 result = await self._execute_agent_job(job)
-            self.database.finish_background_job(
+            await self._db(
+                self.database.finish_background_job,
                 job_id,
                 worker_id=self.worker_id,
                 status=result.status,
@@ -372,21 +380,23 @@ class AutomationService:
             )
         except RunDispatcherStopped as exc:
             dispatch_cancelled = True
-            self.database.requeue_background_job(
+            await self._db(
+                self.database.requeue_background_job,
                 job_id,
                 worker_id=self.worker_id,
                 error=f"{exc}；将在调度器恢复后重试",
             )
         except asyncio.CancelledError:
             dispatch_cancelled = True
-            current = self.database.get_background_job(job_id) or job
+            current = await self._db(self.database.get_background_job, job_id) or job
             run_id = str(current.get("agent_run_id") or "")
             if current.get("status") == "cancel_requested":
                 self._finish_cancelled_claim(job_id, current)
             elif self._stopping:
                 if run_id:
                     self.run_service.finish(run_id, disconnected=True)
-                self.database.requeue_background_job(
+                await self._db(
+                    self.database.requeue_background_job,
                     job_id,
                     worker_id=self.worker_id,
                     error="后台服务停止；将在下次启动后恢复",
@@ -394,7 +404,8 @@ class AutomationService:
             raise
         except Exception as exc:
             error = str(exc)[:4000]
-            run_id = str((self.database.get_background_job(job_id) or {}).get("agent_run_id") or "")
+            failed_job = await self._db(self.database.get_background_job, job_id) or {}
+            run_id = str(failed_job.get("agent_run_id") or "")
             if run_id:
                 self.run_service.database.update_agent_run(run_id, "failed", error=error)
                 self.run_service.database.append_agent_event(
@@ -402,7 +413,8 @@ class AutomationService:
                     "run_failed",
                     {"error": error, "background_job_id": job_id},
                 )
-            self.database.finish_background_job(
+            await self._db(
+                self.database.finish_background_job,
                 job_id,
                 worker_id=self.worker_id,
                 status="failed",
@@ -461,7 +473,8 @@ class AutomationService:
         if not run_id:
             run = self.run_service.create(str(job["session_id"]), action)
             run_id = str(run["id"])
-            attached = self.database.attach_background_job_run(
+            attached = await self._db(
+                self.database.attach_background_job_run,
                 str(job["id"]),
                 worker_id=self.worker_id,
                 run_id=run_id,
@@ -482,7 +495,7 @@ class AutomationService:
         remaining_budget = maximum_budget
         try:
             async for event in orchestrator.stream_user_message(action):
-                self.run_service.observe(run_id, event)
+                await self.run_service.observe_async(run_id, event)
                 if event.get("type") == "cost_update":
                     raw_remaining_budget = event.get("budget_remaining")
                     with suppress(TypeError, ValueError):

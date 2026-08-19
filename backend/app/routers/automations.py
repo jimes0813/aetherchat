@@ -121,7 +121,8 @@ async def list_schedules(
     session_id: UUID,
     limit: int = Query(default=200, ge=1, le=500),
 ):
-    return automation_service.database.list_automation_schedules(
+    return await automation_service.database.run_in_thread(
+        automation_service.database.list_automation_schedules,
         str(session_id),
         limit,
     )
@@ -130,8 +131,9 @@ async def list_schedules(
 @router.post("/schedules", status_code=status.HTTP_201_CREATED)
 async def create_schedule(payload: AutomationScheduleCreate):
     try:
-        schedule = automation_service.database.create_automation_schedule(
-            **_validated_schedule(payload)
+        schedule = await automation_service.database.run_in_thread(
+            automation_service.database.create_automation_schedule,
+            **_validated_schedule(payload),
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -141,7 +143,8 @@ async def create_schedule(payload: AutomationScheduleCreate):
 
 @router.patch("/schedules/{schedule_id}")
 async def patch_schedule(schedule_id: UUID, payload: AutomationSchedulePatch):
-    current = automation_service.database.get_automation_schedule(
+    current = await automation_service.database.run_in_thread(
+        automation_service.database.get_automation_schedule,
         str(schedule_id),
         session_id=str(payload.session_id),
     )
@@ -213,7 +216,8 @@ async def patch_schedule(schedule_id: UUID, payload: AutomationSchedulePatch):
             "enabled": 1 if normalized["enabled"] else 0,
             "max_budget_usd": normalized["max_budget_usd"],
         }
-    updated = automation_service.database.update_automation_schedule(
+    updated = await automation_service.database.run_in_thread(
+        automation_service.database.update_automation_schedule,
         str(schedule_id),
         str(payload.session_id),
         updates,
@@ -226,7 +230,8 @@ async def patch_schedule(schedule_id: UUID, payload: AutomationSchedulePatch):
 
 @router.delete("/schedules/{schedule_id}")
 async def delete_schedule(schedule_id: UUID, session_id: UUID):
-    deleted = automation_service.database.delete_automation_schedule(
+    deleted = await automation_service.database.run_in_thread(
+        automation_service.database.delete_automation_schedule,
         str(schedule_id),
         str(session_id),
     )
@@ -252,7 +257,8 @@ async def list_jobs(
     limit: int = Query(default=200, ge=1, le=500),
     review_only: bool = False,
 ):
-    return automation_service.database.list_background_jobs(
+    return await automation_service.database.run_in_thread(
+        automation_service.database.list_background_jobs,
         str(session_id),
         limit=limit,
         review_only=review_only,
@@ -269,7 +275,8 @@ async def cancel_job(job_id: UUID, payload: JobSessionRequest):
 
 @router.post("/jobs/{job_id}/review")
 async def review_job(job_id: UUID, payload: JobSessionRequest):
-    reviewed = automation_service.database.mark_background_job_reviewed(
+    reviewed = await automation_service.database.run_in_thread(
+        automation_service.database.mark_background_job_reviewed,
         str(job_id),
         str(payload.session_id),
     )

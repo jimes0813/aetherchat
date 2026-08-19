@@ -327,7 +327,7 @@ async def ws_endpoint(
         })
         try:
             async for event in orchestrator.stream_user_message(action):
-                agent_run_service.observe(run["id"], event)
+                await agent_run_service.observe_async(run["id"], event)
                 await send_payload(event)
         except asyncio.CancelledError:
             agent_run_service.finish(run["id"], disconnected=True)
@@ -670,7 +670,7 @@ async def ws_endpoint(
         orchestrator.queue_steer(steer)
         _steer_record, user_message = orchestrator.record_steer_message(steer["content"])
         user_event = {"type": "message_complete", "message": user_message}
-        agent_run_service.observe(active_run_id, user_event)
+        await agent_run_service.observe_async(active_run_id, user_event)
         await send_payload({
             "type": "steer_ack",
             "run_id": active_run_id,
