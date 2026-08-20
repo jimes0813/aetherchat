@@ -388,7 +388,7 @@ export function DesktopControlPanel() {
   };
 
   return (
-    <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto p-4" data-testid="computer-use-panel">
+    <div className="aether-tab-panel aether-computer-use aether-panel-scroll min-h-0 p-4" data-testid="computer-use-panel">
       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="flex items-center gap-2 text-sm font-semibold"><Laptop size={16} />{t('localComputer')}</div>
@@ -444,8 +444,8 @@ export function DesktopControlPanel() {
         </div>
       )}
 
-      <div className="grid gap-3 xl:grid-cols-[minmax(0,1.6fr)_minmax(17rem,0.8fr)]">
-        <section className="overflow-hidden rounded-xl border border-[#332e29] bg-[#171614] text-[#f6efe5]" aria-label={ui('实时电脑画面')}>
+      <div className="aether-computer-stage">
+        <section className="aether-computer-preview overflow-hidden rounded-xl border border-[#332e29] bg-[#171614] text-[#f6efe5]" aria-label={ui('实时电脑画面')}>
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 bg-[#211f1c] px-3 py-2">
             <div className="flex items-center gap-2 text-xs font-semibold">
               {visibleActiveAction ? <Radar className="aether-computer-radar text-[#e1a66c]" size={14} /> : <Eye size={14} />}
@@ -464,7 +464,7 @@ export function DesktopControlPanel() {
                   src={screenshot.image_data_url}
                   alt={ui('本机屏幕截图预览')}
                   onClick={handlePreviewClick}
-                  className="block h-auto max-h-[34rem] w-full cursor-crosshair object-contain"
+                  className="block h-auto w-full cursor-crosshair object-contain"
                 />
                 {coordinate && previewEffectStyle && (
                   <span
@@ -504,7 +504,7 @@ export function DesktopControlPanel() {
             <div className="flex items-center gap-2 text-sm font-semibold"><Sparkles size={15} />{ui('观察 · 操作 · 验证')}</div>
             <span className="rounded bg-[#eee7dd] px-2 py-1 text-[10px] text-[#625a52]">{timeline.length}/16</span>
           </div>
-          <div className="mt-3 max-h-[34rem] space-y-2 overflow-auto pr-1" data-testid="computer-action-timeline">
+          <div className="aether-computer-timeline mt-3 space-y-2 overflow-auto pr-1" data-testid="computer-action-timeline">
             {timeline.length === 0 ? (
               <div className="rounded-lg border border-dashed border-[#d8cfc3] px-3 py-6 text-center text-xs leading-5 text-[#625a52]">
                 {ui('动作会以实时步骤显示在这里，并附带耗时和截图验证结果。')}
@@ -550,7 +550,7 @@ export function DesktopControlPanel() {
           </div>
         </div>
 
-        <div className="mt-3 grid gap-3 lg:grid-cols-2">
+        <div className="aether-computer-console mt-3">
           <div className="rounded-lg border border-[#ded6ca] bg-white p-3">
             <div className="flex items-center gap-2 text-xs font-semibold"><MousePointer2 size={14} />{ui('指针与点击')}</div>
             <div className="mt-2 grid grid-cols-[1fr_1fr_auto] gap-2">

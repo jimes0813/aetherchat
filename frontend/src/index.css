@@ -25,7 +25,7 @@ textarea {
   font: inherit;
 }
 
-:where(button, a, input:not([data-aether-search]), select, textarea:not([data-aether-composer]), summary, [tabindex]):focus-visible {
+:where(button, a, input:not([data-aether-search]):not([type="range"]), select, textarea:not([data-aether-composer]), summary, [tabindex]):focus-visible {
   outline: 3px solid #075ea8 !important;
   outline-offset: 2px !important;
   box-shadow: 0 0 0 2px #fff !important;
@@ -48,14 +48,115 @@ textarea {
   transform: translateY(0);
 }
 
-.aether-settings-content .aether-inspector-shell {
-  background: #fff;
-  overflow: auto;
+.aether-settings-content {
+  container-type: inline-size;
+  container-name: settings-content;
 }
 
-.aether-settings-content .aether-tab-panel {
-  flex: none;
+.aether-settings-content .aether-inspector-shell {
+  display: block;
+  height: auto;
+  min-height: 100%;
   overflow: visible;
+  background: #fff;
+}
+
+.aether-settings-content .aether-tab-panel,
+.aether-settings-content .aether-panel-scroll {
+  display: block;
+  flex: none;
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+  background: #fff;
+}
+
+.aether-tab-panel input[type="range"],
+.aether-range {
+  -webkit-appearance: none;
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 1.5rem;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.aether-tab-panel input[type="range"]:focus,
+.aether-tab-panel input[type="range"]:focus-visible,
+.aether-range:focus,
+.aether-range:focus-visible {
+  outline: 3px solid #075ea8;
+  outline-offset: 2px;
+  border: 0;
+  box-shadow: none;
+}
+
+.aether-tab-panel input[type="range"]::-webkit-slider-runnable-track,
+.aether-range::-webkit-slider-runnable-track {
+  height: 0.375rem;
+  border-radius: 999px;
+  background: #e5d9ca;
+}
+
+.aether-tab-panel input[type="range"]::-webkit-slider-thumb,
+.aether-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 1rem;
+  height: 1rem;
+  margin-top: -0.3125rem;
+  border-radius: 999px;
+  background: #2f2a24;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px #c8b9a7;
+}
+
+.aether-tab-panel input[type="range"]::-moz-range-track,
+.aether-range::-moz-range-track {
+  height: 0.375rem;
+  border-radius: 999px;
+  background: #e5d9ca;
+}
+
+.aether-tab-panel input[type="range"]::-moz-range-thumb,
+.aether-range::-moz-range-thumb {
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid #fff;
+  border-radius: 999px;
+  background: #2f2a24;
+  box-shadow: 0 0 0 1px #c8b9a7;
+}
+
+.aether-computer-stage {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.aether-computer-preview img {
+  max-height: 16rem;
+}
+
+.aether-computer-timeline {
+  max-height: 12rem;
+}
+
+.aether-computer-console {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@container settings-content (min-width: 34rem) {
+  .aether-computer-console {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
 }
 
 /* WCAG AA replacement for legacy muted text utilities on light surfaces. */
@@ -398,14 +499,14 @@ textarea {
   background: #f2eadf;
 }
 
-.aether-tab-panel input,
+.aether-tab-panel input:not([type="range"]),
 .aether-tab-panel select,
 .aether-tab-panel textarea {
   border-color: #d8cfc3;
   background: #fffdf9;
 }
 
-.aether-tab-panel input:focus,
+.aether-tab-panel input:not([type="range"]):focus,
 .aether-tab-panel select:focus,
 .aether-tab-panel textarea:focus {
   border-color: #9b7250;

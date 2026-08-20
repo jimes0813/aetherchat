@@ -165,7 +165,10 @@ export function VoiceSettingsPanel({
           step={100}
           value={silenceMs}
           onChange={(event) => onSilenceMs(Number(event.target.value))}
-          className="mt-2 w-full"
+          className="aether-range mt-2"
+          aria-valuemin={700}
+          aria-valuemax={1600}
+          aria-valuenow={silenceMs}
           aria-valuetext={`${silenceMs}ms`}
         />
         <span className="mt-1 block font-normal">{ui('{ms} 毫秒静音后再发送，避免抢话。', { ms: silenceMs })}</span>
