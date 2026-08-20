@@ -48,6 +48,10 @@ textarea {
   transform: translateY(0);
 }
 
+.aether-settings-content .aether-inspector-shell {
+  background: #fff;
+}
+
 /* WCAG AA replacement for legacy muted text utilities on light surfaces. */
 .text-\[\#8b8176\],
 .text-\[\#7a7065\],

@@ -786,7 +786,7 @@ export function InspectorPanel(props: InspectorProps) {
     <aside
       aria-label={`${activePanelLabel} panel`}
       data-hide-chrome={props.hideChrome ? 'true' : undefined}
-      className="aether-inspector-shell flex h-full min-h-0 flex-col overflow-y-auto bg-[#f2eadf]"
+      className="aether-inspector-shell flex h-full min-h-0 flex-col overflow-y-auto bg-white"
     >
       {!props.hideChrome && (
       <div className="border-b border-[#d8cfc3] p-3">
@@ -1587,7 +1587,7 @@ export function InspectorPanel(props: InspectorProps) {
         <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto p-4">
           <div className="mb-4 flex items-center gap-2 text-sm font-semibold">
             <ShieldCheck size={16} />
-            {t('collaborationSettings')}
+            {t('general')}
           </div>
           {([
             ['mode', '协作模式', ['日常讨论', '圆桌评审', '项目协作']],

@@ -1,10 +1,10 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { SettingsPage } from './SettingsPage';
-import { SETTINGS_GROUPS, SETTINGS_TABS } from './settingsTabs';
+import { SETTINGS_NAV_TABS, WORKSPACE_TABS } from './settingsTabs';
 
 describe('SettingsPage', () => {
-  it('lists every settings tab and switches on click', () => {
+  it('lists Codex-style preference tabs and switches on click', () => {
     const onChangeTab = vi.fn();
     render(
       <SettingsPage activeTab="settings" onChangeTab={onChangeTab} onBackToChat={vi.fn()}>
@@ -14,37 +14,55 @@ describe('SettingsPage', () => {
 
     expect(screen.getByTestId('settings-page')).toBeTruthy();
     expect(screen.getByTestId('settings-content').className).toContain('overflow-y-auto');
-    for (const key of SETTINGS_TABS) {
-      const label = key === 'settings'
-        ? '设置'
-        : key === 'models'
-          ? '模型'
-          : key === 'runs'
-            ? '运行'
-            : null;
-      if (label) expect(screen.getByRole('tab', { name: label })).toBeTruthy();
-    }
-    expect(screen.getAllByRole('tab')).toHaveLength(SETTINGS_TABS.length);
-    expect(screen.getByText('对话与模型')).toBeTruthy();
-    expect(screen.getByText('知识与记忆')).toBeTruthy();
-    expect(screen.getByText('代理与自动化')).toBeTruthy();
-    expect(screen.getByText('高级')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '通用' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '模型' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '个性化' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '电脑使用' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '高级' })).toBeTruthy();
+    expect(screen.queryByRole('tab', { name: '运行' })).toBeNull();
+    expect(screen.queryByRole('tab', { name: '任务' })).toBeNull();
+    expect(screen.queryByRole('tab', { name: '文件' })).toBeNull();
+    expect(screen.queryByText('对话与模型')).toBeNull();
+    expect(screen.getAllByRole('tab')).toHaveLength(SETTINGS_NAV_TABS.length);
     expect(screen.getByRole('tablist', { name: '设置分组' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '返回对话' })).toBeTruthy();
-    expect(screen.getByRole('tab', { name: '治理（实验）' })).toBeTruthy();
 
     fireEvent.click(screen.getByRole('tab', { name: '模型' }));
     expect(onChangeTab).toHaveBeenCalledWith('models');
-    fireEvent.click(screen.getByRole('tab', { name: '运行' }));
-    expect(onChangeTab).toHaveBeenCalledWith('runs');
+    fireEvent.click(screen.getByRole('tab', { name: '通用' }));
+    expect(onChangeTab).toHaveBeenCalledWith('settings');
   });
 
-  it('keeps settings group labels as stable English keys', () => {
-    expect(SETTINGS_GROUPS.map((group) => group.label)).toEqual([
-      'chatAndModels',
-      'knowledgeAndMemory',
-      'agentsAndAutomation',
-      'advanced',
+  it('surfaces a workspace panel in the nav only while it is open', () => {
+    render(
+      <SettingsPage activeTab="runs" onChangeTab={vi.fn()} onBackToChat={vi.fn()}>
+        <div>运行内容</div>
+      </SettingsPage>,
+    );
+    expect(screen.getByRole('tab', { name: '运行' })).toBeTruthy();
+    expect(screen.getAllByRole('tab')).toHaveLength(SETTINGS_NAV_TABS.length + 1);
+  });
+
+  it('keeps workbench surfaces out of the default Settings nav', () => {
+    expect([...WORKSPACE_TABS]).toEqual([
+      'knowledge',
+      'artifacts',
+      'runs',
+      'tasks',
+      'automations',
+      'tools',
+      'changes',
+    ]);
+    expect([...SETTINGS_NAV_TABS]).toEqual([
+      'settings',
+      'models',
+      'voice',
+      'instructions',
+      'memory',
+      'computer',
+      'connections',
+      'plugins',
+      'governance',
     ]);
   });
 });

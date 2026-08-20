@@ -473,6 +473,10 @@ function App() {
         event.preventDefault();
         setCommandOpen(true);
       }
+      if ((event.ctrlKey || event.metaKey) && event.key === ',') {
+        event.preventDefault();
+        setActivePanel(activePanel ?? 'settings');
+      }
       if (event.key === 'Escape') {
         if (voice.open) return;
         setCommandOpen(false);
@@ -482,7 +486,7 @@ function App() {
     };
     window.addEventListener('keydown', handleShortcut);
     return () => window.removeEventListener('keydown', handleShortcut);
-  }, [setActivePanel, voice.open]);
+  }, [activePanel, setActivePanel, voice.open]);
 
   const commandItems = useMemo(() => buildCommandItems({
     conversations,

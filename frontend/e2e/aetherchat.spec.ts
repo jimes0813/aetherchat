@@ -1376,9 +1376,22 @@ async function openSettingsTab(page: Page, tab: string) {
     await page.getByTitle('设置').or(page.getByTitle('Settings')).click();
     await expect(settingsPage).toBeVisible();
   }
-  if (tab !== '设置' && tab !== 'Settings') {
-    await page.getByRole('tab', { name: tab, exact: true }).click();
+  if (tab === '设置' || tab === 'Settings' || tab === '通用' || tab === 'General') {
+    const general = page.getByRole('tab', { name: /^通用$|^General$/ });
+    if (await general.count()) await general.click();
+    return;
   }
+  const navTab = page.getByRole('tab', { name: tab, exact: true });
+  if (await navTab.count()) {
+    await navTab.click();
+    return;
+  }
+  await page.keyboard.press('Control+k');
+  const search = page.locator('[data-aether-search]');
+  await expect(search).toBeVisible();
+  await search.fill(`打开${tab}面板`);
+  await page.getByRole('button', { name: `打开${tab}面板` }).click();
+  await expect(settingsPage).toBeVisible();
 }
 
 async function acceptConfirmDialog(page: Page) {
@@ -2431,27 +2444,24 @@ test.describe('AetherChat Frontend E2E', () => {
     await expect(page.getByRole('button', { name: 'Send' })).toBeVisible();
 
     const panels = [
+      ['General', 'General'],
       ['Memory', 'Local session memory'],
-      ['Knowledge', 'Project knowledge base'],
-      ['Tasks', 'Add'],
-      ['Automations', 'Local background automation'],
-      ['Artifacts', 'File tree'],
-      ['Changes', 'Changes and merges'],
-      ['Tools', 'Tool catalog'],
       ['Plugins', 'Plugin center'],
       ['Connections', 'MCP connections'],
-      ['Computer', 'Local computer'],
+      ['Computer Use', 'Local computer'],
       ['Models', 'Model APIs'],
-      ['Runs', 'Agent run history'],
-      ['Settings', 'Collaboration settings'],
     ] as const;
     const untranslatedUi = /本机会话记忆|项目资料库|新建任务|本机后台自动化|创建定时任务|文件树|变更与合并|工具仓|插件中心|MCP 连接器|本地电脑|模型 API|Agent 运行记录|协作设置/;
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Back to chat' })).toBeVisible();
     await expect(page.getByRole('tablist', { name: 'Settings sections' })).toBeVisible();
+    await expect(page.getByRole('tab', { name: 'General', exact: true })).toBeVisible();
+    await expect(page.getByRole('tab', { name: 'Personalization', exact: true })).toBeVisible();
+    await expect(page.getByRole('tab', { name: 'Knowledge', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('tab', { name: 'Runs', exact: true })).toHaveCount(0);
     for (const [panel, expected] of panels) {
       await page.getByRole('tab', { name: panel, exact: true }).click();
-      const pane = page.getByLabel(`${panel} panel`);
+      const pane = page.getByLabel(panel === 'General' ? 'Settings panel' : panel === 'Computer Use' ? 'Computer panel' : `${panel} panel`);
       await expect(pane).toContainText(expected);
       await expect(pane).not.toContainText(untranslatedUi);
     }
