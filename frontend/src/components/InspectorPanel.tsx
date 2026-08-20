@@ -194,7 +194,7 @@ export function InspectorPanel(props: InspectorProps) {
     memory: t('memory'), knowledge: t('knowledge'), tasks: t('tasks'), automations: t('automations'), artifacts: t('artifacts'), changes: t('changes'),
     tools: t('tools'), plugins: t('plugins'), connections: t('connections'), computer: t('computer'), models: t('models'),
     runs: t('runs'), settings: t('settings'), voice: t('voice'), instructions: t('instructions'), governance: t('governance'),
-  } as Record<string, string>)[activePanel] : ui('检查器');
+  } as Record<string, string>)[activePanel] : t('inspector');
   const [artifactContent, setArtifactContent] = useState('');
   const [artifactPreview, setArtifactPreview] = useState<ArtifactPreview | null>(null);
   const [artifactVersions, setArtifactVersions] = useState<ArtifactVersion[]>([]);
@@ -821,7 +821,7 @@ export function InspectorPanel(props: InspectorProps) {
           <div className="mb-4 flex items-start gap-3">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#e5d9ca] text-[#684827]"><Brain size={17} /></div>
             <div>
-              <h2 className="text-sm font-semibold">{ui('本机会话记忆')}</h2>
+              <h2 className="text-sm font-semibold">{t('sessionMemoryTitle')}</h2>
               <p className="mt-1 text-xs leading-5 text-[#7a7065]">{ui('决定和偏好只从用户明确表达中提取；工具可写入结构化共享实体，供同一会话中的所有 Agent 直接引用。所有内容均可检查或删除。')}</p>
             </div>
           </div>
@@ -900,7 +900,7 @@ export function InspectorPanel(props: InspectorProps) {
       {activePanel === 'knowledge' && (
         <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto p-4">
           <div className="mb-4">
-            <h2 className="text-sm font-semibold">{ui('项目资料库')}</h2>
+            <h2 className="text-sm font-semibold">{t('projectKnowledge')}</h2>
             <p className="mt-1 text-xs text-[#7a7065]">
               {ui('本地 FTS5/BM25 + 哈希向量混合检索（不上传云端）。检索结果展示各层贡献，并可一键引用到输入框。')}
             </p>
@@ -1115,7 +1115,7 @@ export function InspectorPanel(props: InspectorProps) {
           <div className="overflow-auto border-b border-[#ded6ca] p-4">
             <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
               <Archive size={16} />
-              {ui('文件树')}
+              {t('fileTree')}
             </div>
             <div className="space-y-2">
               {artifacts.map((artifact) => (
@@ -1266,7 +1266,7 @@ export function InspectorPanel(props: InspectorProps) {
         <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto p-4">
           <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
             <GitMerge size={16} />
-            {ui('变更与合并')}
+            {t('changesAndMerges')}
           </div>
           <div className="space-y-3">
             {mergeProposals.map((proposal) => (
@@ -1297,7 +1297,7 @@ export function InspectorPanel(props: InspectorProps) {
           <div className="border-b border-[#ded6ca] p-4">
             <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
               <PackageCheck size={16} />
-              {ui('工具仓')}
+              {t('toolCatalog')}
             </div>
             <div className="space-y-2">
               <input
@@ -1398,7 +1398,7 @@ export function InspectorPanel(props: InspectorProps) {
           <div className="mb-4 flex items-start gap-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#e5d9ca] text-[#684827]"><Cable size={17} /></div>
             <div>
-              <h2 className="text-sm font-semibold">{ui('MCP 连接器')}</h2>
+              <h2 className="text-sm font-semibold">{t('mcpConnectors')}</h2>
               <p className="mt-1 text-xs leading-5 text-[#7a7065]">{ui('支持标准 stdio 与 Streamable HTTP。令牌保存在系统密钥环，模型调用仍需对话内授权。')}</p>
             </div>
           </div>
@@ -1463,7 +1463,7 @@ export function InspectorPanel(props: InspectorProps) {
           <div className="border-b border-[#ded6ca] p-4">
             <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
               <Cpu size={16} />
-              {ui('模型 API')}
+              {t('modelApis')}
             </div>
             <div className="grid grid-cols-2 gap-2">
               <input value={modelName} onChange={(event) => setModelName(event.target.value)} readOnly={Boolean(editingModelName)} title={editingModelName ? ui('模型名称是稳定标识；如需新名称，请新建配置') : undefined} placeholder={ui('名称，例如：我的 GPT')} className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none read-only:bg-[#eee7de]" />
@@ -1506,7 +1506,7 @@ export function InspectorPanel(props: InspectorProps) {
               models={modelConfigs}
               onNotice={setModelVerifyStatus}
             />
-            <div className="mb-2 text-xs font-semibold text-[#7a7065]">{ui('已连接模型')}</div>
+            <div className="mb-2 text-xs font-semibold text-[#7a7065]">{t('connectedModels')}</div>
             <div className="space-y-2">
               {modelConfigs.map((model) => (
                 <div key={model.name} className="rounded-lg border border-[#ded6ca] bg-[#fbfaf7] p-3">
@@ -1629,7 +1629,7 @@ export function InspectorPanel(props: InspectorProps) {
               <div role="status" className="mt-2 text-xs text-[#6d6258]">{diagnosticStatus}</div>
             )}
           </section>
-          <div className="mt-5 text-xs font-semibold text-[#7a7065]">{ui('模型角色')}</div>
+          <div className="mt-5 text-xs font-semibold text-[#7a7065]">{t('modelRoles')}</div>
           <div className="mt-2 space-y-2">
             {providers.map((provider) => (
               <div key={provider.name} className="rounded-lg border border-[#ded6ca] bg-[#fbfaf7] p-3">

@@ -62,6 +62,17 @@ describe('i18n: en-US 词条表关键条目存在性', () => {
     ['currentChat', 'Current chat'],
     ['chatHistory', 'Chat history'],
     ['taskRecords', 'Task records'],
+    ['chatAndModels', 'Chat and models'],
+    ['knowledgeAndMemory', 'Knowledge and memory'],
+    ['agentsAndAutomation', 'Agents and automation'],
+    ['advanced', 'Advanced'],
+    ['backToChat', 'Back to chat'],
+    ['settingsGroups', 'Settings sections'],
+    ['inspector', 'Inspector'],
+    ['sessionMemoryTitle', 'Local session memory'],
+    ['toolCatalog', 'Tool catalog'],
+    ['backendApi', 'Backend API'],
+    ['modelConnectionCheck', 'Model connection check'],
   ];
 
   it.each(keyEntries)('en-US 词条 %s 存在且正确', (key, expected) => {

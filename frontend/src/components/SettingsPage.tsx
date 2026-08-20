@@ -15,7 +15,7 @@ export function SettingsPage({
   onBackToChat,
   children,
 }: SettingsPageProps) {
-  const { t, ui } = useI18n();
+  const { t } = useI18n();
   return (
     <div className="flex min-h-0 flex-1 bg-[#f4eee6]" data-testid="settings-page">
       <aside className="flex w-40 shrink-0 flex-col border-r border-[#d8cfc3] bg-[#efe7dc]">
@@ -26,18 +26,18 @@ export function SettingsPage({
             onClick={onBackToChat}
             className="h-6 rounded px-1.5 text-[11px] text-[#5f554d] hover:bg-[#e7ddd0]"
           >
-            {ui('返回对话')}
+            {t('backToChat')}
           </button>
         </div>
         <nav
           role="tablist"
-          aria-label={ui('设置分组')}
+          aria-label={t('settingsGroups')}
           className="min-h-0 flex-1 overflow-auto p-1.5"
         >
           {SETTINGS_GROUPS.map((group) => (
             <div key={group.id} className="mb-2">
               <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-[#8b8176]">
-                {ui(group.label)}
+                {t(group.label)}
               </div>
               {group.tabs.map((id) => (
                 <button

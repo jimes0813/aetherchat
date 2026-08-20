@@ -1,22 +1,22 @@
 export const SETTINGS_GROUPS = [
   {
     id: 'chat',
-    label: '对话与模型',
+    label: 'chatAndModels',
     tabs: ['settings', 'voice', 'models'] as const,
   },
   {
     id: 'knowledge',
-    label: '知识与记忆',
+    label: 'knowledgeAndMemory',
     tabs: ['memory', 'knowledge', 'artifacts'] as const,
   },
   {
     id: 'agent',
-    label: '代理与自动化',
+    label: 'agentsAndAutomation',
     tabs: ['runs', 'tasks', 'automations', 'tools', 'plugins', 'instructions'] as const,
   },
   {
     id: 'advanced',
-    label: '高级',
+    label: 'advanced',
     tabs: ['connections', 'computer', 'changes', 'governance'] as const,
   },
 ] as const;

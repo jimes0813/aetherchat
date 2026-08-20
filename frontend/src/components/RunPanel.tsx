@@ -63,8 +63,19 @@ type PlanEditorDraft = {
 
 type RunCheckTone = 'neutral' | 'ok' | 'warn' | 'bad';
 
+type RunCheckId =
+  | 'backendApi'
+  | 'desktopFrontend'
+  | 'backendDataDir'
+  | 'modelConfig'
+  | 'toolCatalog'
+  | 'pluginCenter'
+  | 'computerControl'
+  | 'websocket'
+  | 'modelConnectionCheck';
+
 type RunCheckRow = {
-  name: string;
+  id: RunCheckId;
   detail: string;
   status: string;
   tone: RunCheckTone;
@@ -120,7 +131,7 @@ export function RunPanel({
   onConfirmPlan,
   onRejectPlan,
 }: RunPanelProps) {
-  const { ui } = useI18n();
+  const { t, ui } = useI18n();
   const connection = useSessionStore((state) => state.connection);
   const [checking, setChecking] = useState(false);
   const [verifyingModels, setVerifyingModels] = useState(false);
@@ -159,33 +170,33 @@ export function RunPanel({
     }
   };
   const frontendDetail = window.aetherRuntime?.appVersion
-    ? `AetherChat ${window.aetherRuntime.appVersion} · 本地桌面前端`
-    : '本地桌面前端';
+    ? t('desktopFrontendVersion', { version: window.aetherRuntime.appVersion })
+    : t('localDesktopFrontend');
   const dataDir = window.aetherRuntime?.dataDir || '';
   const dataDirRow: RunCheckRow = {
-    name: ui('后端数据目录'),
+    id: 'backendDataDir',
     detail: dataDir || ui('未由桌面主进程报告'),
     status: dataDir ? ui('已报告') : ui('未知'),
     tone: dataDir ? 'ok' : 'warn',
   };
   const [rows, setRows] = useState<RunCheckRow[]>([
-    { name: '后端 API', detail: API_BASE, status: '未检查', tone: 'neutral' },
-    { name: '桌面前端', detail: frontendDetail, status: '已加载', tone: 'ok' },
+    { id: 'backendApi', detail: API_BASE, status: '未检查', tone: 'neutral' },
+    { id: 'desktopFrontend', detail: frontendDetail, status: '已加载', tone: 'ok' },
     dataDirRow,
-    { name: '模型配置', detail: `${API_BASE}/models/`, status: '未检查', tone: 'neutral' },
-    { name: '工具仓', detail: `${API_BASE}/tools/`, status: '未检查', tone: 'neutral' },
-    { name: '插件中心', detail: `${API_BASE}/plugins/`, status: '未检查', tone: 'neutral' },
-    { name: '电脑控制', detail: '主进程令牌保护', status: window.aetherDesktop ? '未检查' : '仅桌面版', tone: window.aetherDesktop ? 'neutral' : 'warn' },
-    { name: 'WebSocket', detail: '/ws/v1/sessions/:id', status: connection === 'online' ? '已连接' : '未连接', tone: connection === 'online' ? 'ok' : 'warn' },
+    { id: 'modelConfig', detail: `${API_BASE}/models/`, status: '未检查', tone: 'neutral' },
+    { id: 'toolCatalog', detail: `${API_BASE}/tools/`, status: '未检查', tone: 'neutral' },
+    { id: 'pluginCenter', detail: `${API_BASE}/plugins/`, status: '未检查', tone: 'neutral' },
+    { id: 'computerControl', detail: '主进程令牌保护', status: window.aetherDesktop ? '未检查' : '仅桌面版', tone: window.aetherDesktop ? 'neutral' : 'warn' },
+    { id: 'websocket', detail: '/ws/v1/sessions/:id', status: connection === 'online' ? '已连接' : '未连接', tone: connection === 'online' ? 'ok' : 'warn' },
   ]);
 
   const runCheck = async () => {
     setChecking(true);
     const nextRows: RunCheckRow[] = [
-      { name: '桌面前端', detail: frontendDetail, status: '已加载', tone: 'ok' },
+      { id: 'desktopFrontend', detail: frontendDetail, status: '已加载', tone: 'ok' },
       dataDirRow,
       {
-        name: 'WebSocket',
+        id: 'websocket',
         detail: '/ws/v1/sessions/:id',
         status: connection === 'online' ? '已连接' : connection === 'connecting' ? '连接中' : '未连接',
         tone: connection === 'online' ? 'ok' : connection === 'connecting' ? 'warn' : 'bad',
@@ -206,13 +217,13 @@ export function RunPanel({
         : `数据库 schema ${database.schema_version}/${database.expected_schema_version ?? database.schema_version}`;
       const redisStatus = health.optional_dependencies?.redis?.status || 'not_probed';
       nextRows.unshift({
-        name: '后端 API',
+        id: 'backendApi',
         detail: `${API_BASE} · ${schemaDetail} · Redis ${redisStatus}${health.service ? ` · ${health.service}` : ''}`,
         status: health.ready && health.status === 'ready' ? '就绪' : '异常',
         tone: health.ready && health.status === 'ready' ? 'ok' : 'bad',
       });
     } catch (error) {
-      nextRows.unshift({ name: '后端 API', detail: `${API_BASE} · ${String(error)}`, status: '不可用', tone: 'bad' });
+      nextRows.unshift({ id: 'backendApi', detail: `${API_BASE} · ${String(error)}`, status: '不可用', tone: 'bad' });
     }
 
     try {
@@ -222,38 +233,38 @@ export function RunPanel({
         (model) => model.participation_policy === 'always',
       ).length;
       nextRows.push({
-        name: '模型配置',
+        id: 'modelConfig',
         detail: `已配置 ${configured.length}/${models.length} 个模型，其中 ${alwaysParticipating} 个始终参与；基础检查不会调用模型 API`,
         status: configured.length ? '已加载' : '未配置',
         tone: configured.length ? 'ok' : 'warn',
       });
     } catch (error) {
-      nextRows.push({ name: '模型配置', detail: String(error), status: '不可用', tone: 'bad' });
+      nextRows.push({ id: 'modelConfig', detail: String(error), status: '不可用', tone: 'bad' });
     }
 
     try {
       const tools = await fetchJson<ToolItem[]>(`${API_BASE}/tools/`);
       nextRows.push({
-        name: '工具仓',
+        id: 'toolCatalog',
         detail: Array.isArray(tools) ? `已加载 ${tools.length} 个工具` : '返回格式异常',
         status: Array.isArray(tools) ? '正常' : '异常',
         tone: Array.isArray(tools) ? 'ok' : 'bad',
       });
     } catch (error) {
-      nextRows.push({ name: '工具仓', detail: String(error), status: '不可用', tone: 'bad' });
+      nextRows.push({ id: 'toolCatalog', detail: String(error), status: '不可用', tone: 'bad' });
     }
 
     try {
       const plugins = await fetchJson<PluginItem[]>(`${API_BASE}/plugins/`);
       const enabled = plugins.filter((plugin) => plugin.enabled).length;
       nextRows.push({
-        name: '插件中心',
+        id: 'pluginCenter',
         detail: `已加载 ${plugins.length} 个插件，其中 ${enabled} 个已启用`,
         status: '正常',
         tone: 'ok',
       });
     } catch (error) {
-      nextRows.push({ name: '插件中心', detail: String(error), status: '不可用', tone: 'bad' });
+      nextRows.push({ id: 'pluginCenter', detail: String(error), status: '不可用', tone: 'bad' });
     }
 
     if (window.aetherDesktop) {
@@ -261,16 +272,16 @@ export function RunPanel({
         const desktop = await window.aetherDesktop.status();
         const formats = Array.isArray(desktop.document_formats) ? desktop.document_formats.join(' / ') : '未知';
         nextRows.push({
-          name: '电脑控制',
+          id: 'computerControl',
           detail: `文件读写、鼠标和截图桥接已保护；文档格式：${formats}`,
           status: desktop.available ? '正常' : '不可用',
           tone: desktop.available ? 'ok' : 'bad',
         });
       } catch (error) {
-        nextRows.push({ name: '电脑控制', detail: String(error), status: '不可用', tone: 'bad' });
+        nextRows.push({ id: 'computerControl', detail: String(error), status: '不可用', tone: 'bad' });
       }
     } else {
-      nextRows.push({ name: '电脑控制', detail: '浏览器预览不提供本地电脑权限', status: '仅桌面版', tone: 'warn' });
+      nextRows.push({ id: 'computerControl', detail: '浏览器预览不提供本地电脑权限', status: '仅桌面版', tone: 'warn' });
     }
 
     setRows(nextRows);
@@ -301,9 +312,9 @@ export function RunPanel({
         }
       }
       setRows((current) => [
-        ...current.filter((row) => row.name !== '模型连接验证'),
+        ...current.filter((row) => row.id !== 'modelConnectionCheck'),
         {
-          name: '模型连接验证',
+          id: 'modelConnectionCheck',
           detail: enabled.length
             ? `已验证 ${enabled.length} 个启用模型，通过 ${passed} 个${failures.length ? `；${failures.join('；')}` : ''}`
             : '没有已启用的模型',
@@ -475,7 +486,7 @@ export function RunPanel({
       <section className="mb-5">
         <div className="mb-2 flex items-center justify-between">
           <div>
-            <h2 className="text-sm font-semibold">{ui('Agent 运行记录')}</h2>
+            <h2 className="text-sm font-semibold">{t('agentRunHistory')}</h2>
             <p className="mt-1 text-xs text-[#7a7065]">{ui('目标、计划、步骤证据和关键事件保存在本机；重启后从未完成步骤继续。')}</p>
           </div>
           <span className="text-xs text-[#8b8176]">{ui('{count} 次', { count: agentRuns.length })}</span>
@@ -990,10 +1001,10 @@ export function RunPanel({
         <div className="mt-1 text-[#d7c9b6]">{ui('基础检查只读取本机状态，不调用模型 API；模型验证会先请求确认。')}</div>
       </div>
       <div className="mt-4 space-y-2">
-        {rows.map(({ name, detail, status, tone }) => (
-          <div key={name} className="rounded-lg border border-[#ded6ca] bg-[#fbfaf7] p-3">
+        {rows.map(({ id, detail, status, tone }) => (
+          <div key={id} className="rounded-lg border border-[#ded6ca] bg-[#fbfaf7] p-3">
             <div className="flex items-center justify-between text-sm font-medium">
-              <span>{ui(name)}</span>
+              <span>{t(id)}</span>
               <span className={`rounded-md px-2 py-1 text-xs ${toneClass[tone]}`}>{ui(status)}</span>
             </div>
             <div className="mt-1 text-xs text-[#7a7065]">{ui(detail)}</div>

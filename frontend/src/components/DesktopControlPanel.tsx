@@ -38,7 +38,7 @@ import {
 } from './desktopControlModel';
 
 export function DesktopControlPanel() {
-  const { ui } = useI18n();
+  const { t, ui } = useI18n();
   const bridge = window.aetherDesktop;
   const imageRef = useRef<HTMLImageElement>(null);
   const historyCursorRef = useRef(0);
@@ -391,7 +391,7 @@ export function DesktopControlPanel() {
     <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto p-4" data-testid="computer-use-panel">
       <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <div className="flex items-center gap-2 text-sm font-semibold"><Laptop size={16} />{ui('本地电脑')}</div>
+          <div className="flex items-center gap-2 text-sm font-semibold"><Laptop size={16} />{t('localComputer')}</div>
           <div className="mt-1 max-w-3xl text-xs leading-5 text-[#625a52]">
             {ui('截图 → 操作 → 自动复核的 Computer Use 循环；支持 Linux X11 与 Windows，并保留本机授权和随时接管。')}
           </div>

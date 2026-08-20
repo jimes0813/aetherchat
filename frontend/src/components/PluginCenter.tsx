@@ -59,7 +59,7 @@ const formatGiB = (value?: number | null) => (
 );
 
 export function PluginCenter({ apiBase, sessionId }: { apiBase: string; sessionId: string }) {
-  const { ui } = useI18n();
+  const { t, ui } = useI18n();
   const [plugins, setPlugins] = useState<PluginItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyKey, setBusyKey] = useState('');
@@ -258,7 +258,7 @@ export function PluginCenter({ apiBase, sessionId }: { apiBase: string; sessionI
     <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto p-4">
       <div className="mb-3 flex items-center justify-between gap-3">
         <div>
-          <div className="flex items-center gap-2 text-sm font-semibold"><Puzzle size={16} />{ui('插件中心')}</div>
+          <div className="flex items-center gap-2 text-sm font-semibold"><Puzzle size={16} />{t('pluginCenter')}</div>
           <div className="mt-1 text-xs text-[#7a7065]">{ui('兼容 Codex 风格 manifest；自定义插件仅支持声明式模板，不执行任意代码。')}</div>
         </div>
         <button onClick={load} disabled={loading} className="rounded-md border border-[#d6cbbd] px-3 py-1.5 text-xs disabled:opacity-50">{ui('刷新')}</button>
