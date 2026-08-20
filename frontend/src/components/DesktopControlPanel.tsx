@@ -536,60 +536,56 @@ export function DesktopControlPanel() {
         </section>
       </div>
 
-      <section className="mt-3 rounded-xl border border-[#ded6ca] bg-[#fbfaf7] p-4">
+      <section className="aether-computer-console mt-3 rounded-xl border border-[#ded6ca] bg-[#fbfaf7] p-4" aria-label={ui('Computer Use 控制台')}>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <div className="flex items-center gap-2 text-sm font-semibold"><Camera size={15} />{ui('Computer Use 控制台')}</div>
             <div className="mt-1 text-xs text-[#625a52]">{ui('点选画面或输入截图坐标；坐标会按截图缩放比例映射到原始桌面。')}</div>
           </div>
-          <div className="flex gap-2">
-            <button onClick={() => runAction('screenshot')} disabled={!bridge || Boolean(visibleActiveAction)} className="rounded-md bg-[#2f2a24] px-3 py-1.5 text-xs text-white disabled:opacity-40">
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={() => runAction('screenshot')} disabled={!bridge || Boolean(visibleActiveAction)} className="inline-flex h-8 items-center rounded-md bg-[#2f2a24] px-3 text-xs text-white disabled:opacity-40">
               {visibleActiveAction === 'screenshot' ? ui('观察中') : ui('截取主屏幕')}
             </button>
-            <button onClick={saveScreenshot} disabled={!screenshot || Boolean(busy)} className="rounded-md border border-[#d6cbbd] px-3 py-1.5 text-xs disabled:opacity-40">{ui('保存到“图片/Screenshots”')}</button>
+            <button type="button" onClick={saveScreenshot} disabled={!screenshot || Boolean(busy)} className="inline-flex h-8 items-center rounded-md border border-[#d6cbbd] px-3 text-xs disabled:opacity-40">{ui('保存到“图片/Screenshots”')}</button>
           </div>
         </div>
 
-        <div className="aether-computer-console mt-3">
-          <div className="rounded-lg border border-[#ded6ca] bg-white p-3">
+        <div className="mt-3 rounded-lg border border-[#ded6ca] bg-white p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2 text-xs font-semibold"><MousePointer2 size={14} />{ui('指针与点击')}</div>
-            <div className="mt-2 grid grid-cols-[1fr_1fr_auto] gap-2">
-              <input value={mouseX} onChange={(event) => setMouseX(event.target.value)} inputMode="numeric" placeholder={ui('截图 X')} aria-label={ui('鼠标 X 坐标')} className="h-9 min-w-0 rounded-lg border border-[#ded6ca] px-3 text-sm outline-none" />
-              <input value={mouseY} onChange={(event) => setMouseY(event.target.value)} inputMode="numeric" placeholder={ui('截图 Y')} aria-label={ui('鼠标 Y 坐标')} className="h-9 min-w-0 rounded-lg border border-[#ded6ca] px-3 text-sm outline-none" />
-              <button onClick={() => runAction('cursor_position')} disabled={!bridge || Boolean(visibleActiveAction)} className="rounded-md border border-[#d6cbbd] px-3 text-xs disabled:opacity-40">{ui('读取位置')}</button>
-            </div>
-            <label className="mt-2 flex items-center gap-2 text-xs text-[#625a52]">
+            <label className="flex items-center gap-2 text-xs text-[#625a52]">
               <input type="checkbox" checked={actionArmed} disabled={!mouseAvailable || permissionMode !== 'manual'} onChange={(event) => setActionArmed(event.target.checked)} />
               {ui('我确认只授权下一次键盘或鼠标操作')}
             </label>
-            <div className="mt-2 flex flex-wrap gap-2">
-              <button onClick={() => runCoordinateAction('mouse_move')} disabled={!canControl || !screenshot || !mouseX || !mouseY || Boolean(visibleActiveAction)} className="rounded-md bg-[#8d5f35] px-3 py-1.5 text-xs text-white disabled:opacity-40">{ui('移动鼠标')}</button>
-              <button onClick={() => runCoordinateAction('left_click')} disabled={!canControl || !screenshot || !mouseX || !mouseY || Boolean(visibleActiveAction)} className="rounded-md border border-[#8d5f35] px-3 py-1.5 text-xs text-[#6b4525] disabled:opacity-40">{ui('左键单击')}</button>
-              <button onClick={() => runCoordinateAction('double_click')} disabled={!canControl || !screenshot || !mouseX || !mouseY || Boolean(visibleActiveAction)} className="rounded-md border border-[#d6cbbd] px-3 py-1.5 text-xs disabled:opacity-40">{ui('双击')}</button>
-              <button onClick={() => runCoordinateAction('right_click')} disabled={!canControl || !screenshot || !mouseX || !mouseY || Boolean(visibleActiveAction)} className="rounded-md border border-[#d6cbbd] px-3 py-1.5 text-xs disabled:opacity-40">{ui('右键')}</button>
-              <button onClick={zoomAtCoordinate} disabled={!screenshot || !mouseX || !mouseY || Boolean(visibleActiveAction)} className="flex items-center gap-1 rounded-md border border-[#d6cbbd] px-3 py-1.5 text-xs disabled:opacity-40"><ZoomIn size={12} />{ui('放大')}</button>
-            </div>
-            <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-[#eee7dd] pt-2">
-              <button onClick={() => { try { setDragStart(actionCoordinate()); setStatus('已记录拖拽起点'); } catch (error) { setStatus(String(error)); } }} disabled={!mouseX || !mouseY} className="rounded-md border border-[#d6cbbd] px-2.5 py-1 text-[11px] disabled:opacity-40">{ui('设为拖拽起点')}</button>
-              <button onClick={runDrag} disabled={!canControl || !screenshot || !dragStart || !mouseX || !mouseY || Boolean(visibleActiveAction)} className="rounded-md border border-[#d6cbbd] px-2.5 py-1 text-[11px] disabled:opacity-40">{ui('拖拽到当前坐标')}</button>
-              {dragStart && <span className="text-[10px] text-[#625a52]">{ui('起点')} ({dragStart[0]}, {dragStart[1]})</span>}
-            </div>
           </div>
+          <div className="mt-2 grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-2">
+            <input value={mouseX} onChange={(event) => setMouseX(event.target.value)} inputMode="numeric" placeholder={ui('截图 X')} aria-label={ui('鼠标 X 坐标')} className="h-8 min-w-0 rounded-md border border-[#ded6ca] px-3 text-sm outline-none" />
+            <input value={mouseY} onChange={(event) => setMouseY(event.target.value)} inputMode="numeric" placeholder={ui('截图 Y')} aria-label={ui('鼠标 Y 坐标')} className="h-8 min-w-0 rounded-md border border-[#ded6ca] px-3 text-sm outline-none" />
+            <button type="button" onClick={() => runAction('cursor_position')} disabled={!bridge || Boolean(visibleActiveAction)} className="inline-flex h-8 items-center rounded-md border border-[#d6cbbd] px-3 text-xs disabled:opacity-40">{ui('读取位置')}</button>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button type="button" onClick={() => runCoordinateAction('mouse_move')} disabled={!canControl || !screenshot || !mouseX || !mouseY || Boolean(visibleActiveAction)} className="inline-flex h-8 items-center rounded-md bg-[#8d5f35] px-3 text-xs text-white disabled:opacity-40">{ui('移动鼠标')}</button>
+            <button type="button" onClick={() => runCoordinateAction('left_click')} disabled={!canControl || !screenshot || !mouseX || !mouseY || Boolean(visibleActiveAction)} className="inline-flex h-8 items-center rounded-md border border-[#8d5f35] px-3 text-xs text-[#6b4525] disabled:opacity-40">{ui('左键单击')}</button>
+            <button type="button" onClick={() => runCoordinateAction('double_click')} disabled={!canControl || !screenshot || !mouseX || !mouseY || Boolean(visibleActiveAction)} className="inline-flex h-8 items-center rounded-md border border-[#d6cbbd] px-3 text-xs disabled:opacity-40">{ui('双击')}</button>
+            <button type="button" onClick={() => runCoordinateAction('right_click')} disabled={!canControl || !screenshot || !mouseX || !mouseY || Boolean(visibleActiveAction)} className="inline-flex h-8 items-center rounded-md border border-[#d6cbbd] px-3 text-xs disabled:opacity-40">{ui('右键')}</button>
+            <button type="button" onClick={zoomAtCoordinate} disabled={!screenshot || !mouseX || !mouseY || Boolean(visibleActiveAction)} className="inline-flex h-8 items-center gap-1 rounded-md border border-[#d6cbbd] px-3 text-xs disabled:opacity-40"><ZoomIn size={12} />{ui('放大')}</button>
+            <button type="button" onClick={() => { try { setDragStart(actionCoordinate()); setStatus('已记录拖拽起点'); } catch (error) { setStatus(String(error)); } }} disabled={!mouseX || !mouseY} className="inline-flex h-8 items-center rounded-md border border-[#d6cbbd] px-3 text-xs disabled:opacity-40">{ui('设为拖拽起点')}</button>
+            <button type="button" onClick={runDrag} disabled={!canControl || !screenshot || !dragStart || !mouseX || !mouseY || Boolean(visibleActiveAction)} className="inline-flex h-8 items-center rounded-md border border-[#d6cbbd] px-3 text-xs disabled:opacity-40">{ui('拖拽到当前坐标')}</button>
+            {dragStart && <span className="inline-flex h-8 items-center text-[11px] text-[#625a52]">{ui('起点')} ({dragStart[0]}, {dragStart[1]})</span>}
+          </div>
+        </div>
 
-          <div className="rounded-lg border border-[#ded6ca] bg-white p-3">
-            <div className="flex items-center gap-2 text-xs font-semibold"><Keyboard size={14} />{ui('键盘与滚动')}</div>
-            <textarea value={textInput} onChange={(event) => setTextInput(event.target.value)} placeholder={ui('输入要键入到当前焦点的文本')} aria-label={ui('Computer Use 输入文本')} className="mt-2 h-20 w-full resize-y rounded-lg border border-[#ded6ca] p-2 text-xs outline-none" />
-            <div className="mt-2 flex flex-wrap gap-2">
-              <button onClick={() => runAction('type', { text: textInput })} disabled={!canControl || !textInput || Boolean(visibleActiveAction)} className="rounded-md bg-[#8d5f35] px-3 py-1.5 text-xs text-white disabled:opacity-40">{ui('输入文本')}</button>
-              <input value={keyInput} onChange={(event) => setKeyInput(event.target.value)} aria-label={ui('按键组合')} className="h-8 min-w-0 flex-1 rounded-md border border-[#ded6ca] px-2 font-mono text-xs outline-none" />
-              <button onClick={() => runAction('key', { text: keyInput })} disabled={!canControl || !keyInput || Boolean(visibleActiveAction)} className="rounded-md border border-[#d6cbbd] px-3 py-1.5 text-xs disabled:opacity-40">{ui('发送按键')}</button>
-            </div>
-            <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-[#eee7dd] pt-2">
-              <input value={scrollAmount} onChange={(event) => setScrollAmount(event.target.value)} inputMode="numeric" aria-label={ui('滚动量')} className="h-8 w-20 rounded-md border border-[#ded6ca] px-2 text-xs outline-none" />
-              <button onClick={() => runAction('scroll', { coordinate: coordinate || undefined, scroll_direction: 'up', scroll_amount: Number(scrollAmount) || 600 })} disabled={!canControl || Boolean(visibleActiveAction)} className="rounded-md border border-[#d6cbbd] px-2.5 py-1 text-[11px] disabled:opacity-40">{ui('向上滚动')}</button>
-              <button onClick={() => runAction('scroll', { coordinate: coordinate || undefined, scroll_direction: 'down', scroll_amount: Number(scrollAmount) || 600 })} disabled={!canControl || Boolean(visibleActiveAction)} className="rounded-md border border-[#d6cbbd] px-2.5 py-1 text-[11px] disabled:opacity-40">{ui('向下滚动')}</button>
-              <button onClick={() => runAction('wait', { duration: 1 })} disabled={!bridge || Boolean(visibleActiveAction)} className="rounded-md border border-[#d6cbbd] px-2.5 py-1 text-[11px] disabled:opacity-40">{ui('等待 1 秒')}</button>
-            </div>
+        <div className="mt-3 rounded-lg border border-[#ded6ca] bg-white p-3">
+          <div className="flex items-center gap-2 text-xs font-semibold"><Keyboard size={14} />{ui('键盘与滚动')}</div>
+          <textarea value={textInput} onChange={(event) => setTextInput(event.target.value)} placeholder={ui('输入要键入到当前焦点的文本')} aria-label={ui('Computer Use 输入文本')} className="mt-2 h-20 w-full resize-y rounded-md border border-[#ded6ca] p-2 text-xs outline-none" />
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button type="button" onClick={() => runAction('type', { text: textInput })} disabled={!canControl || !textInput || Boolean(visibleActiveAction)} className="inline-flex h-8 items-center rounded-md bg-[#8d5f35] px-3 text-xs text-white disabled:opacity-40">{ui('输入文本')}</button>
+            <input value={keyInput} onChange={(event) => setKeyInput(event.target.value)} aria-label={ui('按键组合')} className="h-8 min-w-0 flex-1 rounded-md border border-[#ded6ca] px-2 font-mono text-xs outline-none" />
+            <button type="button" onClick={() => runAction('key', { text: keyInput })} disabled={!canControl || !keyInput || Boolean(visibleActiveAction)} className="inline-flex h-8 items-center rounded-md border border-[#d6cbbd] px-3 text-xs disabled:opacity-40">{ui('发送按键')}</button>
+            <input value={scrollAmount} onChange={(event) => setScrollAmount(event.target.value)} inputMode="numeric" aria-label={ui('滚动量')} className="h-8 w-20 rounded-md border border-[#ded6ca] px-2 text-xs outline-none" />
+            <button type="button" onClick={() => runAction('scroll', { coordinate: coordinate || undefined, scroll_direction: 'up', scroll_amount: Number(scrollAmount) || 600 })} disabled={!canControl || Boolean(visibleActiveAction)} className="inline-flex h-8 items-center rounded-md border border-[#d6cbbd] px-3 text-xs disabled:opacity-40">{ui('向上滚动')}</button>
+            <button type="button" onClick={() => runAction('scroll', { coordinate: coordinate || undefined, scroll_direction: 'down', scroll_amount: Number(scrollAmount) || 600 })} disabled={!canControl || Boolean(visibleActiveAction)} className="inline-flex h-8 items-center rounded-md border border-[#d6cbbd] px-3 text-xs disabled:opacity-40">{ui('向下滚动')}</button>
+            <button type="button" onClick={() => runAction('wait', { duration: 1 })} disabled={!bridge || Boolean(visibleActiveAction)} className="inline-flex h-8 items-center rounded-md border border-[#d6cbbd] px-3 text-xs disabled:opacity-40">{ui('等待 1 秒')}</button>
           </div>
         </div>
       </section>

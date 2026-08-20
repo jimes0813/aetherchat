@@ -470,9 +470,9 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
           type="button"
           onClick={() => void load()}
           disabled={busy}
-          className="ml-auto inline-flex items-center gap-1 rounded-md border border-[#cfc4b7] px-2 py-1 text-xs text-[#5d4a3a]"
+          className="ml-auto inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md border border-[#cfc4b7] bg-white px-3 text-xs font-medium text-[#5d4a3a] disabled:opacity-50"
         >
-          <RefreshCw size={12} />
+          <RefreshCw size={14} />
           {ui('刷新')}
         </button>
       </div>
@@ -496,7 +496,7 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
             type="button"
             disabled={busy}
             onClick={() => void runPreview()}
-            className="rounded-md bg-[#2f2a24] px-2 py-1 text-xs text-white disabled:opacity-50"
+            className="inline-flex h-9 items-center rounded-md bg-[#2f2a24] px-3 text-xs font-medium text-white disabled:opacity-50"
           >
             {ui('解析预览')}
           </button>
@@ -504,7 +504,7 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
             type="button"
             disabled={busy}
             onClick={() => void runDryRun()}
-            className="rounded-md border border-[#8d5f35] bg-[#fffaf4] px-2 py-1 text-xs text-[#6b4425] disabled:opacity-50"
+            className="inline-flex h-9 items-center rounded-md border border-[#8d5f35] bg-[#fffaf4] px-3 text-xs font-medium text-[#6b4425] disabled:opacity-50"
           >
             {ui('Dry-run 权限清单')}
           </button>

@@ -59,6 +59,7 @@ textarea {
   min-height: 100%;
   overflow: visible;
   background: #fff;
+  scrollbar-gutter: auto;
 }
 
 .aether-settings-content .aether-tab-panel,
@@ -69,6 +70,7 @@ textarea {
   min-height: 0;
   overflow: visible;
   background: #fff;
+  scrollbar-gutter: auto;
 }
 
 .aether-tab-panel input[type="range"],
@@ -148,15 +150,7 @@ textarea {
 }
 
 .aether-computer-console {
-  display: grid;
-  gap: 0.75rem;
-  grid-template-columns: minmax(0, 1fr);
-}
-
-@container settings-content (min-width: 34rem) {
-  .aether-computer-console {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  }
+  display: block;
 }
 
 /* WCAG AA replacement for legacy muted text utilities on light surfaces. */
@@ -551,7 +545,7 @@ textarea {
 .aether-inspector-shell .overflow-y-auto {
   min-height: 0;
   overscroll-behavior: contain;
-  scrollbar-gutter: stable;
+  scrollbar-gutter: auto;
 }
 
 .aether-chat-scroll::-webkit-scrollbar,

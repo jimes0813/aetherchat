@@ -10,7 +10,10 @@ describe('DesktopControlPanel', () => {
     expect(panel.querySelector('.aether-computer-stage')).toBeTruthy();
     expect(panel.querySelector('.aether-computer-preview')).toBeTruthy();
     expect(panel.querySelector('.aether-computer-timeline')).toBeTruthy();
-    expect(panel.querySelector('.aether-computer-console')).toBeTruthy();
+    const console = panel.querySelector('.aether-computer-console');
+    expect(console).toBeTruthy();
+    expect(console?.textContent).toContain('指针与点击');
+    expect(console?.textContent).toContain('键盘与滚动');
     expect(panel.querySelector('[class*="xl:grid-cols"]')).toBeNull();
     expect(panel.querySelector('[class*="lg:grid-cols"]')).toBeNull();
     expect(screen.getByText('本地电脑')).toBeTruthy();

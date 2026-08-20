@@ -1116,8 +1116,8 @@ export function InspectorPanel(props: InspectorProps) {
       )}
 
       {showPanel('artifacts') && (
-        <div className="aether-tab-panel aether-panel-scroll grid min-h-0 flex-1 overflow-y-auto grid-rows-[auto_minmax(20rem,1fr)]" data-settings-panel="artifacts">
-          <div className="overflow-auto border-b border-[#ded6ca] p-4">
+        <div className="aether-tab-panel aether-panel-scroll min-h-0" data-settings-panel="artifacts">
+          <div className="border-b border-[#ded6ca] p-4">
             <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
               <Archive size={16} />
               {t('fileTree')}
@@ -1151,7 +1151,7 @@ export function InspectorPanel(props: InspectorProps) {
             </div>
           </div>
           {props.selectedArtifactPath ? (
-          <div className="flex min-h-0 flex-col p-4">
+          <div className="flex flex-col p-4">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <div>
                 <div className="truncate text-sm font-semibold">{props.selectedArtifactPath}</div>
@@ -1194,7 +1194,7 @@ export function InspectorPanel(props: InspectorProps) {
             )}
 
             {artifactView === 'preview' && (
-              <div data-testid="artifact-preview" className="min-h-0 flex-1 overflow-auto rounded-lg border border-[#ded6ca] bg-white p-3 text-sm">
+              <div data-testid="artifact-preview" className="min-h-64 rounded-lg border border-[#ded6ca] bg-white p-3 text-sm">
                 {artifactPreview?.mode === 'markdown' && <SafeMarkdown content={artifactPreview.content} />}
                 {artifactPreview?.mode === 'isolated_html' && (
                   <iframe
@@ -1217,16 +1217,16 @@ export function InspectorPanel(props: InspectorProps) {
                 aria-label={ui('工件内容')}
                 value={artifactContent}
                 onChange={(event) => setArtifactContent(event.target.value)}
-                className="min-h-0 flex-1 resize-none rounded-lg border border-[#ded6ca] bg-[#fffdf9] p-3 font-mono text-xs leading-5 outline-none"
+                className="min-h-64 resize-y rounded-lg border border-[#ded6ca] bg-[#fffdf9] p-3 font-mono text-xs leading-5 outline-none"
               />
             )}
 
             {artifactView === 'diff' && (
-              <pre data-testid="artifact-diff" className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap rounded-lg border border-[#ded6ca] bg-[#28231f] p-3 font-mono text-xs leading-5 text-[#f6eee5]">{artifactDiff}</pre>
+              <pre data-testid="artifact-diff" className="min-h-64 whitespace-pre-wrap rounded-lg border border-[#ded6ca] bg-[#28231f] p-3 font-mono text-xs leading-5 text-[#f6eee5]">{artifactDiff}</pre>
             )}
 
             {artifactView === 'history' && (
-              <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-[#ded6ca] bg-white">
+              <div className="min-h-64 rounded-lg border border-[#ded6ca] bg-white">
                 {artifactVersions.map((version) => (
                   <div key={version.id} className="flex items-center justify-between gap-3 border-b border-[#eee6dc] p-3 last:border-0">
                     <div className="min-w-0">
@@ -1298,7 +1298,7 @@ export function InspectorPanel(props: InspectorProps) {
       )}
 
       {showPanel('tools') && (
-        <div className="aether-tab-panel aether-panel-scroll grid min-h-0 flex-1 overflow-y-auto grid-rows-[auto_minmax(16rem,1fr)_auto]" data-settings-panel="tools">
+        <div className="aether-tab-panel aether-panel-scroll min-h-0" data-settings-panel="tools">
           <div className="border-b border-[#ded6ca] p-4">
             <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
               <PackageCheck size={16} />
@@ -1346,7 +1346,7 @@ export function InspectorPanel(props: InspectorProps) {
             </div>
           </div>
 
-          <div className="overflow-auto p-4">
+          <div className="p-4">
             <div className="mb-2 text-xs font-semibold text-[#7a7065]">{ui('所有模型可调用的工具')}</div>
             <div className="space-y-2">
               {tools.map((tool) => (
@@ -1374,7 +1374,7 @@ export function InspectorPanel(props: InspectorProps) {
             </div>
           </div>
 
-          <div className="overflow-auto border-t border-[#ded6ca] p-4">
+          <div className="border-t border-[#ded6ca] p-4">
             <div className="mb-2 text-xs font-semibold text-[#7a7065]">{ui('最近调用')}</div>
             <div className="space-y-2">
               {toolRuns.slice(0, 5).map((run) => (
@@ -1468,7 +1468,7 @@ export function InspectorPanel(props: InspectorProps) {
       )}
 
       {showPanel('models') && (
-        <div className="aether-tab-panel aether-panel-scroll grid min-h-0 flex-1 overflow-y-auto grid-rows-[auto_minmax(16rem,1fr)]" data-settings-panel="models">
+        <div className="aether-tab-panel aether-panel-scroll min-h-0" data-settings-panel="models">
           <div className="border-b border-[#ded6ca] p-4">
             <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
               <Cpu size={16} />
@@ -1509,7 +1509,7 @@ export function InspectorPanel(props: InspectorProps) {
               {modelVerifyStatus && <div className="col-span-2 rounded-md bg-[#ebe3d8] px-3 py-2 text-xs text-[#6d6258]">{ui(modelVerifyStatus)}</div>}
             </div>
           </div>
-          <div className="overflow-auto p-4">
+          <div className="p-4">
             <LocalModelQuickPath
               apiBase={props.apiBase}
               models={modelConfigs}
