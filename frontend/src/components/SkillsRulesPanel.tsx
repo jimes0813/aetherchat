@@ -98,7 +98,7 @@ export type SkillsRulesPanelProps = {
 };
 
 export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) {
-  const { ui } = useI18n();
+  const { t, ui } = useI18n();
   const [rules, setRules] = useState<InstructionRule[]>([]);
   const [skills, setSkills] = useState<InstructionSkill[]>([]);
   const [workflows, setWorkflows] = useState<InstructionWorkflow[]>([]);
@@ -461,9 +461,9 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
           <BookMarked size={17} />
         </div>
         <div className="min-w-0">
-          <h2 className="text-sm font-semibold">{ui('规范 · Skills / Rules')}</h2>
+          <h2 className="text-sm font-semibold">{t('rulesSkillsRules')}</h2>
           <p className="mt-1 text-xs leading-5 text-[#7a7065]">
-            {ui('分层指令：AGENTS.md → 已发布规则 → 已发布技能。支持版本回滚、typed IO，以及不执行工具的 dry-run 权限清单。')}
+            {t('layeredInstructionsAGENTSMdPublished')}
           </p>
         </div>
         <button
@@ -473,7 +473,7 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
           className="ml-auto inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md border border-[#cfc4b7] bg-white px-3 text-xs font-medium text-[#5d4a3a] disabled:opacity-50"
         >
           <RefreshCw size={14} />
-          {ui('刷新')}
+          {t('refresh')}
         </button>
       </div>
 
@@ -484,12 +484,12 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
       )}
 
       <section className="mb-5 rounded-xl border border-[#ded6ca] bg-white p-3">
-        <div className="mb-2 text-xs font-semibold text-[#5d4a3a]">{ui('预览当前消息将注入的指令')}</div>
+        <div className="mb-2 text-xs font-semibold text-[#5d4a3a]">{t('previewInstructionsInjectedForThe')}</div>
         <textarea
           value={previewMessage}
           onChange={(event) => setPreviewMessage(event.target.value)}
           className="min-h-16 w-full rounded-lg border border-[#d8cdbf] bg-[#fbfaf7] p-2 text-xs"
-          placeholder={ui('输入示例用户消息')}
+          placeholder={t('enterAnExampleUserMessage')}
         />
         <div className="mt-2 flex flex-wrap gap-2">
           <button
@@ -498,7 +498,7 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
             onClick={() => void runPreview()}
             className="inline-flex h-9 items-center rounded-md bg-[#2f2a24] px-3 text-xs font-medium text-white disabled:opacity-50"
           >
-            {ui('解析预览')}
+            {t('resolvePreview')}
           </button>
           <button
             type="button"
@@ -506,7 +506,7 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
             onClick={() => void runDryRun()}
             className="inline-flex h-9 items-center rounded-md border border-[#8d5f35] bg-[#fffaf4] px-3 text-xs font-medium text-[#6b4425] disabled:opacity-50"
           >
-            {ui('Dry-run 权限清单')}
+            {t('dryRunPermissionManifest')}
           </button>
         </div>
         {preview && (
@@ -519,7 +519,7 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
                   {item.content_hash ? ` · ${item.content_hash.slice(0, 8)}` : ''}
                 </span>
               ))}
-              {!preview.manifest.length && ui('（无）')}
+              {!preview.manifest.length && t('emptyParen')}
             </div>
             {preview.context && (
               <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-[#f7f3ed] p-2 text-[11px] leading-5 text-[#4a4037]">
@@ -532,7 +532,7 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
           <div className="mt-3 space-y-2 rounded-lg border border-[#e2d6c8] bg-[#fbf8f3] p-3">
             <div className="text-[11px] font-semibold text-[#5d4a3a]">
               Dry-run · {dryRun.status}
-              <span className="ml-2 font-normal text-[#8a7f75]">{ui('不执行工具 · executed={value}', { value: String(dryRun.executed) })}</span>
+              <span className="ml-2 font-normal text-[#8a7f75]">{t('noToolsExecutedExecuted', { value: String(dryRun.executed) })}</span>
             </div>
             {dryRun.issues?.length > 0 && (
               <ul className="list-disc space-y-0.5 pl-4 text-[11px] text-[#8a5a28]">
@@ -542,7 +542,7 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
               </ul>
             )}
             <div className="text-[11px] text-[#6d6258]">
-              {ui('层 {layers} · 权限 {permissions} · 高风险 {highRisk} · 需授权 {approvals} · IO 字段 {ioFields}', {
+              {t('layersPermissionsHighRiskApprovals', {
                 layers: dryRun.summary.permission_count >= 0 ? dryRun.layer_count : 0,
                 permissions: dryRun.summary.permission_count,
                 highRisk: dryRun.summary.high_risk_count,
@@ -570,18 +570,18 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
                     <span className="font-medium text-[#4a4037]">{item.label || item.tool}</span>
                     <span className="text-[#8a7f75]">{item.risk}</span>
                     {item.requires_approval ? (
-                      <span className="rounded bg-[#eee4d8] px-1 text-[10px] text-[#6b4425]">{ui('需授权')}</span>
+                      <span className="rounded bg-[#eee4d8] px-1 text-[10px] text-[#6b4425]">{t('approvalRequired')}</span>
                     ) : null}
                     {item.note ? <span className="w-full text-[10px] text-[#8a7f75]">{item.note}</span> : null}
                   </div>
                 ))}
               </div>
             ) : (
-              <div className="text-[11px] text-[#8a7f75]">{ui('未检测到副作用工具暗示')}</div>
+              <div className="text-[11px] text-[#8a7f75]">{t('noSideEffectToolIntent')}</div>
             )}
             {dryRun.io_checklist && dryRun.io_checklist.length > 0 && (
               <div className="text-[11px] text-[#6d6258]">
-                {ui('IO 契约：')}
+                {t('ioContract')}
                 {dryRun.io_checklist.map((field) => (
                   <span key={`${field.kind}-${field.name}`} className="mr-1 inline-block rounded bg-[#f0e9df] px-1">
                     {field.name}{field.required ? '*' : ''}
@@ -596,7 +596,7 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
       <section className="mb-5 rounded-xl border border-[#ded6ca] bg-white p-3">
         <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-[#5d4a3a]">
           <BookMarked size={13} />
-          {ui('规则（Rules）')}
+          {t('rules')}
         </div>
         <div className="space-y-2">
           {rules.map((rule) => {
@@ -612,11 +612,11 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
                       {rule.name}
                       <span className="ml-1 text-[11px] font-normal text-[#8a7f75]">v{published}</span>
                       {rule.draft_dirty ? (
-                        <span className="ml-1 rounded bg-[#fff5ec] px-1 text-[10px] text-[#8a5a28]">{ui('草稿未发布')}</span>
+                        <span className="ml-1 rounded bg-[#fff5ec] px-1 text-[10px] text-[#8a5a28]">{t('draftUnpublished')}</span>
                       ) : null}
                     </div>
                     <div className="mt-0.5 text-[11px] text-[#8a7f75]">
-                      {ui('优先级 {value}', { value: rule.priority })}
+                      {t('priority', { value: rule.priority })}
                       {rule.source ? ` · ${rule.source}` : ''}
                       {rule.content_hash ? ` · ${rule.content_hash.slice(0, 8)}` : ''}
                     </div>
@@ -628,7 +628,7 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
                         onClick={() => void publishRule(rule)}
                         className="rounded border border-[#cfc4b7] px-2 py-0.5 text-[11px] text-[#5d4a3a]"
                       >
-                        {ui('发布')}
+                        {t('publish')}
                       </button>
                       {priorVersions.slice().reverse().slice(0, 3).map((version) => (
                         <button
@@ -638,7 +638,7 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
                           onClick={() => void rollbackRule(rule, version)}
                           className="rounded border border-[#e2b8b0] px-2 py-0.5 text-[11px] text-[#8a4036]"
                         >
-                          {ui('回滚 v{version}', { version })}
+                          {t('rollBackToV', { version })}
                         </button>
                       ))}
                     </div>
@@ -648,13 +648,13 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
                     onClick={() => void toggleRule(rule)}
                     className={`shrink-0 rounded px-2 py-1 text-[11px] ${rule.enabled ? 'bg-[#eef6ea] text-[#326022]' : 'bg-[#f0e9df] text-[#7a7065]'}`}
                   >
-                    {rule.enabled ? ui('已启用') : ui('已停用')}
+                    {rule.enabled ? t('enabled') : t('disabledStatus')}
                   </button>
                   <button
                     type="button"
                     onClick={() => void removeRule(rule.id)}
                     className="shrink-0 rounded p-1 text-[#8a4036]"
-                    aria-label={ui('删除规则 {name}', { name: rule.name })}
+                    aria-label={t('deleteRule', { name: rule.name })}
                   >
                     <Trash2 size={14} />
                   </button>
@@ -667,13 +667,13 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
           <input
             value={newRuleName}
             onChange={(event) => setNewRuleName(event.target.value)}
-            placeholder={ui('新规则名称')}
+            placeholder={t('newRuleName')}
             className="w-full rounded-lg border border-[#d8cdbf] px-2 py-1.5 text-xs"
           />
           <textarea
             value={newRuleBody}
             onChange={(event) => setNewRuleBody(event.target.value)}
-            placeholder={ui('规则正文')}
+            placeholder={t('ruleBody')}
             className="min-h-16 w-full rounded-lg border border-[#d8cdbf] px-2 py-1.5 text-xs"
           />
           <button
@@ -683,15 +683,15 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
             className="inline-flex items-center gap-1 rounded-md bg-[#8d5f35] px-2 py-1 text-xs text-white disabled:opacity-50"
           >
             <Plus size={12} />
-            {ui('添加规则')}
+            {t('addRule')}
           </button>
         </div>
         <div className="mt-3 space-y-2 border-t border-[#eee6db] pt-3">
-          <div className="text-[11px] font-medium text-[#6d6258]">{ui('从路径导入 AGENTS.md')}</div>
+          <div className="text-[11px] font-medium text-[#6d6258]">{t('importAGENTSMdFromA')}</div>
           <input
             value={agentsPath}
             onChange={(event) => setAgentsPath(event.target.value)}
-            placeholder={ui('/path/to/repo 或 /path/to/AGENTS.md')}
+            placeholder={t('pathToRepoOrPath')}
             className="w-full rounded-lg border border-[#d8cdbf] px-2 py-1.5 font-mono text-[11px]"
           />
           <button
@@ -700,7 +700,7 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
             onClick={() => void importAgents()}
             className="rounded-md border border-[#cfc4b7] px-2 py-1 text-xs text-[#5d4a3a] disabled:opacity-50"
           >
-            {ui('导入为规则')}
+            {t('importAsRule')}
           </button>
         </div>
       </section>
@@ -708,7 +708,7 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
       <section className="rounded-xl border border-[#ded6ca] bg-white p-3">
         <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-[#5d4a3a]">
           <Sparkles size={13} />
-          {ui('技能（Skills）')}
+          {t('skills')}
         </div>
         <div className="space-y-2">
           {skills.map((skill) => {
@@ -725,7 +725,7 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
                       {skill.name}
                       <span className="ml-1 text-[11px] font-normal text-[#8a7f75]">v{published}</span>
                       {skill.draft_dirty ? (
-                        <span className="ml-1 rounded bg-[#fff5ec] px-1 text-[10px] text-[#8a5a28]">{ui('草稿未发布')}</span>
+                        <span className="ml-1 rounded bg-[#fff5ec] px-1 text-[10px] text-[#8a5a28]">{t('draftUnpublished')}</span>
                       ) : null}
                       {hasIo ? (
                         <span className="ml-1 rounded bg-[#eef6ea] px-1 text-[10px] text-[#326022]">typed IO</span>
@@ -733,8 +733,8 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
                     </div>
                     <div className="mt-0.5 text-[11px] text-[#8a7f75]">
                       {skill.always_on
-                        ? ui('始终启用')
-                        : ui('触发词：{value}', { value: (skill.trigger_keywords || []).join('、') || ui('（无）') })}
+                        ? t('alwaysEnabled')
+                        : t('triggers', { value: (skill.trigger_keywords || []).join('、') || t('emptyParen') })}
                       {skill.content_hash ? ` · ${skill.content_hash.slice(0, 8)}` : ''}
                     </div>
                     <p className="mt-1 line-clamp-3 text-[11px] leading-5 text-[#5f554d]">{skill.body}</p>
@@ -745,7 +745,7 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
                         onClick={() => void publishSkill(skill)}
                         className="rounded border border-[#cfc4b7] px-2 py-0.5 text-[11px] text-[#5d4a3a]"
                       >
-                        {ui('发布')}
+                        {t('publish')}
                       </button>
                       {priorVersions.slice().reverse().slice(0, 3).map((version) => (
                         <button
@@ -755,7 +755,7 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
                           onClick={() => void rollbackSkill(skill, version)}
                           className="rounded border border-[#e2b8b0] px-2 py-0.5 text-[11px] text-[#8a4036]"
                         >
-                          {ui('回滚 v{version}', { version })}
+                          {t('rollBackToV', { version })}
                         </button>
                       ))}
                     </div>
@@ -765,13 +765,13 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
                     onClick={() => void toggleSkill(skill)}
                     className={`shrink-0 rounded px-2 py-1 text-[11px] ${skill.enabled ? 'bg-[#eef6ea] text-[#326022]' : 'bg-[#f0e9df] text-[#7a7065]'}`}
                   >
-                    {skill.enabled ? ui('已启用') : ui('已停用')}
+                    {skill.enabled ? t('enabled') : t('disabledStatus')}
                   </button>
                   <button
                     type="button"
                     onClick={() => void removeSkill(skill.id)}
                     className="shrink-0 rounded p-1 text-[#8a4036]"
-                    aria-label={ui('删除技能 {name}', { name: skill.name })}
+                    aria-label={t('deleteSkill', { name: skill.name })}
                   >
                     <Trash2 size={14} />
                   </button>
@@ -784,19 +784,19 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
           <input
             value={newSkillName}
             onChange={(event) => setNewSkillName(event.target.value)}
-            placeholder={ui('新技能名称')}
+            placeholder={t('newSkillName')}
             className="w-full rounded-lg border border-[#d8cdbf] px-2 py-1.5 text-xs"
           />
           <input
             value={newSkillKeywords}
             onChange={(event) => setNewSkillKeywords(event.target.value)}
-            placeholder={ui('触发关键词，逗号分隔')}
+            placeholder={t('triggerKeywordsCommaSeparated')}
             className="w-full rounded-lg border border-[#d8cdbf] px-2 py-1.5 text-xs"
           />
           <textarea
             value={newSkillBody}
             onChange={(event) => setNewSkillBody(event.target.value)}
-            placeholder={ui('技能正文（步骤、输出契约等）')}
+            placeholder={t('skillBodyStepsOutputContract')}
             className="min-h-20 w-full rounded-lg border border-[#d8cdbf] px-2 py-1.5 text-xs"
           />
           <button
@@ -806,15 +806,15 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
             className="inline-flex items-center gap-1 rounded-md bg-[#8d5f35] px-2 py-1 text-xs text-white disabled:opacity-50"
           >
             <Plus size={12} />
-            {ui('添加技能')}
+            {t('addSkill')}
           </button>
         </div>
       </section>
 
       <section className="mt-5 rounded-xl border border-[#ded6ca] bg-white p-3">
-        <div className="mb-2 text-xs font-semibold text-[#5d4a3a]">{ui('工作流触发（interval / webhook / manual）')}</div>
+        <div className="mb-2 text-xs font-semibold text-[#5d4a3a]">{t('workflowTriggersIntervalWebhookManual')}</div>
         <p className="mb-3 text-[11px] leading-5 text-[#7a7065]">
-          {ui('绑定技能后可定时或 webhook 触发。默认 dry-run 只出权限清单；automation 模式会入队后台只读任务（沿用自动化调度器）。')}
+          {t('bindASkillForScheduled')}
         </p>
         <div className="space-y-2">
           {workflows.map((workflow) => (
@@ -829,12 +829,12 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
                   </div>
                   <div className="mt-0.5 text-[11px] text-[#8a7f75]">
                     {workflow.trigger_type === 'interval' && workflow.interval_minutes
-                      ? ui('每 {count} 分钟', { count: workflow.interval_minutes })
+                      ? t('everyMinutes', { count: workflow.interval_minutes })
                       : workflow.trigger_type === 'webhook'
-                        ? ui('Webhook token 触发')
-                        : ui('手动触发')}
+                        ? t('triggeredByWebhookToken')
+                        : t('manualTrigger')}
                     {workflow.schedule_id ? ` · schedule ${workflow.schedule_id.slice(0, 8)}` : ''}
-                    {workflow.last_status ? ui(' · 上次 {status}', { status: workflow.last_status }) : ''}
+                    {workflow.last_status ? t('last', { status: workflow.last_status }) : ''}
                   </div>
                   {workflow.last_result_summary && (
                     <div className="mt-1 text-[10px] text-[#8a7f75]">{workflow.last_result_summary}</div>
@@ -846,14 +846,14 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
                       onClick={() => void runWorkflow(workflow)}
                       className="rounded border border-[#cfc4b7] px-2 py-0.5 text-[11px] text-[#5d4a3a]"
                     >
-                      {ui('立即运行')}
+                      {t('runNow')}
                     </button>
                     <button
                       type="button"
                       onClick={() => void removeWorkflow(workflow.id)}
                       className="rounded border border-[#e2b8b0] px-2 py-0.5 text-[11px] text-[#8a4036]"
                     >
-                      {ui('删除')}
+                      {t('deleteItem')}
                     </button>
                   </div>
                 </div>
@@ -862,7 +862,7 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
           ))}
           {!workflows.length && (
             <div className="rounded-lg border border-dashed border-[#e1d9cd] p-3 text-[11px] text-[#8a7f75]">
-              {ui('尚无工作流。可创建 manual / interval / webhook 三种触发。')}
+              {t('noWorkflowsYetCreateA')}
             </div>
           )}
         </div>
@@ -870,7 +870,7 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
           <input
             value={wfName}
             onChange={(event) => setWfName(event.target.value)}
-            placeholder={ui('工作流名称')}
+            placeholder={t('workflowName')}
             className="w-full rounded-lg border border-[#d8cdbf] px-2 py-1.5 text-xs"
           />
           <select
@@ -878,7 +878,7 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
             onChange={(event) => setWfSkillId(event.target.value)}
             className="w-full rounded-lg border border-[#d8cdbf] px-2 py-1.5 text-xs"
           >
-            <option value="">{ui('不绑定技能')}</option>
+            <option value="">{t('noBoundSkill')}</option>
             {skills.map((skill) => (
               <option key={skill.id} value={skill.id}>{skill.name}</option>
             ))}
@@ -900,7 +900,7 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
                 value={wfInterval}
                 onChange={(event) => setWfInterval(Number(event.target.value) || 60)}
                 className="w-24 rounded-lg border border-[#d8cdbf] px-2 py-1.5 text-xs"
-                title={ui('间隔分钟')}
+                title={t('intervalInMinutes')}
               />
             )}
             <select
@@ -915,7 +915,7 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
           <textarea
             value={wfMessage}
             onChange={(event) => setWfMessage(event.target.value)}
-            placeholder={ui('默认消息 / 任务描述')}
+            placeholder={t('defaultMessageTaskDescription')}
             className="min-h-14 w-full rounded-lg border border-[#d8cdbf] px-2 py-1.5 text-xs"
           />
           <button
@@ -925,11 +925,11 @@ export function SkillsRulesPanel({ apiBase, sessionId }: SkillsRulesPanelProps) 
             className="inline-flex items-center gap-1 rounded-md bg-[#8d5f35] px-2 py-1 text-xs text-white disabled:opacity-50"
           >
             <Plus size={12} />
-            {ui('创建工作流')}
+            {t('createWorkflow')}
           </button>
           {lastWebhookToken && (
             <div className="rounded-lg bg-[#fff5ec] px-2 py-2 text-[11px] text-[#8a5a28]">
-              {ui('Webhook token（仅显示一次）：')}
+              {t('webhookTokenShownOnce')}
               <code className="mt-1 block break-all font-mono text-[10px]">{lastWebhookToken}</code>
               <span className="mt-1 block">POST /instructions/workflows/hooks/&lt;token&gt;</span>
             </div>

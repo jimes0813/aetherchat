@@ -249,7 +249,7 @@ export function InspectorPanel(props: InspectorProps) {
   const artifactPathUrl = (path: string) => path.split('/').map(encodeURIComponent).join('/');
 
   const downloadDiagnosticBundle = async () => {
-    setDiagnosticStatus(ui('正在生成脱敏诊断包...'));
+    setDiagnosticStatus(t('generatingARedactedDiagnosticBundle'));
     try {
       const response = await fetch(
         `${props.apiBase}/diagnostics/bundle`,
@@ -269,7 +269,7 @@ export function InspectorPanel(props: InspectorProps) {
       anchor.click();
       anchor.remove();
       window.setTimeout(() => URL.revokeObjectURL(url), 0);
-      setDiagnosticStatus(ui('诊断包已导出；不含请求正文、文件内容或凭据。'));
+      setDiagnosticStatus(t('diagnosticBundleExportedWithoutRequest'));
     } catch (error) {
       setDiagnosticStatus(ui(`诊断包导出失败：${String(error)}`));
     }
@@ -396,7 +396,7 @@ export function InspectorPanel(props: InspectorProps) {
   };
 
   const deleteMcpConnection = async (connection: MCPConnection) => {
-    if (!await confirmAction(ui('删除 MCP 连接器“{name}”及其本机凭据引用吗？', { name: connection.name }), { danger: true })) return;
+    if (!await confirmAction(t('deleteTheMCPConnectorAnd', { name: connection.name }), { danger: true })) return;
     await fetchJson(`${props.apiBase}/mcp-connections/${connection.id}`, { method: 'DELETE' });
     setMcpConnections((items) => items.filter((item) => item.id !== connection.id));
     setMcpStatus('连接器已删除');
@@ -588,7 +588,7 @@ export function InspectorPanel(props: InspectorProps) {
   };
 
   const deleteKnowledge = async (attachment: KnowledgeAttachment) => {
-    if (!await confirmAction(ui('从项目资料库删除“{name}”吗？历史消息中的引用名称会保留。', { name: attachment.name }), { danger: true })) return;
+    if (!await confirmAction(t('removeFromProjectKnowledgeCitation', { name: attachment.name }), { danger: true })) return;
     await fetchJson(`${props.apiBase}/knowledge/${props.sessionId}/attachments/${attachment.id}`, { method: 'DELETE' });
     setKnowledgeResults((rows) => rows.filter((row) => row.attachment_id !== attachment.id));
     if (knowledgePreview?.attachment.id === attachment.id) {
@@ -637,7 +637,7 @@ export function InspectorPanel(props: InspectorProps) {
   };
 
   const restoreArtifactVersion = async (version: number) => {
-    if (!props.selectedArtifactPath || !await confirmAction(ui('将当前工件恢复到版本 v{version}？恢复会创建一个新版本，不会删除历史。', { version }))) return;
+    if (!props.selectedArtifactPath || !await confirmAction(t('restoreTheCurrentArtifactTo', { version }))) return;
     try {
       const encodedPath = artifactPathUrl(props.selectedArtifactPath);
       await fetchJson(`${props.apiBase}/artifacts/${encodedPath}/restore`, {
@@ -827,34 +827,34 @@ export function InspectorPanel(props: InspectorProps) {
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#e5d9ca] text-[#684827]"><Brain size={17} /></div>
             <div>
               <h2 className="text-sm font-semibold">{t('sessionMemoryTitle')}</h2>
-              <p className="mt-1 text-xs leading-5 text-[#7a7065]">{ui('决定和偏好只从用户明确表达中提取；工具可写入结构化共享实体，供同一会话中的所有 Agent 直接引用。所有内容均可检查或删除。')}</p>
+              <p className="mt-1 text-xs leading-5 text-[#7a7065]">{t('decisionsAndPreferencesAreExtracted')}</p>
             </div>
           </div>
           {memoryStatus && <div className="mb-3 rounded-md bg-[#e9e0d5] px-3 py-2 text-xs text-[#6e5d4b]" aria-live="polite">{ui(memoryStatus)}</div>}
           <div className="space-y-4">
             <label className="block">
-              <span className="text-xs font-semibold">{ui('项目固定说明')}</span>
-              <textarea value={memoryDraft.project_note} onChange={(event) => setMemoryDraft((value) => ({ ...value, project_note: event.target.value }))} placeholder={ui('例如：本项目使用 TypeScript，所有危险操作必须逐次授权。')} className="mt-1 min-h-20 w-full rounded-lg border border-[#d8cdbf] bg-white p-3 text-xs leading-5 outline-none" />
+              <span className="text-xs font-semibold">{t('pinnedProjectInstructions')}</span>
+              <textarea value={memoryDraft.project_note} onChange={(event) => setMemoryDraft((value) => ({ ...value, project_note: event.target.value }))} placeholder={t('forExampleThisProjectUses')} className="mt-1 min-h-20 w-full rounded-lg border border-[#d8cdbf] bg-white p-3 text-xs leading-5 outline-none" />
             </label>
             <label className="block">
-              <span className="text-xs font-semibold">{ui('用户偏好')}</span>
-              <span className="ml-2 text-[10px] text-[#897b6d]">{ui('每行一项')}</span>
+              <span className="text-xs font-semibold">{t('userPreferences')}</span>
+              <span className="ml-2 text-[10px] text-[#897b6d]">{t('oneItemPerLine')}</span>
               <textarea value={memoryDraft.preferences} onChange={(event) => setMemoryDraft((value) => ({ ...value, preferences: event.target.value }))} className="mt-1 min-h-20 w-full rounded-lg border border-[#d8cdbf] bg-white p-3 text-xs leading-5 outline-none" />
             </label>
             <label className="block">
-              <span className="text-xs font-semibold">{ui('关键决定')}</span>
-              <span className="ml-2 text-[10px] text-[#897b6d]">{ui('每行一项')}</span>
+              <span className="text-xs font-semibold">{t('keyDecisions')}</span>
+              <span className="ml-2 text-[10px] text-[#897b6d]">{t('oneItemPerLine')}</span>
               <textarea value={memoryDraft.decisions} onChange={(event) => setMemoryDraft((value) => ({ ...value, decisions: event.target.value }))} className="mt-1 min-h-20 w-full rounded-lg border border-[#d8cdbf] bg-white p-3 text-xs leading-5 outline-none" />
             </label>
             <label className="block">
-              <span className="text-xs font-semibold">{ui('未完成事项')}</span>
-              <span className="ml-2 text-[10px] text-[#897b6d]">{ui('完成后可直接删除对应行')}</span>
+              <span className="text-xs font-semibold">{t('openItems')}</span>
+              <span className="ml-2 text-[10px] text-[#897b6d]">{t('deleteTheCorrespondingLineWhen')}</span>
               <textarea value={memoryDraft.open_items} onChange={(event) => setMemoryDraft((value) => ({ ...value, open_items: event.target.value }))} className="mt-1 min-h-20 w-full rounded-lg border border-[#d8cdbf] bg-white p-3 text-xs leading-5 outline-none" />
             </label>
             <div>
               <div className="mb-2 flex items-center justify-between">
-                <span className="text-xs font-semibold">{ui('Agent 共享实体')}</span>
-                <span className="text-[10px] text-[#897b6d]">{ui('{count} 项 · 自动进入模型上下文', { count: sessionMemory?.entities?.length ?? 0 })}</span>
+                <span className="text-xs font-semibold">{t('agentSharedEntities')}</span>
+                <span className="text-[10px] text-[#897b6d]">{t('itemsAutomaticallyIncludedInModel', { count: sessionMemory?.entities?.length ?? 0 })}</span>
               </div>
               <div className="space-y-2">
                 {(sessionMemory?.entities || []).map((entity) => (
@@ -872,31 +872,31 @@ export function InspectorPanel(props: InspectorProps) {
                             }}
                             className="mt-1 break-all text-left font-mono text-[10px] text-[#356a82] underline"
                           >
-                            {ui('元数据：')}{entity.metadata.artifact_path}
+                            {t('metadata')}{entity.metadata.artifact_path}
                           </button>
                         )}
                       </div>
-                      <button onClick={() => void removeMemoryEntity(entity.key)} className="shrink-0 rounded border border-[#cdbfb0] p-1 text-[#744438]" aria-label={ui('删除共享实体 {key}', { key: entity.key })}>
+                      <button onClick={() => void removeMemoryEntity(entity.key)} className="shrink-0 rounded border border-[#cdbfb0] p-1 text-[#744438]" aria-label={t('deleteSharedEntity', { key: entity.key })}>
                         <Trash2 size={12} />
                       </button>
                     </div>
                   </div>
                 ))}
                 {!sessionMemory?.entities?.length && (
-                  <div className="rounded-lg border border-dashed border-[#d8cdbf] p-3 text-center text-[11px] text-[#897b6d]">{ui('生成图片或由 Agent 记录关键实体后会显示在这里。')}</div>
+                  <div className="rounded-lg border border-dashed border-[#d8cdbf] p-3 text-center text-[11px] text-[#897b6d]">{t('generatedImagesAndKeyEntities')}</div>
                 )}
               </div>
             </div>
             <div>
               <div className="mb-1 flex items-center justify-between text-xs font-semibold">
-                <span>{ui('滚动摘要')}</span>
-                <span className="font-normal text-[#897b6d]">{ui('最近 {count} 条上下文窗口消息', { count: sessionMemory?.message_count ?? 0 })}</span>
+                <span>{t('rollingSummary')}</span>
+                <span className="font-normal text-[#897b6d]">{t('latestContextWindowMessages', { count: sessionMemory?.message_count ?? 0 })}</span>
               </div>
-              <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg border border-[#d8cdbf] bg-[#f8f4ee] p-3 font-sans text-xs leading-5 text-[#5b5147]">{sessionMemory?.summary || ui('发送消息后自动生成。')}</pre>
+              <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-lg border border-[#d8cdbf] bg-[#f8f4ee] p-3 font-sans text-xs leading-5 text-[#5b5147]">{sessionMemory?.summary || t('generatedAutomaticallyAfterMessagesAre')}</pre>
             </div>
             <div className="flex gap-2">
-              <button onClick={() => void saveMemory()} className="rounded-lg bg-[#2f2a24] px-4 py-2 text-xs font-semibold text-white"><Save size={14} className="mr-1 inline" />{ui('保存记忆')}</button>
-              <button onClick={() => setMemoryDraft({ project_note: '', decisions: '', preferences: '', open_items: '' })} className="rounded-lg border border-[#cdbfb0] bg-white px-4 py-2 text-xs font-semibold text-[#744438]">{ui('清空编辑内容')}</button>
+              <button onClick={() => void saveMemory()} className="rounded-lg bg-[#2f2a24] px-4 py-2 text-xs font-semibold text-white"><Save size={14} className="mr-1 inline" />{t('saveMemory')}</button>
+              <button onClick={() => setMemoryDraft({ project_note: '', decisions: '', preferences: '', open_items: '' })} className="rounded-lg border border-[#cdbfb0] bg-white px-4 py-2 text-xs font-semibold text-[#744438]">{t('clearEdits')}</button>
             </div>
           </div>
         </div>
@@ -907,10 +907,10 @@ export function InspectorPanel(props: InspectorProps) {
           <div className="mb-4">
             <h2 className="text-sm font-semibold">{t('projectKnowledge')}</h2>
             <p className="mt-1 text-xs text-[#7a7065]">
-              {ui('本地 FTS5/BM25 + 哈希向量混合检索（不上传云端）。检索结果展示各层贡献，并可一键引用到输入框。')}
+              {t('localFTS5BM25AndHash')}
             </p>
             <div className="mt-2 text-[11px] text-[#6d6258]">{formatKnowledgeStatsLine(knowledgeStats)}</div>
-            <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[#dfd5c9]" aria-label={ui('资料处理进度 {progress}%', { progress: knowledgeProgress })}>
+            <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[#dfd5c9]" aria-label={t('knowledgeProcessingProgress', { progress: knowledgeProgress })}>
               <div className="h-full bg-[#8d5f35] transition-all duration-300" style={{ width: `${knowledgeProgress}%` }} />
             </div>
           </div>
@@ -926,8 +926,8 @@ export function InspectorPanel(props: InspectorProps) {
                 event.currentTarget.value = '';
               }}
             />
-            <div className="text-sm font-medium text-[#5d4a3a]">{ui('点击上传项目资料')}</div>
-            <div className="mt-1 text-[11px] text-[#8a7f75]">{ui('支持 Markdown / PDF / Office / 代码 / 图片 · 单文件 ≤ 25MB')}</div>
+            <div className="text-sm font-medium text-[#5d4a3a]">{t('selectFilesToUploadAs')}</div>
+            <div className="mt-1 text-[11px] text-[#8a7f75]">{t('supportsMarkdownPDFOfficeCode')}</div>
           </label>
 
           <div className="mb-2 flex flex-wrap gap-1">
@@ -938,7 +938,7 @@ export function InspectorPanel(props: InspectorProps) {
                 onClick={() => setKnowledgeExtFilter(ext)}
                 className={`rounded-full px-2 py-0.5 text-[11px] ${knowledgeExtFilter === ext ? 'bg-[#2f2a24] text-white' : 'bg-[#eee4d8] text-[#6b4425]'}`}
               >
-                {ext || ui('全部')}
+                {ext || t('all')}
               </button>
             ))}
           </div>
@@ -952,26 +952,26 @@ export function InspectorPanel(props: InspectorProps) {
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') void searchKnowledge();
                 }}
-                placeholder={ui('搜索文件正文、表格或幻灯片')}
+                placeholder={t('searchDocumentTextSpreadsheetsOr')}
                 className="h-full w-full rounded-[inherit] border-0 bg-transparent px-3 text-sm outline-none"
               />
             </div>
             <button onClick={() => void searchKnowledge()} className="flex h-10 items-center gap-1 rounded-lg bg-[#2f2a24] px-3 text-sm font-medium text-white">
-              <Search size={15} />{ui('检索')}
+              <Search size={15} />{t('search2')}
             </button>
           </div>
           {knowledgeStatus && <div className="mb-3 text-xs text-[#7a7065]" aria-live="polite">{ui(knowledgeStatus)}</div>}
           {knowledgeResults.length > 0 && (
             <div className="mb-5 space-y-2">
               <div className="flex items-center justify-between">
-                <div className="text-[11px] font-semibold text-[#6d6258]">{ui('检索层 · 引用')}</div>
+                <div className="text-[11px] font-semibold text-[#6d6258]">{t('retrievalLayersCitations')}</div>
                 {props.onInsertComposer && (
                   <button
                     type="button"
                     onClick={askWithTopHits}
                     className="rounded border border-[#cfc4b7] px-2 py-0.5 text-[11px] text-[#5d4a3a]"
                   >
-                    {ui('用 Top 来源提问')}
+                    {t('askWithTopSources')}
                   </button>
                 )}
               </div>
@@ -995,7 +995,7 @@ export function InspectorPanel(props: InspectorProps) {
                       onClick={() => citeHitToComposer(result)}
                       className="mt-2 rounded border border-[#d5c6b6] px-2 py-1 text-[11px] text-[#654927] hover:bg-[#eee5da]"
                     >
-                      {ui('引用到输入框')}
+                      {t('citeInComposer')}
                     </button>
                   )}
                 </article>
@@ -1003,11 +1003,11 @@ export function InspectorPanel(props: InspectorProps) {
             </div>
           )}
           {knowledgePreview && (
-            <section className="mb-5 rounded-lg border border-[#cdbba8] bg-white p-3" aria-label={ui('资料安全预览')}>
+            <section className="mb-5 rounded-lg border border-[#cdbba8] bg-white p-3" aria-label={t('safeKnowledgePreview')}>
               <div className="mb-3 flex items-center gap-2">
                 <ShieldCheck size={15} className="text-[#477257]" />
-                <div className="min-w-0 flex-1 truncate text-sm font-semibold">{ui('安全预览 · {name}', { name: knowledgePreview.attachment.name })}</div>
-                <button aria-label={ui('关闭预览')} onClick={() => {
+                <div className="min-w-0 flex-1 truncate text-sm font-semibold">{t('safePreview', { name: knowledgePreview.attachment.name })}</div>
+                <button aria-label={t('closePreview')} onClick={() => {
                   if (knowledgePreview.imageUrl) URL.revokeObjectURL(knowledgePreview.imageUrl);
                   setKnowledgePreview(null);
                 }}><X size={15} /></button>
@@ -1023,8 +1023,8 @@ export function InspectorPanel(props: InspectorProps) {
                       <pre className="mt-1 whitespace-pre-wrap font-sans text-xs leading-5 text-[#554a40]">{chunk.content}</pre>
                     </div>
                   ))}
-                  {!knowledgePreview.chunks.length && <div className="text-xs text-[#7a7065]">{ui('此文件没有可安全显示的文本。')}</div>}
-                  {knowledgePreview.truncated && <div className="text-xs text-[#8a6240]">{ui('预览已截断，检索索引仍包含其余片段。')}</div>}
+                  {!knowledgePreview.chunks.length && <div className="text-xs text-[#7a7065]">{t('thisFileHasNoText')}</div>}
+                  {knowledgePreview.truncated && <div className="text-xs text-[#8a6240]">{t('thePreviewWasTruncatedThe')}</div>}
                 </div>
               )}
             </section>
@@ -1035,21 +1035,21 @@ export function InspectorPanel(props: InspectorProps) {
                 <FileText size={16} className="shrink-0 text-[#785331]" />
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-medium">{attachment.name}</div>
-                  <div className="mt-0.5 text-xs text-[#84796d]">{ui('{count} 个片段 · {size} KB · {extension}', { count: attachment.chunk_count, size: (attachment.size_bytes / 1024).toFixed(1), extension: attachment.extension || '' })}</div>
+                  <div className="mt-0.5 text-xs text-[#84796d]">{t('chunksKB', { count: attachment.chunk_count, size: (attachment.size_bytes / 1024).toFixed(1), extension: attachment.extension || '' })}</div>
                 </div>
-                <button aria-label={ui('预览 {name}', { name: attachment.name })} onClick={() => void previewKnowledge(attachment)} className="rounded border border-[#d5c6b6] px-2 py-1 text-xs text-[#654927] hover:bg-[#eee5da]">{ui('预览')}</button>
-                <button aria-label={ui('删除 {name}', { name: attachment.name })} onClick={() => void deleteKnowledge(attachment)} className="rounded p-1.5 text-[#8c4a3d] hover:bg-[#f3e3df]">
+                <button aria-label={t('preview', { name: attachment.name })} onClick={() => void previewKnowledge(attachment)} className="rounded border border-[#d5c6b6] px-2 py-1 text-xs text-[#654927] hover:bg-[#eee5da]">{t('preview')}</button>
+                <button aria-label={t('delete', { name: attachment.name })} onClick={() => void deleteKnowledge(attachment)} className="rounded p-1.5 text-[#8c4a3d] hover:bg-[#f3e3df]">
                   <Trash2 size={15} />
                 </button>
               </div>
             ))}
             {knowledgeAttachments.length === 0 && (
               <div className="rounded-lg border border-dashed border-[#d6cbbd] p-6 text-center text-sm text-[#7a7065]">
-                <div>{ui('尚未上传项目资料')}</div>
+                <div>{t('noProjectKnowledgeUploaded')}</div>
                 <div className="mt-2 text-xs leading-5">
-                  {ui('1. 上方上传 README / 设计文档')}<br />
-                  {ui('2. 检索关键词查看「全文 / 向量」分层')}<br />
-                  {ui('3. 点「引用到输入框」带证据提问')}
+                  {t('n1UploadAREADMEOr')}<br />
+                  {t('n2SearchAKeywordTo')}<br />
+                  {t('n3SelectCiteInComposer')}
                 </div>
               </div>
             )}
@@ -1063,7 +1063,7 @@ export function InspectorPanel(props: InspectorProps) {
             <input
               value={taskTitle}
               onChange={(event) => setTaskTitle(event.target.value)}
-              placeholder={ui('新建任务')}
+              placeholder={t('createTask')}
               className="h-10 min-w-0 flex-1 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none"
             />
             <button
@@ -1076,12 +1076,12 @@ export function InspectorPanel(props: InspectorProps) {
               className="flex h-10 items-center gap-1 rounded-lg bg-[#2f2a24] px-3 text-sm font-medium text-white"
             >
               <Plus size={15} />
-              {ui('添加')}
+              {t('add')}
             </button>
           </div>
           {!!tasks.length && (
             <label className="mb-4 block text-xs text-[#6d6258]">
-              <span className="mb-1 block font-semibold">{ui('前置依赖（可多选）')}</span>
+              <span className="mb-1 block font-semibold">{t('prerequisitesMultipleAllowed')}</span>
               <select
                 multiple
                 value={taskDependencies}
@@ -1096,7 +1096,7 @@ export function InspectorPanel(props: InspectorProps) {
                   </option>
                 ))}
               </select>
-              <span className="mt-1 block text-[10px] text-[#897b6d]">{ui('依赖未完成时，任务不能被认领或推进；Agent 工具也会拒绝执行。')}</span>
+              <span className="mt-1 block text-[10px] text-[#897b6d]">{t('aTaskCannotBeClaimed')}</span>
             </label>
           )}
           <TaskBoard onPatchTask={props.onPatchTask} />
@@ -1138,14 +1138,14 @@ export function InspectorPanel(props: InspectorProps) {
                   </div>
                   {artifact.availability === 'history_only' && (
                     <div className="mt-1 text-[11px] font-medium text-[#8a5a21]">
-                      {artifact.recoverable ? ui('当前文件缺失 · 可从历史恢复') : ui('当前文件缺失 · 仅保留历史记录')}
+                      {artifact.recoverable ? t('currentFileMissingRecoverableFrom') : t('currentFileMissingHistoryRecord')}
                     </div>
                   )}
                 </button>
               ))}
               {artifacts.length === 0 && (
                 <div className="rounded-lg border border-dashed border-[#d6cbbd] p-5 text-center text-xs text-[#7a7065]">
-                  {ui('当前会话还没有文件')}
+                  {t('noFilesInThisConversation')}
                 </div>
               )}
             </div>
@@ -1155,7 +1155,7 @@ export function InspectorPanel(props: InspectorProps) {
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <div>
                 <div className="truncate text-sm font-semibold">{props.selectedArtifactPath}</div>
-                <div className="mt-0.5 text-[11px] text-[#82776c]">{artifactPreview?.mime_type || ui('未知类型')} · {ui(artifactStatus)}</div>
+                <div className="mt-0.5 text-[11px] text-[#82776c]">{artifactPreview?.mime_type || t('unknownType')} · {ui(artifactStatus)}</div>
               </div>
               <div className="flex flex-wrap gap-1">
                 {(['preview', 'edit', 'history'] as const).map((view) => (
@@ -1169,11 +1169,11 @@ export function InspectorPanel(props: InspectorProps) {
                     onClick={() => setArtifactView(view)}
                     className={`rounded-md border px-2 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-40 ${artifactView === view ? 'border-[#8d5f35] bg-[#efe2d5]' : 'border-[#ded6ca]'}`}
                   >
-                    {view === 'preview' ? ui('预览') : view === 'edit' ? ui('编辑') : ui('版本')}
+                    {view === 'preview' ? t('preview') : view === 'edit' ? t('edit') : t('versions')}
                   </button>
                 ))}
                 <button disabled={artifactPreview?.availability === 'history_only'} onClick={() => props.onCreateMerge(props.selectedArtifactPath, '请求根据两票规则合并当前工件更新。')} className="rounded-md border border-[#ded6ca] px-2 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-40">
-                  {ui('提交变更')}
+                  {t('submitChange')}
                 </button>
               </div>
             </div>
@@ -1187,7 +1187,7 @@ export function InspectorPanel(props: InspectorProps) {
                     onClick={() => void restoreArtifactVersion(artifactPreview.recoverable_version as number)}
                     className="rounded-md bg-[#744d19] px-2 py-1 font-medium text-white"
                   >
-                    {ui('恢复 v{version}', { version: artifactPreview.recoverable_version })}
+                    {t('restoreV', { version: artifactPreview.recoverable_version })}
                   </button>
                 )}
               </div>
@@ -1198,7 +1198,7 @@ export function InspectorPanel(props: InspectorProps) {
                 {artifactPreview?.mode === 'markdown' && <SafeMarkdown content={artifactPreview.content} />}
                 {artifactPreview?.mode === 'isolated_html' && (
                   <iframe
-                    title={ui('隔离工件预览')}
+                    title={t('isolatedArtifactPreview')}
                     sandbox=""
                     referrerPolicy="no-referrer"
                     className="h-full min-h-64 w-full border-0"
@@ -1208,13 +1208,13 @@ export function InspectorPanel(props: InspectorProps) {
                 {(artifactPreview?.mode === 'code' || artifactPreview?.mode === 'office_summary') && (
                   <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-5">{artifactPreview.content}</pre>
                 )}
-                {artifactPreview?.mode === 'download_only' && <p className="text-[#74695e]">{ui('此类型不允许内嵌预览，请仅导出后使用可信应用打开。')}</p>}
+                {artifactPreview?.mode === 'download_only' && <p className="text-[#74695e]">{t('thisFileTypeCannotBe')}</p>}
               </div>
             )}
 
             {artifactView === 'edit' && (
               <textarea
-                aria-label={ui('工件内容')}
+                aria-label={t('artifactContent')}
                 value={artifactContent}
                 onChange={(event) => setArtifactContent(event.target.value)}
                 className="min-h-64 resize-y rounded-lg border border-[#ded6ca] bg-[#fffdf9] p-3 font-mono text-xs leading-5 outline-none"
@@ -1234,8 +1234,8 @@ export function InspectorPanel(props: InspectorProps) {
                       <div className="mt-1 truncate text-[11px] text-[#7a7065]">{version.message} · {version.author} · {formatDateTime(version.created_at)}</div>
                     </div>
                     <div className="flex shrink-0 gap-1">
-                      {version.version !== artifactVersions[0]?.version && <button onClick={() => void compareArtifactVersion(version.version)} className="rounded border border-[#ded6ca] px-2 py-1 text-[11px]">{ui('对比')}</button>}
-                      {version.content_encoding === 'utf-8' && (version.version !== artifactVersions[0]?.version || artifactPreview?.availability === 'history_only') && <button onClick={() => void restoreArtifactVersion(version.version)} className="rounded border border-[#b98d69] px-2 py-1 text-[11px] text-[#704520]">{ui('恢复')}</button>}
+                      {version.version !== artifactVersions[0]?.version && <button onClick={() => void compareArtifactVersion(version.version)} className="rounded border border-[#ded6ca] px-2 py-1 text-[11px]">{t('compare')}</button>}
+                      {version.content_encoding === 'utf-8' && (version.version !== artifactVersions[0]?.version || artifactPreview?.availability === 'history_only') && <button onClick={() => void restoreArtifactVersion(version.version)} className="rounded border border-[#b98d69] px-2 py-1 text-[11px] text-[#704520]">{t('restore')}</button>}
                     </div>
                   </div>
                 ))}
@@ -1245,13 +1245,13 @@ export function InspectorPanel(props: InspectorProps) {
             <div className="mt-2 flex flex-wrap gap-2">
               {artifactView === 'edit' && (
                 <>
-                  <input aria-label={ui('版本说明')} value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} className="h-9 min-w-0 flex-1 rounded-lg border border-[#ded6ca] bg-white px-3 text-xs outline-none" />
-                  <button onClick={() => void saveArtifact()} className="rounded-lg bg-[#2f2a24] px-3 text-sm font-medium text-white">{ui('保存新版本')}</button>
+                  <input aria-label={t('versionNote')} value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} className="h-9 min-w-0 flex-1 rounded-lg border border-[#ded6ca] bg-white px-3 text-xs outline-none" />
+                  <button onClick={() => void saveArtifact()} className="rounded-lg bg-[#2f2a24] px-3 text-sm font-medium text-white">{t('saveNewVersion')}</button>
                 </>
               )}
               {artifactPreview?.availability !== 'history_only' && <div className="ml-auto flex gap-1">
                 {(artifactPreview?.mode === 'download_only' || artifactPreview?.mode === 'office_summary') && (
-                  <button onClick={() => void exportArtifact('original')} className="rounded-md border border-[#ded6ca] px-2 py-1 text-[11px]">{ui('原文件')}</button>
+                  <button onClick={() => void exportArtifact('original')} className="rounded-md border border-[#ded6ca] px-2 py-1 text-[11px]">{t('originalFile')}</button>
                 )}
                 {(['docx', 'xlsx', 'pptx', 'md'] as const).map((format) => (
                   <button key={format} onClick={() => void exportArtifact(format)} className="rounded-md border border-[#ded6ca] px-2 py-1 text-[11px] uppercase">{format}</button>
@@ -1261,7 +1261,7 @@ export function InspectorPanel(props: InspectorProps) {
           </div>
           ) : (
             <div className="flex min-h-[20rem] items-center justify-center p-6 text-center text-sm text-[#7a7065]">
-              {ui('选择一个文件查看预览和版本；过期选择会自动清除。')}
+              {t('selectAFileToView')}
             </div>
           )}
         </div>
@@ -1284,15 +1284,15 @@ export function InspectorPanel(props: InspectorProps) {
                   <span className="rounded-md bg-[#ebe3d8] px-2 py-1 text-xs">{proposal.status}</span>
                 </div>
                 <div className="mt-3 flex items-center justify-between">
-                  <div className="text-xs text-[#7a7065]">{ui('赞成 {count} / 2', { count: Object.values(proposal.votes).filter(Boolean).length })}</div>
+                  <div className="text-xs text-[#7a7065]">{t('approve2', { count: Object.values(proposal.votes).filter(Boolean).length })}</div>
                   <div className="flex gap-2">
-                    <button onClick={() => props.onVoteMerge(proposal, false)} className="rounded-md border border-[#ded6ca] px-2 py-1 text-xs">{ui('拒绝')}</button>
-                    <button onClick={() => props.onVoteMerge(proposal, true)} className="rounded-md bg-[#2f2a24] px-2 py-1 text-xs text-white">{ui('赞成')}</button>
+                    <button onClick={() => props.onVoteMerge(proposal, false)} className="rounded-md border border-[#ded6ca] px-2 py-1 text-xs">{t('deny')}</button>
+                    <button onClick={() => props.onVoteMerge(proposal, true)} className="rounded-md bg-[#2f2a24] px-2 py-1 text-xs text-white">{t('approve')}</button>
                   </div>
                 </div>
               </div>
             ))}
-            {mergeProposals.length === 0 && <div className="rounded-lg border border-dashed border-[#d6cbbd] p-6 text-center text-sm text-[#7a7065]">{ui('暂无合并提案')}</div>}
+            {mergeProposals.length === 0 && <div className="rounded-lg border border-dashed border-[#d6cbbd] p-6 text-center text-sm text-[#7a7065]">{t('noMergeProposals')}</div>}
           </div>
         </div>
       )}
@@ -1308,13 +1308,13 @@ export function InspectorPanel(props: InspectorProps) {
               <input
                 value={toolName}
                 onChange={(event) => setToolName(event.target.value)}
-                placeholder={ui('工具名称，例如：生成周报')}
+                placeholder={t('toolNameForExampleGenerate')}
                 className="h-9 w-full rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none"
               />
               <input
                 value={toolDescription}
                 onChange={(event) => setToolDescription(event.target.value)}
-                placeholder={ui('工具说明')}
+                placeholder={t('toolDescription')}
                 className="h-9 w-full rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none"
               />
               <textarea
@@ -1341,13 +1341,13 @@ export function InspectorPanel(props: InspectorProps) {
                 className="flex h-9 items-center gap-1 rounded-lg bg-[#2f2a24] px-3 text-sm font-medium text-white"
               >
                 <Plus size={15} />
-                {ui('添加到工具仓')}
+                {t('addToToolCatalog')}
               </button>
             </div>
           </div>
 
           <div className="p-4">
-            <div className="mb-2 text-xs font-semibold text-[#7a7065]">{ui('所有模型可调用的工具')}</div>
+            <div className="mb-2 text-xs font-semibold text-[#7a7065]">{t('toolsAvailableToAllModels')}</div>
             <div className="space-y-2">
               {tools.map((tool) => (
                 <div key={tool.id} className="rounded-lg border border-[#ded6ca] bg-[#fbfaf7] p-3">
@@ -1361,7 +1361,7 @@ export function InspectorPanel(props: InspectorProps) {
                   <div className="mt-3 flex items-center justify-between text-xs text-[#7a7065]">
                     <span>{tool.category} · {tool.kind}</span>
                     <div className="flex gap-2">
-                      <button onClick={() => props.onInvokeTool(tool, 'user')} className="rounded-md bg-[#2f2a24] px-2 py-1 text-white">{ui('调用')}</button>
+                      <button onClick={() => props.onInvokeTool(tool, 'user')} className="rounded-md bg-[#2f2a24] px-2 py-1 text-white">{t('invoke')}</button>
                       {tool.owner !== 'system' && (
                         <button onClick={() => props.onDeleteTool(tool)} className="rounded-md border border-[#d6cbbd] px-2 py-1 text-[#7a3b2e]">
                           <Trash2 size={13} />
@@ -1375,7 +1375,7 @@ export function InspectorPanel(props: InspectorProps) {
           </div>
 
           <div className="border-t border-[#ded6ca] p-4">
-            <div className="mb-2 text-xs font-semibold text-[#7a7065]">{ui('最近调用')}</div>
+            <div className="mb-2 text-xs font-semibold text-[#7a7065]">{t('recentRuns')}</div>
             <div className="space-y-2">
               {toolRuns.slice(0, 5).map((run) => (
                 <div key={run.id} className="rounded-lg border border-[#ded6ca] bg-[#fffdf9] p-2">
@@ -1384,11 +1384,11 @@ export function InspectorPanel(props: InspectorProps) {
                     <span>{run.caller}</span>
                   </div>
                   <div className={`mt-1 line-clamp-2 text-xs leading-5 ${run.status === 'error' ? 'text-[#9b3328]' : 'text-[#7a7065]'}`}>
-                    {run.status === 'error' ? run.error || ui('工具执行失败') : run.output}
+                    {run.status === 'error' ? run.error || t('toolExecutionFailed') : run.output}
                   </div>
                 </div>
               ))}
-              {toolRuns.length === 0 && <div className="text-xs text-[#8b8176]">{ui('暂无调用记录')}</div>}
+              {toolRuns.length === 0 && <div className="text-xs text-[#8b8176]">{t('noRunHistory')}</div>}
             </div>
           </div>
         </div>
@@ -1406,27 +1406,27 @@ export function InspectorPanel(props: InspectorProps) {
             <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#e5d9ca] text-[#684827]"><Cable size={17} /></div>
             <div>
               <h2 className="text-sm font-semibold">{t('mcpConnectors')}</h2>
-              <p className="mt-1 text-xs leading-5 text-[#7a7065]">{ui('支持标准 stdio 与 Streamable HTTP。令牌保存在系统密钥环，模型调用仍需对话内授权。')}</p>
+              <p className="mt-1 text-xs leading-5 text-[#7a7065]">{t('supportsStandardStdioAndStreamable')}</p>
             </div>
           </div>
           {mcpStatus && <div role="status" className="mb-3 rounded-md bg-[#e9e0d5] px-3 py-2 text-xs text-[#6e5d4b]">{ui(mcpStatus)}</div>}
           <section className="rounded-xl border border-[#ded6ca] bg-[#fbfaf7] p-3">
-            <div className="mb-3 text-xs font-semibold">{ui('添加连接器')}</div>
+            <div className="mb-3 text-xs font-semibold">{t('addConnection')}</div>
             <div className="grid gap-2 sm:grid-cols-2">
-              <input value={mcpName} onChange={(event) => setMcpName(event.target.value)} placeholder={ui('连接器名称')} className="h-9 rounded-md border border-[#ded6ca] px-3 text-sm outline-none" />
+              <input value={mcpName} onChange={(event) => setMcpName(event.target.value)} placeholder={t('connectionName')} className="h-9 rounded-md border border-[#ded6ca] px-3 text-sm outline-none" />
               <select value={mcpTransport} onChange={(event) => { setMcpTransport(event.target.value as MCPConnection['transport']); setMcpEndpoint(''); }} className="h-9 rounded-md border border-[#ded6ca] bg-white px-3 text-sm">
-                <option value="stdio">{ui('本地 stdio')}</option><option value="streamable_http">Streamable HTTP</option>
+                <option value="stdio">{t('localStdio')}</option><option value="streamable_http">Streamable HTTP</option>
               </select>
-              <input value={mcpEndpoint} onChange={(event) => setMcpEndpoint(event.target.value)} placeholder={mcpTransport === 'stdio' ? ui('可执行命令，例如 npx') : 'https://example.com/mcp'} className="h-9 rounded-md border border-[#ded6ca] px-3 text-sm outline-none sm:col-span-2" />
-              {mcpTransport === 'stdio' && <textarea value={mcpArgs} onChange={(event) => setMcpArgs(event.target.value)} placeholder={ui('每行一个参数，例如：\n-y\n@modelcontextprotocol/server-filesystem\n/home/user/project')} className="min-h-24 rounded-md border border-[#ded6ca] p-3 text-xs outline-none sm:col-span-2" />}
+              <input value={mcpEndpoint} onChange={(event) => setMcpEndpoint(event.target.value)} placeholder={mcpTransport === 'stdio' ? t('executableCommandForExampleNpx') : 'https://example.com/mcp'} className="h-9 rounded-md border border-[#ded6ca] px-3 text-sm outline-none sm:col-span-2" />
+              {mcpTransport === 'stdio' && <textarea value={mcpArgs} onChange={(event) => setMcpArgs(event.target.value)} placeholder={t('oneArgumentPerLineFor')} className="min-h-24 rounded-md border border-[#ded6ca] p-3 text-xs outline-none sm:col-span-2" />}
               {mcpTransport === 'streamable_http' && <>
                 <select value={mcpAuthType} onChange={(event) => setMcpAuthType(event.target.value as MCPConnection['auth_type'])} className="h-9 rounded-md border border-[#ded6ca] bg-white px-3 text-sm">
-                  <option value="none">{ui('无认证')}</option><option value="bearer">Bearer Token</option><option value="oauth_token">{ui('导入 OAuth Access Token')}</option><option value="oauth">{ui('浏览器 OAuth / PKCE')}</option>
+                  <option value="none">{t('noAuthentication')}</option><option value="bearer">Bearer Token</option><option value="oauth_token">{t('importOAuthAccessToken')}</option><option value="oauth">{t('browserOAuthPKCE')}</option>
                 </select>
-                <input type="password" autoComplete="new-password" value={mcpToken} onChange={(event) => setMcpToken(event.target.value)} disabled={mcpAuthType === 'none' || mcpAuthType === 'oauth'} placeholder={mcpAuthType === 'oauth' ? ui('创建后点击 OAuth 授权') : ui('令牌仅写入系统密钥环')} className="h-9 rounded-md border border-[#ded6ca] px-3 text-sm disabled:bg-[#eee7de]" />
+                <input type="password" autoComplete="new-password" value={mcpToken} onChange={(event) => setMcpToken(event.target.value)} disabled={mcpAuthType === 'none' || mcpAuthType === 'oauth'} placeholder={mcpAuthType === 'oauth' ? t('selectOAuthAuthorizationAfterCreation') : t('tokenIsWrittenOnlyTo')} className="h-9 rounded-md border border-[#ded6ca] px-3 text-sm disabled:bg-[#eee7de]" />
               </>}
             </div>
-            <button onClick={createMcpConnection} className="mt-3 rounded-md bg-[#2f2a24] px-3 py-1.5 text-xs text-white">{ui('连接并发现工具')}</button>
+            <button onClick={createMcpConnection} className="mt-3 rounded-md bg-[#2f2a24] px-3 py-1.5 text-xs text-white">{t('connectAndDiscoverTools')}</button>
           </section>
           <div className="mt-4 space-y-3">
             {mcpConnections.map((connection) => (
@@ -1436,11 +1436,11 @@ export function InspectorPanel(props: InspectorProps) {
                   <span className={connection.status === 'ready' ? 'rounded bg-[#dfead7] px-2 py-1 text-xs text-[#3f6c3a]' : connection.status === 'error' ? 'rounded bg-[#ead5d1] px-2 py-1 text-xs text-[#8a3b31]' : 'rounded bg-[#ebe3d8] px-2 py-1 text-xs text-[#6d6258]'}>{connection.status}</span>
                 </div>
                 <div className="mt-2 flex flex-wrap gap-2 text-xs">
-                  <button onClick={() => patchMcpConnection(connection, { enabled: !connection.enabled })} className="rounded-md border border-[#d6cbbd] px-2 py-1">{connection.enabled ? ui('停用') : ui('启用')}</button>
-                  <button onClick={() => refreshMcpConnection(connection)} disabled={!connection.enabled} className="rounded-md border border-[#d6cbbd] px-2 py-1 disabled:opacity-40">{ui('刷新工具')}</button>
-                  {connection.auth_type === 'oauth' && <button onClick={() => authorizeMcpOAuth(connection)} disabled={!connection.enabled || connection.status === 'authorizing'} className="rounded-md border border-[#8d5f35] px-2 py-1 text-[#6b4525] disabled:opacity-40">{connection.status === 'authorizing' ? ui('等待 OAuth') : ui('OAuth 授权')}</button>}
-                  <button onClick={() => deleteMcpConnection(connection)} className="rounded-md border border-[#d6cbbd] px-2 py-1 text-[#8a3b31]">{ui('删除')}</button>
-                  <span className="px-1 py-1 text-[#7a7065]">{connection.has_token ? ui('凭据已安全保存') : ui('无已保存凭据')} · {ui('{count} 个工具', { count: connection.tools.length })}</span>
+                  <button onClick={() => patchMcpConnection(connection, { enabled: !connection.enabled })} className="rounded-md border border-[#d6cbbd] px-2 py-1">{connection.enabled ? t('disable') : t('enable')}</button>
+                  <button onClick={() => refreshMcpConnection(connection)} disabled={!connection.enabled} className="rounded-md border border-[#d6cbbd] px-2 py-1 disabled:opacity-40">{t('refreshTools')}</button>
+                  {connection.auth_type === 'oauth' && <button onClick={() => authorizeMcpOAuth(connection)} disabled={!connection.enabled || connection.status === 'authorizing'} className="rounded-md border border-[#8d5f35] px-2 py-1 text-[#6b4525] disabled:opacity-40">{connection.status === 'authorizing' ? t('waitingForOAuth') : t('authorizeOAuth')}</button>}
+                  <button onClick={() => deleteMcpConnection(connection)} className="rounded-md border border-[#d6cbbd] px-2 py-1 text-[#8a3b31]">{t('deleteItem')}</button>
+                  <span className="px-1 py-1 text-[#7a7065]">{connection.has_token ? t('credentialsStoredSecurely') : t('noStoredCredentials')} · {t('tools2', { count: connection.tools.length })}</span>
                 </div>
                 {connection.error && <div className="mt-2 text-xs text-[#8a3b31]">{connection.error}</div>}
                 <div className="mt-3 space-y-1">
@@ -1458,7 +1458,7 @@ export function InspectorPanel(props: InspectorProps) {
                 </div>
               </article>
             ))}
-            {!mcpConnections.length && <div className="rounded-lg border border-dashed border-[#d6cbbd] p-6 text-center text-xs text-[#7a7065]">{ui('尚未配置 MCP 连接器')}</div>}
+            {!mcpConnections.length && <div className="rounded-lg border border-dashed border-[#d6cbbd] p-6 text-center text-xs text-[#7a7065]">{t('noMCPConnectionsConfigured')}</div>}
           </div>
         </div>
       )}
@@ -1475,36 +1475,36 @@ export function InspectorPanel(props: InspectorProps) {
               {t('modelApis')}
             </div>
             <div className="grid grid-cols-2 gap-2">
-              <input value={modelName} onChange={(event) => setModelName(event.target.value)} readOnly={Boolean(editingModelName)} title={editingModelName ? ui('模型名称是稳定标识；如需新名称，请新建配置') : undefined} placeholder={ui('名称，例如：我的 GPT')} className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none read-only:bg-[#eee7de]" />
+              <input value={modelName} onChange={(event) => setModelName(event.target.value)} readOnly={Boolean(editingModelName)} title={editingModelName ? t('modelNameIsAStable') : undefined} placeholder={t('nameForExampleMyGPT')} className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none read-only:bg-[#eee7de]" />
               <select value={modelType} onChange={(event) => setModelType(event.target.value as ModelConfig['type'])} className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none">
-                <option value="openai_compat">{ui('OpenAI 兼容')}</option>
+                <option value="openai_compat">{t('openaiCompatible')}</option>
                 <option value="anthropic">Anthropic / Claude</option>
                 <option value="xai">xAI</option>
-                <option value="local">{ui('本地模型')}</option>
+                <option value="local">{t('localModel')}</option>
               </select>
-              <input value={modelId} onChange={(event) => setModelId(event.target.value)} placeholder={ui('模型 ID，例如：gpt-4.1')} className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none" />
-              <input value={modelBaseUrl} onChange={(event) => setModelBaseUrl(event.target.value)} placeholder={ui('接口地址，可选')} className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none" />
-              <input value={modelApiKey} onChange={(event) => setModelApiKey(event.target.value)} placeholder={ui('接口密钥，本地保存')} type="password" autoComplete="new-password" className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none" />
+              <input value={modelId} onChange={(event) => setModelId(event.target.value)} placeholder={t('modelIDForExampleGpt')} className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none" />
+              <input value={modelBaseUrl} onChange={(event) => setModelBaseUrl(event.target.value)} placeholder={t('apiEndpointOptional')} className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none" />
+              <input value={modelApiKey} onChange={(event) => setModelApiKey(event.target.value)} placeholder={t('apiKeyStoredLocally')} type="password" autoComplete="new-password" className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none" />
               <select value={modelPolicy} onChange={(event) => setModelPolicy(event.target.value as ModelConfig['participation_policy'])} className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none">
-                <option value="always">{ui('始终参与')}</option>
-                <option value="mentioned">{ui('被提及时参与')}</option>
-                <option value="project_autonomous">{ui('项目模式自动参与')}</option>
+                <option value="always">{t('alwaysParticipate')}</option>
+                <option value="mentioned">{t('participateWhenMentioned')}</option>
+                <option value="project_autonomous">{t('automaticInProjectMode')}</option>
               </select>
-              <input value={modelPersona} onChange={(event) => setModelPersona(event.target.value)} placeholder={ui('角色，例如：代码评审 / 产品经理')} className="col-span-2 h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none" />
+              <input value={modelPersona} onChange={(event) => setModelPersona(event.target.value)} placeholder={t('roleForExampleCodeReviewer')} className="col-span-2 h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none" />
               {modelType === 'local' && <>
                 <select value={modelRuntime} onChange={(event) => setModelRuntime(event.target.value as 'external' | 'llama_cpp')} className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none">
-                  <option value="external">{ui('外部服务（仅连接）')}</option>
-                  <option value="llama_cpp">{ui('llama.cpp 自动启动')}</option>
+                  <option value="external">{t('externalServiceConnectOnly')}</option>
+                  <option value="llama_cpp">{t('startLlamaCppAutomatically')}</option>
                 </select>
-                <input value={modelPath} onChange={(event) => setModelPath(event.target.value)} disabled={modelRuntime !== 'llama_cpp'} placeholder={ui('GGUF 模型绝对路径')} className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none disabled:bg-[#eee7de]" />
+                <input value={modelPath} onChange={(event) => setModelPath(event.target.value)} disabled={modelRuntime !== 'llama_cpp'} placeholder={t('absoluteGGUFModelPath')} className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none disabled:bg-[#eee7de]" />
                 {modelRuntime === 'llama_cpp' && <>
-                  <input value={modelExecutable} onChange={(event) => setModelExecutable(event.target.value)} placeholder={ui('llama-server 绝对路径')} className="col-span-2 h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none" />
-                  <textarea value={modelRuntimeArgs} onChange={(event) => setModelRuntimeArgs(event.target.value)} aria-label={ui('llama.cpp 启动参数')} placeholder={ui('每行一个启动参数')} className="col-span-2 min-h-24 rounded-lg border border-[#ded6ca] bg-white px-3 py-2 text-xs outline-none" />
+                  <input value={modelExecutable} onChange={(event) => setModelExecutable(event.target.value)} placeholder={t('absoluteLlamaServerPath')} className="col-span-2 h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none" />
+                  <textarea value={modelRuntimeArgs} onChange={(event) => setModelRuntimeArgs(event.target.value)} aria-label={t('llamaCppStartupArguments')} placeholder={t('oneStartupArgumentPerLine')} className="col-span-2 min-h-24 rounded-lg border border-[#ded6ca] bg-white px-3 py-2 text-xs outline-none" />
                 </>}
               </>}
               <button onClick={submitModel} className="col-span-2 flex h-9 items-center justify-center gap-1 rounded-lg bg-[#2f2a24] px-3 text-sm font-medium text-white">
                 <Plus size={15} />
-                {editingModelName ? ui('更新并验证') : ui('添加并验证')}
+                {editingModelName ? t('updateAndVerify') : t('addAndVerify')}
               </button>
               {modelVerifyStatus && <div className="col-span-2 rounded-md bg-[#ebe3d8] px-3 py-2 text-xs text-[#6d6258]">{ui(modelVerifyStatus)}</div>}
             </div>
@@ -1523,22 +1523,22 @@ export function InspectorPanel(props: InspectorProps) {
                     <div className="min-w-0">
                       <div className="truncate text-sm font-semibold">{model.name}</div>
                       <div className="mt-1 text-xs leading-5 text-[#7a7065]">{model.type} - {model.model}</div>
-                      <div className="mt-1 text-xs leading-5 text-[#7a7065]">{model.persona || ui('未设置角色')} · {model.participation_policy === 'always' ? ui('在线待命') : ui('按需唤醒')}</div>
+                      <div className="mt-1 text-xs leading-5 text-[#7a7065]">{model.persona || t('noRoleSet')} · {model.participation_policy === 'always' ? t('online') : t('onDemand')}</div>
                     </div>
-                    <span className={model.has_api_key || model.type === 'local' ? 'rounded-md bg-[#dcebd7] px-2 py-1 text-[11px] text-[#326022]' : 'rounded-md bg-[#ebe3d8] px-2 py-1 text-[11px] text-[#7a7065]'}>{model.type === 'local' ? ui('本地接口已配置') : model.has_api_key ? ui('密钥已保存') : ui('未配置')}</span>
+                    <span className={model.has_api_key || model.type === 'local' ? 'rounded-md bg-[#dcebd7] px-2 py-1 text-[11px] text-[#326022]' : 'rounded-md bg-[#ebe3d8] px-2 py-1 text-[11px] text-[#7a7065]'}>{model.type === 'local' ? t('localEndpointConfigured') : model.has_api_key ? t('keyStored') : t('notConfigured')}</span>
                   </div>
                   <div className="mt-3 flex items-center justify-between text-xs text-[#7a7065]">
-                    <span>{model.base_url || ui('默认接口')}</span>
+                    <span>{model.base_url || t('defaultEndpoint')}</span>
                     <div className="flex gap-2">
                       <button
                         onClick={() => toggleModelParticipation(model)}
                         disabled={!model.has_api_key && model.type !== 'local'}
-                        title={!model.has_api_key && model.type !== 'local' ? ui('请先配置接口密钥') : undefined}
+                        title={!model.has_api_key && model.type !== 'local' ? t('configureAnAPIKeyFirst') : undefined}
                         className={model.participation_policy === 'always' ? 'rounded-md bg-[#2f2a24] px-2 py-1 text-white disabled:opacity-50' : 'rounded-md border border-[#d6cbbd] px-2 py-1 disabled:opacity-50'}
                       >
-                        {model.participation_policy === 'always' ? ui('在线') : ui('启用')}
+                        {model.participation_policy === 'always' ? t('online2') : t('enable')}
                       </button>
-                      <button onClick={() => editModel(model)} className="rounded-md border border-[#d6cbbd] px-2 py-1">{ui('编辑')}</button>
+                      <button onClick={() => editModel(model)} className="rounded-md border border-[#d6cbbd] px-2 py-1">{t('edit')}</button>
                       <button onClick={async () => {
                         try {
                           setModelVerifyStatus('正在验证...');
@@ -1546,13 +1546,13 @@ export function InspectorPanel(props: InspectorProps) {
                         } catch (error) {
                           setModelVerifyStatus(`验证失败：${String(error)}`);
                         }
-                      }} className="rounded-md border border-[#d6cbbd] px-2 py-1">{model.type === 'local' ? ui('启动并验证') : ui('验证')}</button>
-                      <button onClick={() => props.onDeleteModel(model)} className="rounded-md border border-[#d6cbbd] px-2 py-1 text-[#7a3b2e]">{ui('删除')}</button>
+                      }} className="rounded-md border border-[#d6cbbd] px-2 py-1">{model.type === 'local' ? t('startAndVerify') : t('verify')}</button>
+                      <button onClick={() => props.onDeleteModel(model)} className="rounded-md border border-[#d6cbbd] px-2 py-1 text-[#7a3b2e]">{t('deleteItem')}</button>
                     </div>
                   </div>
                 </div>
               ))}
-              {modelConfigs.length === 0 && <div className="rounded-lg border border-dashed border-[#d6cbbd] p-6 text-center text-sm text-[#7a7065]">{ui('暂无模型配置')}</div>}
+              {modelConfigs.length === 0 && <div className="rounded-lg border border-dashed border-[#d6cbbd] p-6 text-center text-sm text-[#7a7065]">{t('noModelConfigurations')}</div>}
             </div>
           </div>
         </div>
@@ -1615,7 +1615,7 @@ export function InspectorPanel(props: InspectorProps) {
                 onChange={(event) => props.onUpdateSettings({ [key]: event.target.value } as Partial<WorkspaceSettings>)}
                 className="h-10 w-full rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none"
               >
-                {(options as string[]).map((option) => <option key={option} value={option}>{option === 'zh-CN' ? ui('简体中文') : option === 'en-US' ? 'English' : ui(option)}</option>)}
+                {(options as string[]).map((option) => <option key={option} value={option}>{option === 'zh-CN' ? t('simplifiedChinese') : option === 'en-US' ? 'English' : ui(option)}</option>)}
               </select>
             </label>
           ))}
@@ -1623,9 +1623,9 @@ export function InspectorPanel(props: InspectorProps) {
             <div className="flex items-start gap-2">
               <Archive size={16} className="mt-0.5 shrink-0 text-[#6b523c]" />
               <div>
-                <div className="text-xs font-semibold text-[#574a3e]">{ui('脱敏诊断包')}</div>
+                <div className="text-xs font-semibold text-[#574a3e]">{t('redactedDiagnosticBundle')}</div>
                 <p className="mt-1 text-xs leading-5 text-[#7a7065]">
-                  {ui('导出 schema、运行指标、哈希 trace 引用与二次脱敏日志；不包含提示正文、文件内容、查询串、凭据、模型/provider 名称、原始 Run ID 或工具参数。')}
+                  {t('exportSchemaRunMetricsHashed')}
                 </p>
               </div>
             </div>
@@ -1634,7 +1634,7 @@ export function InspectorPanel(props: InspectorProps) {
               onClick={() => void downloadDiagnosticBundle()}
               className="mt-3 rounded-md bg-[#2f2a24] px-3 py-1.5 text-xs font-medium text-white"
             >
-              {ui('导出脱敏诊断包')}
+              {t('exportRedactedDiagnosticBundle')}
             </button>
             {diagnosticStatus && (
               <div role="status" className="mt-2 text-xs text-[#6d6258]">{diagnosticStatus}</div>
