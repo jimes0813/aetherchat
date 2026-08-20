@@ -515,7 +515,7 @@ function App() {
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-[#e9e1d6] text-[#2f2a24]">
-      <a href="#aether-main-content" className="aether-skip-link">{ui('跳到主要内容')}</a>
+      <a href="#aether-main-content" className="aether-skip-link">{t('skipToMain')}</a>
       {firstRunOpen && (
         <FirstRunWizard
           models={modelConfigs}
@@ -582,16 +582,16 @@ function App() {
           <div className="aether-toolbar">
             <MainViewTabs value={mainView} onChange={(view) => setMainView(view)} />
             <div className="h-4 w-px shrink-0 bg-[#d8cdbf]" aria-hidden />
-            <span className="font-medium text-[#5f554d]">{ui('模式:')}</span>
+            <span className="font-medium text-[#5f554d]">{t('modeLabel')}</span>
             {(['casual', 'roundtable', 'project'] as const).map(m => (
               <button 
                 key={m}
                 onClick={() => updateSettings({ mode: MODE_TO_SETTING[m] })}
-                title={m === 'project' ? ui('项目模式会增加模型调用：并行执行、独立核验、最终综合。') : undefined}
+                title={m === 'project' ? t('projectModeHint') : undefined}
                 aria-pressed={currentMode === m}
                 className={`h-6 rounded px-1.5 text-[11px] ${currentMode === m ? 'bg-[#8d5f35] text-white' : 'text-[#5f554d] hover:bg-[#efe6db]'}`}
               >
-                {m === 'casual' ? ui('休闲') : m === 'roundtable' ? ui('圆桌') : ui('项目')}
+                {m === 'casual' ? t('modeCasual') : m === 'roundtable' ? t('modeRoundtable') : t('modeProject')}
               </button>
             ))}
             <div className="hidden h-4 w-px shrink-0 bg-[#d8cdbf] lg:block" aria-hidden />

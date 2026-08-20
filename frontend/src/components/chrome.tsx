@@ -112,14 +112,14 @@ interface MainViewTabsProps {
 }
 
 export function MainViewTabs({ value, onChange }: MainViewTabsProps) {
-  const { t, ui } = useI18n();
+  const { t } = useI18n();
   const tabs = [
     { id: 'chat' as const, label: t('currentChat'), icon: MessageSquare },
     { id: 'history' as const, label: t('chatHistory'), icon: Archive },
     { id: 'tasks' as const, label: t('taskRecords'), icon: ListTodo },
   ];
   return (
-    <nav role="tablist" aria-label={ui('会话视图')} className="flex items-center gap-0.5">
+    <nav role="tablist" aria-label={t('sessionViews')} className="flex items-center gap-0.5">
       {tabs.map((tab) => {
         const Icon = tab.icon;
         const selected = tab.id === value;
@@ -373,7 +373,7 @@ export function WorkspaceSidebar({
   onSelectConversation,
   onDeleteConversation,
 }: WorkspaceSidebarProps) {
-  const { ui } = useI18n();
+  const { t } = useI18n();
   const [projectDraft, setProjectDraft] = useState<string | null>(null);
   const [showDiagnostic, setShowDiagnostic] = useState(false);
   const { visible, diagnostic } = partitionConversations(conversations);
@@ -398,11 +398,11 @@ export function WorkspaceSidebar({
         <button
           type="button"
           onClick={onNewConversation}
-          aria-label={ui('新建会话')}
+          aria-label={t('newConversation')}
           className={rowClass(false)}
         >
           <SquarePen size={14} className="shrink-0 text-[#6d5744]" />
-          {ui('新建对话')}
+          {t('newChat')}
         </button>
         <button
           type="button"
@@ -410,11 +410,11 @@ export function WorkspaceSidebar({
           className={rowClass(false)}
         >
           <FolderPlus size={14} className="shrink-0 text-[#6d5744]" />
-          {ui('新建项目')}
+          {t('newProject')}
         </button>
         <button type="button" onClick={onOpenSearch} className={rowClass(false)}>
           <Search size={14} className="shrink-0 text-[#6d5744]" />
-          {ui('搜索')}
+          {t('search')}
         </button>
       </div>
 
@@ -439,8 +439,8 @@ export function WorkspaceSidebar({
             onBlur={() => {
               if (!projectDraft?.trim()) setProjectDraft(null);
             }}
-            placeholder={ui('项目名称')}
-            aria-label={ui('项目名称')}
+            placeholder={t('projectName')}
+            aria-label={t('projectName')}
             className="h-8 w-full rounded-md border border-[#d8cfc3] bg-white px-2 text-[13px] outline-none"
           />
         </form>
@@ -448,7 +448,7 @@ export function WorkspaceSidebar({
 
       {projects.length > 0 && (
         <div className="mt-3 min-h-0">
-          <div className="px-3 pb-1 text-[11px] text-[#8b8176]">{ui('项目')}</div>
+          <div className="px-3 pb-1 text-[11px] text-[#8b8176]">{t('projects')}</div>
           <div className="px-1.5">
             {projects.map((project) => (
               <button
@@ -465,7 +465,7 @@ export function WorkspaceSidebar({
         </div>
       )}
 
-      <div className="mt-3 px-3 pb-1 text-[11px] text-[#8b8176]">{ui('对话')}</div>
+      <div className="mt-3 px-3 pb-1 text-[11px] text-[#8b8176]">{t('chatsSection')}</div>
       <div className="min-h-0 flex-1 overflow-auto px-1.5 pb-2">
         {listed.map((conversation) => (
           <div key={conversation.id} className="group relative">
@@ -480,8 +480,8 @@ export function WorkspaceSidebar({
             </button>
             <button
               type="button"
-              aria-label={ui('删除会话 {title}', { title: conversation.title })}
-              title={ui('删除会话')}
+              aria-label={t('deleteConversationNamed', { title: conversation.title })}
+              title={t('deleteConversation')}
               onClick={() => onDeleteConversation(conversation.id)}
               className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded text-[#7b5a42] opacity-0 transition hover:text-[#962f25] focus:opacity-100 group-hover:opacity-100"
             >
@@ -496,8 +496,8 @@ export function WorkspaceSidebar({
             className="mt-2 w-full rounded-md px-2 py-1 text-left text-[11px] text-[#8b8176] hover:bg-[#e8ddd0]"
           >
             {showDiagnostic
-              ? ui('隐藏诊断会话')
-              : ui('显示诊断会话（{count}）', { count: diagnostic.length })}
+              ? t('hideDiagnostic')
+              : t('showDiagnostic', { count: diagnostic.length })}
           </button>
         )}
       </div>
@@ -520,32 +520,32 @@ export function CommandHeader({
   budgetRemaining,
   onOpenSearch,
 }: CommandHeaderProps) {
-  const { ui } = useI18n();
+  const { t } = useI18n();
   return (
     <header className="flex h-9 shrink-0 items-center gap-2 border-b border-[#e7dfd3] bg-[#fbfaf7] px-3">
       <div className="min-w-0">
         <div className="truncate text-xs font-semibold">
           <span>AetherChat</span>
-          <span className="hidden sm:inline"> · {ui('中文协作工作台')}</span>
+          <span className="hidden sm:inline"> · {t('collaborationWorkspace')}</span>
         </div>
       </div>
       <button onClick={onOpenSearch} className="mx-auto hidden h-7 min-w-[12rem] max-w-md flex-1 items-center gap-1.5 rounded-md border border-[#d8cfc3] bg-white px-2 text-left text-[11px] text-[#8b8176] lg:flex">
         <Search size={12} />
-        {ui('Ctrl+K 搜索命令、文件、模型或任务')}
+        {t('searchShortcutHint')}
       </button>
       <div className="ml-auto flex items-center gap-1.5">
         <div className="hidden items-center gap-1 rounded-md border border-[#e1d9cd] bg-white px-1.5 py-0.5 text-[11px] text-[#6d6258] sm:flex">
           <Users size={12} />
-          {ui('{active}/{total} 个模型已配置', { active: activeProviderCount, total: providerCount })}
+          {t('modelsConfigured', { active: activeProviderCount, total: providerCount })}
         </div>
         <div className="flex items-center gap-1.5 rounded-md border border-[#e1d9cd] bg-white px-1.5 py-0.5 text-[11px] text-[#7a7065]">
           <CircleDollarSign size={12} className="text-[#8d5f35]" />
-          <span>{ui('会话额度')}</span>
+          <span>{t('sessionAllowance')}</span>
           <span className="tabular-nums">${budgetRemaining.toFixed(2)}</span>
         </div>
         <div className="flex items-center gap-1 rounded-md bg-[#2f2a24] px-1.5 py-0.5 text-[11px] font-medium text-white">
           <Activity size={12} />
-          {connection === 'online' ? ui('已连接') : connection === 'connecting' ? ui('连接中') : ui('离线')}
+          {connection === 'online' ? t('connected') : connection === 'connecting' ? t('connecting') : t('offline')}
         </div>
       </div>
     </header>
@@ -558,7 +558,7 @@ interface CommandPaletteProps {
 }
 
 export function CommandPalette({ items, onClose }: CommandPaletteProps) {
-  const { ui } = useI18n();
+  const { t } = useI18n();
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const dialogFocus = useDialogFocus<HTMLElement>(true, onClose);
@@ -584,7 +584,7 @@ export function CommandPalette({ items, onClose }: CommandPaletteProps) {
         ref={dialogFocus.containerRef}
         role="dialog"
         aria-modal="true"
-        aria-label={ui('搜索命令、会话、任务、工件或模型')}
+        aria-label={t('commandPaletteLabel')}
         className="w-full max-w-2xl overflow-hidden rounded-xl border border-[#d8cfc3] bg-[#fbfaf7] shadow-2xl"
         onKeyDown={dialogFocus.onKeyDown}
         onMouseDown={(event) => event.stopPropagation()}
@@ -615,7 +615,7 @@ export function CommandPalette({ items, onClose }: CommandPaletteProps) {
                 onClose();
               }
             }}
-            placeholder={ui('输入关键词，例如：任务、README、模型')}
+            placeholder={t('commandPlaceholder')}
             className="h-12 min-w-0 flex-1 bg-transparent text-sm outline-none"
           />
           <kbd className="rounded border border-[#d8cfc3] bg-[#eee7de] px-2 py-1 text-[10px] text-[#7a7065]">ESC</kbd>
@@ -633,7 +633,7 @@ export function CommandPalette({ items, onClose }: CommandPaletteProps) {
             </button>
           ))}
           {filteredItems.length === 0 && (
-            <div className="px-3 py-8 text-center text-sm text-[#8b8176]">{ui('没有匹配结果')}</div>
+            <div className="px-3 py-8 text-center text-sm text-[#8b8176]">{t('noMatches')}</div>
           )}
         </div>
       </section>
@@ -654,41 +654,41 @@ interface DesktopStatusBarProps {
 }
 
 export function DesktopStatusBar({ connection, budgetRemaining, runQueuePosition, onCancelQueuedRun, uiLocale, sandbox, tokenStatus, onRefreshToken, onToggleLanguage }: DesktopStatusBarProps) {
-  const { t, ui } = useI18n();
+  const { t } = useI18n();
   return (
     <>
       <DegradedInstallBanner />
     <footer className="flex h-7 items-center gap-4 border-t border-[#cfc4b7] bg-[#2f2a24] px-3 text-[11px] text-[#e7dfd3]">
-      <span className="flex items-center gap-1"><FolderOpen size={12} /> {ui('本地工作区')}</span>
+      <span className="flex items-center gap-1"><FolderOpen size={12} /> {t('localWorkspace')}</span>
       <span>{t('sandbox', { value: sandbox })}</span>
       <span>WS {connection === 'online' ? 'connected' : connection === 'connecting' ? 'connecting' : 'offline'}</span>
       {runQueuePosition !== undefined && (
         <button
           type="button"
           onClick={onCancelQueuedRun}
-          aria-label={ui('取消排队运行')}
-          title={ui('取消排队运行')}
+          aria-label={t('cancelQueuedRun')}
+          title={t('cancelQueuedRun')}
           className="rounded bg-[#6f5843] px-1.5 py-0.5 text-[10px] text-white"
         >
-          {runQueuePosition ? ui('运行排队 #{value} · 取消', { value: runQueuePosition }) : ui('运行排队 · 取消')}
+          {runQueuePosition ? t('runQueuedCancelN', { value: runQueuePosition }) : t('runQueuedCancel')}
         </button>
       )}
       <span>{t('budget', { value: budgetRemaining.toFixed(2) })}</span>
       {window.aetherRuntime?.chromiumSandbox === 'off' && (
         <span
           className="rounded bg-[#8a4036] px-1.5 py-0.5 text-[10px] text-white"
-          title={ui('用户解包安装未启用 setuid chrome-sandbox')}
+          title={t('unpackedNoSetuid')}
         >
-          {ui('降级：无 Chromium 沙箱')}
+          {t('degradedNoSandbox')}
           {window.aetherRuntime?.installChannel ? ` · ${window.aetherRuntime.installChannel}` : ''}
         </span>
       )}
-      <button onClick={onRefreshToken} title={ui('刷新本地 WebSocket 授权，不显示或复制令牌')} className="rounded bg-[#8d5f35] px-1.5 py-0.5 text-[10px] text-white">{tokenStatus}</button>
-      <button onClick={onToggleLanguage} title={t('switchUiLanguage')} aria-label={t('switchUiLanguage')} className="rounded bg-[#8d5f35] px-1.5 py-0.5 text-[10px] text-white">{uiLocale === 'zh-CN' ? 'EN' : ui('中文')}</button>
+      <button onClick={onRefreshToken} title={t('refreshWsAuth')} className="rounded bg-[#8d5f35] px-1.5 py-0.5 text-[10px] text-white">{tokenStatus}</button>
+      <button onClick={onToggleLanguage} title={t('switchUiLanguage')} aria-label={t('switchUiLanguage')} className="rounded bg-[#8d5f35] px-1.5 py-0.5 text-[10px] text-white">{uiLocale === 'zh-CN' ? 'EN' : t('chinese')}</button>
       {window.aetherRuntime?.quickEntryShortcut && (
-        <span>{ui('{shortcut} 快速输入', { shortcut: window.aetherRuntime.quickEntryShortcut })}</span>
+        <span>{t('quickEntry', { shortcut: window.aetherRuntime.quickEntryShortcut })}</span>
       )}
-      <span className="ml-auto">AetherChat Desktop · {ui('多模型 Agent 工作台')}</span>
+      <span className="ml-auto">AetherChat Desktop · {t('multiModelWorkbench')}</span>
     </footer>
     </>
   );

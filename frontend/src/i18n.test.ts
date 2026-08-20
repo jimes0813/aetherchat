@@ -78,6 +78,11 @@ describe('i18n: en-US 词条表关键条目存在性', () => {
     ['toolCatalog', 'Tool catalog'],
     ['backendApi', 'Backend API'],
     ['modelConnectionCheck', 'Model connection check'],
+    ['skipToMain', 'Skip to main content'],
+    ['newChat', 'New chat'],
+    ['sessionAllowance', 'Session allowance'],
+    ['connected', 'Connected'],
+    ['commandPaletteLabel', 'Search commands, conversations, tasks, artifacts, or models'],
   ];
 
   it.each(keyEntries)('en-US 词条 %s 存在且正确', (key, expected) => {
