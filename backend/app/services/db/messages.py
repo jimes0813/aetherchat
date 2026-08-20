@@ -13,10 +13,15 @@ from ._shared import (
 class MessagesMixin:
     def save_message(self, message: Message, *, mode: str = "project") -> None:
         session_id = str(message.session_id)
-        self.ensure_session(session_id, mode=mode)
         created_at = message.created_at.isoformat()
         summary = " ".join(message.content.strip().split())[:180]
         with self._lock, self._connect() as connection:
+            self._ensure_session_in_connection(
+                connection,
+                session_id,
+                _utc_now(),
+                mode=mode,
+            )
             inserted = connection.execute(
                 """
                 INSERT OR IGNORE INTO messages

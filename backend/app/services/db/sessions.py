@@ -136,12 +136,18 @@ class SessionsMixin:
         return row is not None
 
     @staticmethod
-    def _ensure_session_in_connection(connection: sqlite3.Connection, session_id: str, now: str) -> None:
+    def _ensure_session_in_connection(
+        connection: sqlite3.Connection,
+        session_id: str,
+        now: str,
+        *,
+        mode: str = "project",
+    ) -> None:
         connection.execute(
             """
             INSERT INTO sessions (id, title, summary, mode, project_id, created_at, updated_at)
-            VALUES (?, '新会话', '', 'project', NULL, ?, ?)
+            VALUES (?, '新会话', '', ?, NULL, ?, ?)
             ON CONFLICT(id) DO NOTHING
             """,
-            (session_id, now, now),
+            (session_id, mode, now, now),
         )

@@ -60,7 +60,12 @@ class ConnectionMixin:
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute("PRAGMA busy_timeout = 15000")
-            connection.execute("PRAGMA journal_mode = WAL")
+            # WAL is persistent and is established during schema initialization.
+            # Reissuing journal_mode for every short-lived connection forces
+            # unnecessary locking, especially on Windows. synchronous is
+            # connection-local, so retain the intended WAL/NORMAL durability
+            # policy here instead.
+            connection.execute("PRAGMA synchronous = NORMAL")
             harden_private_file(self.path)
             harden_private_file(self.path.with_name(f"{self.path.name}-wal"))
             harden_private_file(self.path.with_name(f"{self.path.name}-shm"))
