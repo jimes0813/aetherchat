@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -51,16 +53,21 @@ class ConnectionMixin:
             for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
         }
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.path, timeout=15)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA busy_timeout = 15000")
-        connection.execute("PRAGMA journal_mode = WAL")
-        harden_private_file(self.path)
-        harden_private_file(self.path.with_name(f"{self.path.name}-wal"))
-        harden_private_file(self.path.with_name(f"{self.path.name}-shm"))
-        return connection
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA busy_timeout = 15000")
+            connection.execute("PRAGMA journal_mode = WAL")
+            harden_private_file(self.path)
+            harden_private_file(self.path.with_name(f"{self.path.name}-wal"))
+            harden_private_file(self.path.with_name(f"{self.path.name}-shm"))
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def readiness_probe(self) -> dict[str, Any]:
         """Run a read-only, low-cost probe for the core chat database."""

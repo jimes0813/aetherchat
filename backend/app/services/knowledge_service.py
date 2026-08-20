@@ -12,7 +12,8 @@ import shutil
 import sqlite3
 import zipfile
 from array import array
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -82,12 +83,17 @@ class KnowledgeService:
         self.base_path.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.db_path, timeout=15)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout = 15000")
-        harden_private_file(self.db_path)
-        return connection
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA busy_timeout = 15000")
+            harden_private_file(self.db_path)
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def _initialize(self) -> None:
         with self._lock, self._connect() as connection:

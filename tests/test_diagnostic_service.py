@@ -132,7 +132,8 @@ def test_structured_log_file_is_private_and_uses_json_lines(tmp_path: Path) -> N
         logger.removeHandler(handler)
         handler.close()
 
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    if sys.platform != "win32":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["event"] == "test_event"
     assert "never-write-this" not in json.dumps(payload)

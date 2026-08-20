@@ -1,6 +1,6 @@
 import os
+import sqlite3
 import stat
-from pathlib import Path
 
 import pytest
 from app.data_dir import default_data_dir, packaged_legacy_data_dir, xdg_data_dir
@@ -43,8 +43,23 @@ def test_default_data_dir_uses_xdg_when_only_share_sqlite_exists(tmp_path):
 
 def test_default_data_dir_new_install_uses_xdg(tmp_path):
     home = tmp_path / "home"
-    expected = Path(home / ".local" / "share") / "aetherchat"
+    expected = xdg_data_dir(env={}, home=home)
     assert default_data_dir(env={}, home=home) == expected
+
+
+def test_database_connection_contexts_close_file_handles(tmp_path):
+    database = ChatDatabase(tmp_path / "chat.sqlite3")
+    knowledge = KnowledgeService(tmp_path / "knowledge-data")
+
+    with database._connect() as chat_connection:
+        chat_connection.execute("SELECT 1").fetchone()
+    with knowledge._connect() as knowledge_connection:
+        knowledge_connection.execute("SELECT 1").fetchone()
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        chat_connection.execute("SELECT 1")
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        knowledge_connection.execute("SELECT 1")
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Unix permission contract")
