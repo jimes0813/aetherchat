@@ -156,7 +156,7 @@ export function ConversationHistory({
   onContinue,
   onDelete,
 }: ConversationHistoryProps) {
-  const { ui } = useI18n();
+  const { t } = useI18n();
   const [query, setQuery] = useState('');
   const [showDiagnostic, setShowDiagnostic] = useState(false);
   const { visible, diagnostic } = partitionConversations(conversations);
@@ -196,22 +196,22 @@ export function ConversationHistory({
       <div className="mx-auto max-w-4xl">
         <div className="mb-4 flex items-baseline justify-between gap-4">
           <div>
-            <h2 className="text-base font-semibold">{ui('历史聊天')}</h2>
-            <p className="mt-1 text-xs text-[#7a7065]">{ui('选择会话后恢复消息、任务和工作区状态')}</p>
+            <h2 className="text-base font-semibold">{t('chatHistory')}</h2>
+            <p className="mt-1 text-xs text-[#7a7065]">{t('historyRestoreHint')}</p>
           </div>
-          <span className="text-xs text-[#8b8176]">{ui('{count} 个会话', { count: listed.length })}</span>
+          <span className="text-xs text-[#8b8176]">{t('conversationCount', { count: listed.length })}</span>
         </div>
         <label data-aether-search-shell className="mb-4 flex h-10 items-center gap-2 rounded-lg border border-[#d8cfc3] bg-white px-3">
           <Search size={15} className="text-[#776b60]" />
-          <span className="sr-only">{ui('搜索全部聊天记录')}</span>
+          <span className="sr-only">{t('searchAllChats')}</span>
           <input
             data-aether-search
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder={ui('搜索全部聊天内容、会话标题或 Agent')}
+            placeholder={t('searchAllChatsPlaceholder')}
             className="min-w-0 flex-1 bg-transparent text-sm outline-none"
           />
-          {searching && <span className="text-[11px] text-[#776b60]">{ui('搜索中')}</span>}
+          {searching && <span className="text-[11px] text-[#776b60]">{t('searching')}</span>}
         </label>
         {query.trim() && (
           <div className="mb-5 divide-y divide-[#e3dbd0] border-y border-[#e3dbd0]" data-testid="chat-search-results">
@@ -231,7 +231,7 @@ export function ConversationHistory({
               </button>
             ))}
             {!searching && !results.length && (
-              <div className="py-10 text-center text-sm text-[#8b8176]">{ui('没有匹配的聊天记录')}</div>
+              <div className="py-10 text-center text-sm text-[#8b8176]">{t('noMatchingChats')}</div>
             )}
           </div>
         )}
@@ -247,7 +247,7 @@ export function ConversationHistory({
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="truncate text-sm font-medium">{conversation.title}</span>
-                    {conversation.id === currentSessionId && <span className="shrink-0 rounded bg-[#e7d8c8] px-1.5 py-0.5 text-[10px] text-[#6d4828]">{ui('当前')}</span>}
+                    {conversation.id === currentSessionId && <span className="shrink-0 rounded bg-[#e7d8c8] px-1.5 py-0.5 text-[10px] text-[#6d4828]">{t('current')}</span>}
                     {conversation.projectId && (
                       <span className="shrink-0 rounded bg-[#ebe4da] px-1.5 py-0.5 text-[10px] text-[#5d4a3a]">
                         {projectNames?.[conversation.projectId] || conversation.projectId}
@@ -256,9 +256,9 @@ export function ConversationHistory({
                   </div>
                   <p className="mt-1 line-clamp-2 text-xs leading-5 text-[#6f655b]">{conversation.summary}</p>
                   <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-[#93887d]">
-                    <span>{ui('{count} 条消息', { count: conversation.messageCount ?? 0 })}</span>
-                    <span>{ui('{count} 个任务', { count: conversation.taskCount ?? 0 })}</span>
-                    <span>{ui('{count} 个进行中', { count: conversation.openTaskCount ?? 0 })}</span>
+                    <span>{t('messageCount', { count: conversation.messageCount ?? 0 })}</span>
+                    <span>{t('taskCount', { count: conversation.taskCount ?? 0 })}</span>
+                    <span>{t('openTaskCount', { count: conversation.openTaskCount ?? 0 })}</span>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 self-center text-xs text-[#8b8176]">
@@ -268,8 +268,8 @@ export function ConversationHistory({
               </button>
               <button
                 type="button"
-                aria-label={ui('删除会话 {title}', { title: conversation.title })}
-                title={ui('删除会话')}
+                aria-label={t('deleteConversationNamed', { title: conversation.title })}
+                title={t('deleteConversation')}
                 onClick={() => onDelete(conversation.id)}
                 className="my-3 mr-2 flex w-9 items-center justify-center rounded-md text-[#815b43] hover:bg-[#f0dfd5] hover:text-[#8f2f25]"
               >
@@ -277,7 +277,7 @@ export function ConversationHistory({
               </button>
             </div>
           ))}
-          {!listed.length && <div className="py-12 text-center text-sm text-[#8b8176]">{ui('暂无历史会话')}</div>}
+          {!listed.length && <div className="py-12 text-center text-sm text-[#8b8176]">{t('noChatHistory')}</div>}
         </div>
         )}
         {!query.trim() && diagnostic.length > 0 && (
@@ -287,8 +287,8 @@ export function ConversationHistory({
             className="mt-3 text-xs text-[#8b8176] hover:text-[#5d3b20]"
           >
             {showDiagnostic
-              ? ui('隐藏诊断会话')
-              : ui('显示诊断会话（{count}）', { count: diagnostic.length })}
+              ? t('hideDiagnostic')
+              : t('showDiagnostic', { count: diagnostic.length })}
           </button>
         )}
       </div>
@@ -302,14 +302,14 @@ interface TaskHistoryProps {
 }
 
 export function TaskHistory({ tasks, events }: TaskHistoryProps) {
-  const { ui } = useI18n();
+  const { t, ui } = useI18n();
   return (
     <div className="min-h-0 flex-1 overflow-auto bg-[#fbfaf7] px-5 py-4">
       <div className="mx-auto grid max-w-5xl gap-6 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
         <section>
           <div className="mb-3 flex items-baseline justify-between">
-            <h2 className="text-base font-semibold">{ui('当前任务')}</h2>
-            <span className="text-xs text-[#8b8176]">{ui('{count} 项', { count: tasks.length })}</span>
+            <h2 className="text-base font-semibold">{t('currentTasks')}</h2>
+            <span className="text-xs text-[#8b8176]">{t('itemCount', { count: tasks.length })}</span>
           </div>
           <div className="divide-y divide-[#e3dbd0] border-y border-[#e3dbd0]">
             {tasks.map((task) => (
@@ -319,24 +319,24 @@ export function TaskHistory({ tasks, events }: TaskHistoryProps) {
                   <span className="shrink-0 rounded bg-[#ece4d9] px-2 py-0.5 text-[11px] text-[#665a4e]">{ui(taskStatusLabel[task.status])}</span>
                 </div>
                 {task.description && <p className="mt-1 text-xs leading-5 text-[#74695e]">{task.description}</p>}
-                {task.claimed_by && <div className="mt-2 text-[11px] text-[#93887d]">{ui('执行者：{name}', { name: task.claimed_by })}</div>}
+                {task.claimed_by && <div className="mt-2 text-[11px] text-[#93887d]">{t('ownerNamed', { name: task.claimed_by })}</div>}
                 {!!task.depends_on?.length && (
                   <div className="mt-1 text-[11px] text-[#93887d]">
-                    {ui('依赖 {count} 项', { count: task.depends_on.length })}
+                    {t('dependencyCount', { count: task.depends_on.length })}
                     {task.blocked_by?.length
-                      ? ui(' · 仍阻塞 {count} 项', { count: task.blocked_by.length })
-                      : ui(' · 已满足')}
+                      ? t('stillBlocked', { count: task.blocked_by.length })
+                      : t('dependenciesMet')}
                   </div>
                 )}
               </div>
             ))}
-            {!tasks.length && <div className="py-10 text-center text-sm text-[#8b8176]">{ui('当前会话暂无任务')}</div>}
+            {!tasks.length && <div className="py-10 text-center text-sm text-[#8b8176]">{t('noTasksInChat')}</div>}
           </div>
         </section>
         <section>
           <div className="mb-3 flex items-baseline justify-between">
-            <h2 className="text-base font-semibold">{ui('变更记录')}</h2>
-            <span className="text-xs text-[#8b8176]">{ui('{count} 条', { count: events.length })}</span>
+            <h2 className="text-base font-semibold">{t('changeLog')}</h2>
+            <span className="text-xs text-[#8b8176]">{t('eventCount', { count: events.length })}</span>
           </div>
           <div className="border-l border-[#cdbfae] pl-4">
             {events.map((event) => (
@@ -347,12 +347,12 @@ export function TaskHistory({ tasks, events }: TaskHistoryProps) {
                   <time className="shrink-0 text-[11px] text-[#93887d]">{formatDateTime(event.created_at)}</time>
                 </div>
                 <p className="mt-1 text-xs text-[#74695e]">
-                  {event.action === 'created' ? ui('创建任务') : ui('更新任务')} · {ui(taskStatusLabel[event.task.status])}
+                  {event.action === 'created' ? t('taskCreated') : t('taskUpdated')} · {ui(taskStatusLabel[event.task.status])}
                   {event.task.claimed_by ? ` · ${event.task.claimed_by}` : ''}
                 </p>
               </div>
             ))}
-            {!events.length && <div className="py-10 text-center text-sm text-[#8b8176]">{ui('暂无任务变更记录')}</div>}
+            {!events.length && <div className="py-10 text-center text-sm text-[#8b8176]">{t('noTaskChanges')}</div>}
           </div>
         </section>
       </div>

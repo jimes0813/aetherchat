@@ -83,6 +83,10 @@ describe('i18n: en-US 词条表关键条目存在性', () => {
     ['sessionAllowance', 'Session allowance'],
     ['connected', 'Connected'],
     ['commandPaletteLabel', 'Search commands, conversations, tasks, artifacts, or models'],
+    ['chatHistory', 'Chat history'],
+    ['currentTasks', 'Current tasks'],
+    ['openPanel', 'Open the {panel} panel'],
+    ['startVoiceChat', 'Start voice conversation'],
   ];
 
   it.each(keyEntries)('en-US 词条 %s 存在且正确', (key, expected) => {

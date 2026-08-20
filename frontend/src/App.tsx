@@ -83,7 +83,7 @@ function App() {
     updateSettings,
     selectConversation,
   } = useWorkbenchSession();
-  const { locale, t, ui } = useI18n();
+  const { locale, t } = useI18n();
   const approvalActivity = useRef<Record<string, { model: string; toolName: string }>>({});
   const [authToken, setAuthToken] = useState('');
   const [authReady, setAuthReady] = useState(false);
@@ -488,13 +488,12 @@ function App() {
     tasks,
     artifacts,
     modelConfigs,
-    ui,
     t,
     setActivePanel,
     selectConversation,
     setSelectedArtifactPath,
     startVoice: () => { void voice.start(); },
-  }), [artifacts, conversations, modelConfigs, selectConversation, setActivePanel, setSelectedArtifactPath, tasks, t, ui, voice]);
+  }), [artifacts, conversations, modelConfigs, selectConversation, setActivePanel, setSelectedArtifactPath, tasks, t, voice]);
 
   const {
     inspectGeneratedFile,
