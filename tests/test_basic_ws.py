@@ -20,7 +20,6 @@ from app.services.orchestrator import SessionOrchestrator  # noqa: E402
 from app.services.run_dispatcher import run_dispatcher  # noqa: E402
 from app.services.structured_logging import diagnostic_ref  # noqa: E402
 
-
 # Split from tests/test_basic.py for domain isolation.
 # Shared env/client fixtures live in tests/conftest.py.
 
@@ -346,6 +345,13 @@ def test_websocket_v1_requires_explicit_project_execution_strategy(client, monke
         assert observed["request_id"] == "v1-planned-test"
         assert observed["session_id"] == session_id
         assert observed["run_id"] == acknowledgement["run_id"]
+        completed = websocket.receive_json()
+        assert completed["type"] == "agent_run_update"
+        assert completed["sequence"] == 5
+        assert completed["run_id"] == acknowledgement["run_id"]
+        # The contract-only fixture emits no model message, so finishing the
+        # run correctly records a terminal failure instead of false success.
+        assert completed["agent_run"]["status"] == "failed"
         trace_context = next(
             event
             for event in chat_database.get_agent_run(
@@ -361,7 +367,8 @@ def test_websocket_v1_requires_explicit_project_execution_strategy(client, monke
             acknowledgement["event_id"],
             update["event_id"],
             observed["event_id"],
-        }) == 4
+            completed["event_id"],
+        }) == 5
 
 
 def test_websocket_v1_replays_persisted_stream_cursor_across_connections(client):

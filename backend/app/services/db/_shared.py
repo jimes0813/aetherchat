@@ -4,6 +4,8 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ...data_dir import ensure_private_data_dir
+
 CURRENT_SCHEMA_VERSION = 4
 EVENT_STREAM_RETENTION_LIMIT = 4096
 READINESS_TABLES = (
@@ -39,5 +41,5 @@ def _database_path() -> Path:
         root = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "AetherChat"
     else:
         root = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "aetherchat"
-    root.mkdir(parents=True, exist_ok=True)
+    root = ensure_private_data_dir(root)
     return root / "aetherchat.sqlite3"

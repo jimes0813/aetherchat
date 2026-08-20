@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -41,6 +42,53 @@ def _create_job(database: ChatDatabase, session_id: str) -> dict:
         max_budget_usd=1.0,
         scheduled_for=datetime.now(UTC).isoformat(),
     )
+
+
+@pytest.mark.asyncio
+async def test_manual_schedule_database_work_runs_off_event_loop(tmp_path, monkeypatch):
+    database = ChatDatabase(tmp_path / "manual-schedule.sqlite3")
+    session_id = str(uuid4())
+    database.create_session(session_id, "手动调度测试", "project")
+    schedule = database.create_automation_schedule(
+        session_id=session_id,
+        name="立即执行",
+        prompt="生成只读摘要",
+        mode="project",
+        targets=["all"],
+        trigger_type="once",
+        interval_minutes=None,
+        timezone="UTC",
+        next_run_at=datetime.now(UTC).isoformat(),
+        enabled=True,
+        max_budget_usd=1.0,
+        permission_snapshot={
+            "policy_version": 1,
+            "mode": "read_only",
+            "allowed_tools": [],
+        },
+    )
+    event_loop_thread = threading.get_ident()
+    database_threads: list[int] = []
+
+    for name in (
+        "get_automation_schedule",
+        "create_background_job",
+        "update_automation_schedule",
+    ):
+        original = getattr(database, name)
+
+        def recorded(*args, _original=original, **kwargs):
+            database_threads.append(threading.get_ident())
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(database, name, recorded)
+
+    service = AutomationService(database, AgentRunService(database))
+    job = await service.enqueue_schedule_now_async(schedule["id"], session_id)
+
+    assert job["status"] == "queued"
+    assert database_threads
+    assert all(thread_id != event_loop_thread for thread_id in database_threads)
 
 
 @pytest.mark.asyncio

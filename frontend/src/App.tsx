@@ -1,12 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Composer } from './components/Composer';
 import { VoiceModeOverlay } from './components/VoiceModeOverlay';
-import { SettingsPage } from './components/SettingsPage';
 import { isSettingsTab } from './components/settingsTabs';
 import { ModelWorkingStrip, type AgentActivityItem } from './components/ModelWorkingStrip';
 import { UnifiedFeed } from './components/UnifiedFeed';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import { InspectorPanel } from './components/InspectorPanel';
 import { FirstRunWizard, shouldShowFirstRunWizard } from './components/FirstRunWizard';
 import {
   ActivityRail,
@@ -42,6 +40,16 @@ import { useVoiceSession } from './hooks/useVoiceSession';
 import type { LaunchIntent } from './types/desktop';
 import type { AgentRun, ApprovalRequest, GitRepository, Message, TaskEvent } from './types';
 import './types/desktop';
+
+const SettingsPage = lazy(async () => {
+  const module = await import('./components/SettingsPage');
+  return { default: module.SettingsPage };
+});
+
+const InspectorPanel = lazy(async () => {
+  const module = await import('./components/InspectorPanel');
+  return { default: module.InspectorPanel };
+});
 
 function App() {
   const {
@@ -666,57 +674,63 @@ function App() {
       </main>
 
       {isSettingsTab(activePanel) && (
-        <SettingsPage
-          activeTab={activePanel}
-          onChangeTab={setActivePanel}
-          onBackToChat={() => setActivePanel(null)}
-        >
-          <InspectorPanel
-            hideChrome
-            apiBase={API_BASE}
-            sessionId={sessionId}
-            selectedArtifactPath={selectedArtifactPath}
-            onSelectArtifact={setSelectedArtifactPath}
-            onCreateTask={createTask}
-            onPatchTask={patchTask}
-            onCreateMerge={createMerge}
-            onVoteMerge={voteMerge}
-            onReloadArtifacts={loadArtifacts}
-            onUpdateSettings={updateSettings}
-            onCreateTool={createTool}
-            onDeleteTool={deleteTool}
-            onInvokeTool={invokeTool}
-            onCreateModel={createModel}
-            onDeleteModel={deleteModel}
-            exportSession={exportSession}
-            agentRuns={agentRuns}
-            gitRepository={gitRepository}
-            verificationCommands={verificationCommands}
-            onVerificationCommandsChange={setVerificationCommands}
-            onSelectGitRepository={() => void selectGitRepository()}
-            onDecideWorkspaceCandidate={(candidate, decision) => {
-              void decideWorkspaceCandidate(candidate, decision);
-            }}
-            onRetryAgentRun={retryAgentRun}
-            onInterruptAgentStep={interruptAgentStep}
-            onUpdateAgentPlan={updateAgentPlan}
-            onConfirmAgentPlan={confirmAgentPlan}
-            onRejectAgentPlan={rejectAgentPlan}
-            onInsertComposer={(text) => {
-              setComposerDraft({ id: `knowledge-${Date.now()}`, text });
-              setActivePanel(null);
-            }}
-            onStartVoice={() => {
-              setActivePanel(null);
-              void voice.start();
-            }}
-            voiceSilenceMs={voice.silenceMs}
-            onVoiceSilenceMs={voice.setSilenceMs}
-            voiceTtsEngine={voice.ttsEngine}
-            onVoiceTtsEngine={voice.setTtsEngine}
-            onStartCosyVoice={voice.startCosyVoice}
-          />
-        </SettingsPage>
+        <Suspense fallback={(
+          <div className="fixed inset-0 z-50 grid place-items-center bg-[#f7f3ed]/90" role="status">
+            <span className="text-sm text-[#6b6259]">{t('settings')}…</span>
+          </div>
+        )}>
+          <SettingsPage
+            activeTab={activePanel}
+            onChangeTab={setActivePanel}
+            onBackToChat={() => setActivePanel(null)}
+          >
+            <InspectorPanel
+              hideChrome
+              apiBase={API_BASE}
+              sessionId={sessionId}
+              selectedArtifactPath={selectedArtifactPath}
+              onSelectArtifact={setSelectedArtifactPath}
+              onCreateTask={createTask}
+              onPatchTask={patchTask}
+              onCreateMerge={createMerge}
+              onVoteMerge={voteMerge}
+              onReloadArtifacts={loadArtifacts}
+              onUpdateSettings={updateSettings}
+              onCreateTool={createTool}
+              onDeleteTool={deleteTool}
+              onInvokeTool={invokeTool}
+              onCreateModel={createModel}
+              onDeleteModel={deleteModel}
+              exportSession={exportSession}
+              agentRuns={agentRuns}
+              gitRepository={gitRepository}
+              verificationCommands={verificationCommands}
+              onVerificationCommandsChange={setVerificationCommands}
+              onSelectGitRepository={() => void selectGitRepository()}
+              onDecideWorkspaceCandidate={(candidate, decision) => {
+                void decideWorkspaceCandidate(candidate, decision);
+              }}
+              onRetryAgentRun={retryAgentRun}
+              onInterruptAgentStep={interruptAgentStep}
+              onUpdateAgentPlan={updateAgentPlan}
+              onConfirmAgentPlan={confirmAgentPlan}
+              onRejectAgentPlan={rejectAgentPlan}
+              onInsertComposer={(text) => {
+                setComposerDraft({ id: `knowledge-${Date.now()}`, text });
+                setActivePanel(null);
+              }}
+              onStartVoice={() => {
+                setActivePanel(null);
+                void voice.start();
+              }}
+              voiceSilenceMs={voice.silenceMs}
+              onVoiceSilenceMs={voice.setSilenceMs}
+              voiceTtsEngine={voice.ttsEngine}
+              onVoiceTtsEngine={voice.setTtsEngine}
+              onStartCosyVoice={voice.startCosyVoice}
+            />
+          </SettingsPage>
+        </Suspense>
       )}
 
       {commandOpen && (

@@ -18,8 +18,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BACKEND_ROOT = PROJECT_ROOT / "backend"
 sys.path.insert(0, str(BACKEND_ROOT))
 
-from mcp.shared.auth import OAuthClientInformationFull, OAuthToken  # noqa: E402
-
 from app import main as main_module  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models.schemas import ChatMessage, Message, Task, ToolCall  # noqa: E402
@@ -43,6 +41,7 @@ from app.services.mcp_registry import (  # noqa: E402
 from app.services.memory_service import MemoryService  # noqa: E402
 from app.services.model_registry import ModelRegistry  # noqa: E402
 from app.services.plugin_registry import plugin_registry  # noqa: E402
+from mcp.shared.auth import OAuthClientInformationFull, OAuthToken  # noqa: E402
 
 
 class _MemoryVault:

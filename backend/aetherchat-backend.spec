@@ -69,7 +69,24 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # collect_all() is intentionally conservative, but the build environment
+    # also contains developer tooling and retired database drivers. Keep those
+    # out of the shipped backend so the artifact matches the SQLite runtime
+    # dependency contract and does not bundle test suites.
+    excludes=[
+        'alembic',
+        'asyncpg',
+        'MySQLdb',
+        'mypy',
+        'psutil.tests',
+        'psycopg2',
+        'pysqlite2',
+        'pytest',
+        '_pytest',
+        'reportlab.graphics.samples',
+        'reportlab.lib.testutils',
+        'sqlalchemy',
+    ],
     noarchive=False,
     optimize=0,
 )

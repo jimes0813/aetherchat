@@ -113,7 +113,7 @@ def _validated_schedule(payload: AutomationScheduleCreate) -> NormalizedSchedule
 
 @router.get("/status")
 async def scheduler_status():
-    return automation_service.status()
+    return await automation_service.status_async()
 
 
 @router.get("/schedules")
@@ -243,7 +243,7 @@ async def delete_schedule(schedule_id: UUID, session_id: UUID):
 @router.post("/schedules/{schedule_id}/run", status_code=status.HTTP_202_ACCEPTED)
 async def run_schedule_now(schedule_id: UUID, payload: JobSessionRequest):
     try:
-        return automation_service.enqueue_schedule_now(
+        return await automation_service.enqueue_schedule_now_async(
             str(schedule_id),
             str(payload.session_id),
         )
@@ -268,7 +268,10 @@ async def list_jobs(
 @router.post("/jobs/{job_id}/cancel")
 async def cancel_job(job_id: UUID, payload: JobSessionRequest):
     try:
-        return automation_service.cancel_job(str(job_id), str(payload.session_id))
+        return await automation_service.cancel_job_async(
+            str(job_id),
+            str(payload.session_id),
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc.args[0])) from exc
 

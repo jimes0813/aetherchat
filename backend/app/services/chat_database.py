@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from threading import RLock
 
+from ..data_dir import ensure_private_data_dir, harden_private_file
 from .db._shared import (
     AGENT_RUN_COMPLETION_STATUSES,
     AGENT_RUN_TERMINAL_STATUSES,
@@ -51,7 +52,7 @@ class ChatDatabase(
 ):
     def __init__(self, path: str | os.PathLike[str] | None = None):
         self.path = Path(path).expanduser().resolve() if path else _database_path()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_private_data_dir(self.path.parent)
         self._lock = RLock()
         self.last_migration_backup: Path | None = None
         existing_version = self._existing_schema_version()
@@ -70,6 +71,9 @@ class ChatDatabase(
             # Schema 4 already-migrated DBs still need a one-shot bind of
             # historical NULL project_id rows. Idempotent.
             self.backfill_unbound_projects()
+            harden_private_file(self.path)
+            harden_private_file(self.path.with_name(f"{self.path.name}-wal"))
+            harden_private_file(self.path.with_name(f"{self.path.name}-shm"))
         except Exception:
             if self.last_migration_backup is not None:
                 self._restore_migration_backup(self.last_migration_backup)

@@ -26,6 +26,7 @@ from PIL import Image, UnidentifiedImageError
 from pptx import Presentation
 from pypdf import PdfReader
 
+from ..data_dir import ensure_private_data_dir, harden_private_file
 from .artifact_service import ArtifactService
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
@@ -74,7 +75,7 @@ class KnowledgeError(ValueError):
 
 class KnowledgeService:
     def __init__(self, base_path: str | os.PathLike[str] | None = None):
-        self.data_root = _data_root(base_path)
+        self.data_root = ensure_private_data_dir(_data_root(base_path))
         self.base_path = self.data_root / "knowledge"
         self.db_path = self.data_root / "knowledge.sqlite3"
         self._lock = RLock()
@@ -85,11 +86,14 @@ class KnowledgeService:
         connection = sqlite3.connect(self.db_path, timeout=15)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout = 15000")
+        harden_private_file(self.db_path)
         return connection
 
     def _initialize(self) -> None:
         with self._lock, self._connect() as connection:
             connection.execute("PRAGMA journal_mode = WAL")
+            harden_private_file(self.db_path.with_name(f"{self.db_path.name}-wal"))
+            harden_private_file(self.db_path.with_name(f"{self.db_path.name}-shm"))
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS knowledge_attachments (

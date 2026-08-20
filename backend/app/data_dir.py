@@ -5,6 +5,41 @@ from collections.abc import Mapping
 from pathlib import Path
 
 
+def ensure_private_data_dir(path: Path) -> Path:
+    """Create a dedicated application data directory with private Unix modes.
+
+    A configured data root can point at a shared parent such as ``/tmp``. Never
+    chmod those broad system/home directories; individual private files are
+    still hardened by their owning services.
+    """
+    path = path.expanduser().resolve()
+    path.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        return path
+
+    home = Path.home().resolve()
+    protected_roots = {
+        Path("/"),
+        Path("/home"),
+        Path("/tmp"),
+        Path("/var/tmp"),
+        home,
+        home.parent,
+    }
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime_dir:
+        protected_roots.add(Path(runtime_dir).expanduser().resolve())
+    if path not in protected_roots:
+        path.chmod(0o700)
+    return path
+
+
+def harden_private_file(path: Path) -> None:
+    """Restrict an existing application data file to its Unix owner."""
+    if os.name != "nt" and path.is_file():
+        path.chmod(0o600)
+
+
 def packaged_legacy_data_dir(*, env: Mapping[str, str] | None = None, home: Path | None = None) -> Path:
     environment = env if env is not None else os.environ
     home = home or Path.home()

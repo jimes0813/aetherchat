@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, TypeVar, cast
 from uuid import uuid4
 
 from .agent_run_service import AgentRunService, agent_run_service
@@ -40,6 +40,7 @@ class AutomationExecutionResult:
 
 AutomationExecutor = Callable[[dict[str, Any]], Awaitable[AutomationExecutionResult]]
 RunAdmissionResourceResolver = Callable[[dict[str, Any]], tuple[str, ...]]
+_T = TypeVar("_T")
 
 
 class AutomationService:
@@ -159,8 +160,20 @@ class AutomationService:
     def wake(self) -> None:
         self._wake.set()
 
-    async def _db(self, func, /, *args, **kwargs):
-        return await self.database.run_in_thread(func, *args, **kwargs)
+    async def _db(
+        self,
+        func: Callable[..., _T],
+        /,
+        *args: Any,
+        **kwargs: Any,
+    ) -> _T:
+        return cast(_T, await self.database.run_in_thread(func, *args, **kwargs))
+
+    async def status_async(self) -> dict[str, Any]:
+        return {
+            **self.liveness_status(),
+            **await self._db(self.database.automation_status),
+        }
 
     async def _poll_loop(self) -> None:
         try:
@@ -238,8 +251,71 @@ class AutomationService:
         self.wake()
         return job
 
+    async def enqueue_schedule_now_async(
+        self,
+        schedule_id: str,
+        session_id: str,
+    ) -> dict[str, Any]:
+        """Queue a manual schedule without blocking the API event loop."""
+        schedule = await self._db(
+            self.database.get_automation_schedule,
+            schedule_id,
+            session_id=session_id,
+        )
+        if schedule is None:
+            raise KeyError("定时任务不存在")
+        action = {
+            "type": "post_message",
+            "content": schedule["prompt"],
+            "targets": schedule["targets"],
+            "mode": schedule["mode"],
+            "execution_strategy": "direct",
+            "plan_confirmation_required": False,
+            "max_revision_cycles": 0,
+        }
+        job = await self._db(
+            self.database.create_background_job,
+            schedule_id=schedule["id"],
+            session_id=schedule["session_id"],
+            trigger_type="manual",
+            action=action,
+            permission_snapshot=schedule["permission_snapshot"],
+            max_budget_usd=float(schedule["max_budget_usd"]),
+            scheduled_for=_iso(_utc_now()),
+        )
+        await self._db(
+            self.database.update_automation_schedule,
+            schedule["id"],
+            schedule["session_id"],
+            {"last_status": "queued", "last_error": None},
+        )
+        self.wake()
+        return job
+
     def cancel_job(self, job_id: str, session_id: str) -> dict[str, Any]:
         job = self.database.request_background_job_cancel(job_id, session_id)
+        if job is None:
+            raise KeyError("后台任务不存在")
+        task = self._active_tasks.get(str(job_id))
+        if task is not None and not task.done():
+            task.add_done_callback(
+                lambda _task: self._finish_cancelled_claim(str(job_id))
+            )
+            task.cancel()
+        self.wake()
+        return job
+
+    async def cancel_job_async(
+        self,
+        job_id: str,
+        session_id: str,
+    ) -> dict[str, Any]:
+        """Cancel a durable job while keeping task mutation on the event loop."""
+        job = await self._db(
+            self.database.request_background_job_cancel,
+            job_id,
+            session_id,
+        )
         if job is None:
             raise KeyError("后台任务不存在")
         task = self._active_tasks.get(str(job_id))
@@ -388,7 +464,11 @@ class AutomationService:
             )
         except asyncio.CancelledError:
             dispatch_cancelled = True
-            current = await self._db(self.database.get_background_job, job_id) or job
+            persisted: dict[str, Any] | None = await self._db(
+                self.database.get_background_job,
+                job_id,
+            )
+            current = persisted or job
             run_id = str(current.get("agent_run_id") or "")
             if current.get("status") == "cancel_requested":
                 self._finish_cancelled_claim(job_id, current)

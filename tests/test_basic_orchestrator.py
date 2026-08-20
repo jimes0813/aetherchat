@@ -643,9 +643,8 @@ async def test_orchestrator_requires_real_comfyui_generation_without_status_roun
 
 @pytest.mark.asyncio
 async def test_orchestrator_injects_attached_image_and_requested_video_model(monkeypatch):
-    from PIL import Image
-
     from app.services.comfyui_service import WAN22_REMIX_HIGH_MODEL
+    from PIL import Image
 
     class AttachedVideoProvider(_FakeProvider):
         async def stream_chat(self, messages, tools=None, **kwargs):

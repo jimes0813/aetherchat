@@ -1,4 +1,5 @@
 import sqlite3
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -26,7 +27,6 @@ from app.services.mcp_registry import (  # noqa: E402
     MCPConnectionPatch,
     MCPRegistry,
 )
-
 
 # Split from tests/test_basic.py for domain isolation.
 # Shared env/client fixtures live in tests/conftest.py.
@@ -214,6 +214,7 @@ def test_chat_database_migrates_in_order_with_pre_upgrade_backup(tmp_path):
 
     assert database.last_migration_backup is not None
     assert database.last_migration_backup.exists()
+    assert stat.S_IMODE(database.last_migration_backup.stat().st_mode) == 0o600
     with sqlite3.connect(path) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == CURRENT_SCHEMA_VERSION
         assert connection.execute(

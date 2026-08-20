@@ -64,6 +64,30 @@ def test_user_unpacked_launcher_documents_explicit_degraded_no_sandbox():
     assert package["build"]["linux"]["icon"] == "icon.svg"
     assert (PROJECT_ROOT / "frontend" / "build" / "icon.svg").is_file()
 
+    installer = (PROJECT_ROOT / "scripts" / "install-user-appimage.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "Categories=Utility;" in installer
+    assert "Categories=Development;Office;Utility;" not in installer
+    assert "Actions=NewWindow;QuickEntry;" in installer
+    assert 'install -m 0644 "$ROOT/frontend/build/icon.svg"' in installer
+
+
+def test_packaged_backend_excludes_retired_drivers_and_test_suites():
+    spec = (PROJECT_ROOT / "backend" / "aetherchat-backend.spec").read_text(
+        encoding="utf-8"
+    )
+    for module in (
+        "alembic",
+        "asyncpg",
+        "mypy",
+        "psutil.tests",
+        "pytest",
+        "_pytest",
+        "sqlalchemy",
+    ):
+        assert repr(module) in spec
+
 
 def test_release_workflow_fails_fast_when_signing_secrets_are_missing():
     workflow = (PROJECT_ROOT / ".github" / "workflows" / "release.yml").read_text(

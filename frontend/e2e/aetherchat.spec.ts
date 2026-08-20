@@ -2021,14 +2021,15 @@ test.describe('AetherChat Frontend E2E', () => {
 
   test('shows every task status including done', async ({ page }) => {
     await openSettingsTab(page, '任务');
+    const panel = page.locator('[data-settings-panel="tasks"]');
 
-    await expect(page.getByText('待办', { exact: true })).toBeVisible();
-    await expect(page.getByText('已认领', { exact: true })).toBeVisible();
-    await expect(page.getByText('进行中', { exact: true })).toBeVisible();
-    await expect(page.getByText('评审', { exact: true })).toBeVisible();
-    await expect(page.getByText('已合并', { exact: true })).toBeVisible();
-    await expect(page.getByText('已完成', { exact: true })).toBeVisible();
-    await expect(page.getByText('已完成任务', { exact: true })).toBeVisible();
+    await expect(panel.getByText('待办', { exact: true }).first()).toBeVisible();
+    await expect(panel.getByText('已认领', { exact: true }).first()).toBeVisible();
+    await expect(panel.getByText('进行中', { exact: true }).first()).toBeVisible();
+    await expect(panel.getByText('评审', { exact: true }).first()).toBeVisible();
+    await expect(panel.getByText('已合并', { exact: true }).first()).toBeVisible();
+    await expect(panel.getByText('已完成', { exact: true }).first()).toBeVisible();
+    await expect(panel.getByText('已完成任务', { exact: true }).first()).toBeVisible();
   });
 
   test('creates a task with explicit dependencies', async ({ page }) => {
@@ -2115,7 +2116,7 @@ test.describe('AetherChat Frontend E2E', () => {
     });
 
     await openSettingsTab(page, '运行');
-    const panel = page.getByLabel('运行 panel');
+    const panel = page.locator('[data-settings-panel="runs"]');
     await panel.getByRole('button', { name: '基础检查' }).click();
     await expect(panel.getByText('已配置 2/3 个模型，其中 1 个始终参与；基础检查不会调用模型 API')).toBeVisible();
 
@@ -2385,7 +2386,7 @@ test.describe('AetherChat Frontend E2E', () => {
   });
 
   test('sends an interrupt action for the selected target', async ({ page }) => {
-    const targetSelect = page.locator('select').first();
+    const targetSelect = page.getByRole('combobox', { name: '@全部模型' });
     await targetSelect.selectOption('GLM');
     await expect(page.getByRole('button', { name: /中断/ })).toHaveCount(0);
     await page.evaluate(() => (
@@ -2488,8 +2489,8 @@ test.describe('AetherChat Frontend E2E', () => {
     await expect(page.getByLabel('Integrations panel')).toContainText('Plugin center');
     await expect(page.getByLabel('Integrations panel')).toContainText('MCP connections');
 
+    await page.getByRole('button', { name: 'Back to chat' }).click();
     await page.getByRole('button', { name: 'Switch interface language' }).click();
-    await page.getByRole('button', { name: '返回对话' }).click();
     await expect(page.getByRole('heading', { name: '统一对话流' })).toBeAttached();
     await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN');
   });

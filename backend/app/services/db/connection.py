@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from ...data_dir import harden_private_file
 from ._shared import (
     CURRENT_SCHEMA_VERSION,
     READINESS_TABLES,
@@ -30,6 +31,7 @@ class ConnectionMixin:
             sqlite3.connect(backup_path, timeout=15) as destination,
         ):
             source.backup(destination)
+        harden_private_file(backup_path)
         return backup_path
 
     def _restore_migration_backup(self, backup_path: Path) -> None:
@@ -55,6 +57,9 @@ class ConnectionMixin:
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 15000")
         connection.execute("PRAGMA journal_mode = WAL")
+        harden_private_file(self.path)
+        harden_private_file(self.path.with_name(f"{self.path.name}-wal"))
+        harden_private_file(self.path.with_name(f"{self.path.name}-shm"))
         return connection
 
     def readiness_probe(self) -> dict[str, Any]:

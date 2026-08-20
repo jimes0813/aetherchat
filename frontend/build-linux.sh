@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="$(cd -- "$SCRIPT_DIR/../backend" && pwd)"
 PROJECT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+VERSION="$(node -p "require('$SCRIPT_DIR/package.json').version")"
 PYTHON_BIN="${AETHERCHAT_PYTHON:-$PROJECT_DIR/.venv-linux/bin/python}"
 if [[ ! -x "$PYTHON_BIN" ]]; then
   PYTHON_BIN=python3
@@ -32,4 +33,10 @@ case "$(uname -m)" in
 esac
 npm run dist:linux -- --"$electron_arch"
 "$SCRIPT_DIR/build-deb.sh" "$electron_arch"
+if [[ "$electron_arch" == "arm64" ]]; then
+  echo "Refreshing SBOM/build metadata and checking local release evidence..."
+  "$PYTHON_BIN" "$PROJECT_DIR/scripts/release_evidence.py" check \
+    --version "$VERSION" \
+    --refresh-metadata
+fi
 echo "Done. Packages are in $SCRIPT_DIR/release."
