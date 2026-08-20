@@ -35,7 +35,7 @@ def test_long_conversation_and_concurrent_writes_remain_recoverable(tmp_path):
     # NTFS plus real-time scanning makes SQLite's durable file operations
     # measurably slower on hosted Windows runners. Keep a bounded platform
     # budget while avoiding a flaky POSIX-derived threshold.
-    budget_seconds = 30 if sys.platform == "win32" else 20
+    budget_seconds = 60 if sys.platform == "win32" else 20
     assert elapsed < budget_seconds
 
     reopened = ChatDatabase(database_path)
