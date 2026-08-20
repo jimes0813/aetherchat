@@ -39,6 +39,7 @@ import {
 import { startAndVerifyLocalModel } from './localModelRuntime';
 import { asArray, fetchJson, withApiAuth } from '../api/client';
 import { useI18n } from '../i18n';
+import { isSettingsTab, navGroupForPanel, panelsForTab } from './settingsTabs';
 import { useSessionStore } from '../stores/sessionStore';
 import { API_BASE, formatDateTime, isConfiguredModel, taskStatusLabel } from './shared';
 import type { AgentRun, AgentWorkspaceCandidate, GitRepository, KnowledgeAttachment, MCPConnection, MergeProposal, ModelConfig, SessionMemory, Task, ToolItem, WorkspaceSettings } from '../types';
@@ -190,11 +191,11 @@ export function InspectorPanel(props: InspectorProps) {
     providers: state.providers,
   })));
   const { t, ui } = useI18n();
-  const activePanelLabel = activePanel ? ({
-    memory: t('memory'), knowledge: t('knowledge'), tasks: t('tasks'), automations: t('automations'), artifacts: t('artifacts'), changes: t('changes'),
-    tools: t('tools'), plugins: t('plugins'), connections: t('connections'), computer: t('computer'), models: t('models'),
-    runs: t('runs'), settings: t('settings'), voice: t('voice'), instructions: t('instructions'), governance: t('governance'),
-  } as Record<string, string>)[activePanel] : t('inspector');
+  const visiblePanels = panelsForTab(isSettingsTab(activePanel) ? activePanel : 'settings');
+  const showPanel = (id: (typeof visiblePanels)[number]) => visiblePanels.includes(id);
+  const activePanelLabel = activePanel
+    ? t(navGroupForPanel(isSettingsTab(activePanel) ? activePanel : 'settings').label)
+    : t('inspector');
   const [artifactContent, setArtifactContent] = useState('');
   const [artifactPreview, setArtifactPreview] = useState<ArtifactPreview | null>(null);
   const [artifactVersions, setArtifactVersions] = useState<ArtifactVersion[]>([]);
@@ -303,7 +304,7 @@ export function InspectorPanel(props: InspectorProps) {
   };
 
   useEffect(() => {
-    if (activePanel === 'artifacts') void loadArtifactDetail();
+    if (showPanel('artifacts')) void loadArtifactDetail();
   }, [activePanel, props.apiBase, props.selectedArtifactPath, props.sessionId]);
 
   const loadKnowledge = async () => {
@@ -327,7 +328,7 @@ export function InspectorPanel(props: InspectorProps) {
   };
 
   useEffect(() => {
-    if (activePanel === 'knowledge') void loadKnowledge();
+    if (showPanel('knowledge')) void loadKnowledge();
   }, [activePanel, props.apiBase, props.sessionId]);
 
   const loadMcpConnections = async () => {
@@ -340,7 +341,7 @@ export function InspectorPanel(props: InspectorProps) {
   };
 
   useEffect(() => {
-    if (activePanel === 'connections') void loadMcpConnections();
+    if (showPanel('connections')) void loadMcpConnections();
   }, [activePanel, props.apiBase]);
 
   const createMcpConnection = async () => {
@@ -449,8 +450,12 @@ export function InspectorPanel(props: InspectorProps) {
   };
 
   useEffect(() => {
-    if (activePanel === 'memory') void loadMemory();
+    if (showPanel('memory')) void loadMemory();
   }, [activePanel, props.apiBase, props.sessionId]);
+  useEffect(() => {
+    if (!activePanel) return;
+    document.querySelector(`[data-settings-panel="${activePanel}"]`)?.scrollIntoView({ block: 'start' });
+  }, [activePanel]);
 
   const saveMemory = async () => {
     const list = (value: string) => value.split('\n').map((item) => item.trim()).filter(Boolean);
@@ -816,8 +821,8 @@ export function InspectorPanel(props: InspectorProps) {
       </div>
       )}
 
-      {activePanel === 'memory' && (
-        <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto p-4">
+      {showPanel('memory') && (
+        <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto p-4" data-settings-panel="memory">
           <div className="mb-4 flex items-start gap-3">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#e5d9ca] text-[#684827]"><Brain size={17} /></div>
             <div>
@@ -897,8 +902,8 @@ export function InspectorPanel(props: InspectorProps) {
         </div>
       )}
 
-      {activePanel === 'knowledge' && (
-        <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto p-4">
+      {showPanel('knowledge') && (
+        <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto p-4" data-settings-panel="knowledge">
           <div className="mb-4">
             <h2 className="text-sm font-semibold">{t('projectKnowledge')}</h2>
             <p className="mt-1 text-xs text-[#7a7065]">
@@ -1052,8 +1057,8 @@ export function InspectorPanel(props: InspectorProps) {
         </div>
       )}
 
-      {activePanel === 'tasks' && (
-        <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto p-4">
+      {showPanel('tasks') && (
+        <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto p-4" data-settings-panel="tasks">
           <div className="mb-3 flex gap-2">
             <input
               value={taskTitle}
@@ -1098,8 +1103,8 @@ export function InspectorPanel(props: InspectorProps) {
         </div>
       )}
 
-      {activePanel === 'automations' && (
-        <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto">
+      {showPanel('automations') && (
+        <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto" data-settings-panel="automations">
           <AutomationPanel
             apiBase={props.apiBase}
             sessionId={props.sessionId}
@@ -1110,8 +1115,8 @@ export function InspectorPanel(props: InspectorProps) {
         </div>
       )}
 
-      {activePanel === 'artifacts' && (
-        <div className="aether-tab-panel aether-panel-scroll grid min-h-0 flex-1 overflow-y-auto grid-rows-[auto_minmax(20rem,1fr)]">
+      {showPanel('artifacts') && (
+        <div className="aether-tab-panel aether-panel-scroll grid min-h-0 flex-1 overflow-y-auto grid-rows-[auto_minmax(20rem,1fr)]" data-settings-panel="artifacts">
           <div className="overflow-auto border-b border-[#ded6ca] p-4">
             <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
               <Archive size={16} />
@@ -1262,8 +1267,8 @@ export function InspectorPanel(props: InspectorProps) {
         </div>
       )}
 
-      {activePanel === 'changes' && (
-        <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto p-4">
+      {showPanel('changes') && (
+        <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto p-4" data-settings-panel="changes">
           <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
             <GitMerge size={16} />
             {t('changesAndMerges')}
@@ -1292,8 +1297,8 @@ export function InspectorPanel(props: InspectorProps) {
         </div>
       )}
 
-      {activePanel === 'tools' && (
-        <div className="aether-tab-panel aether-panel-scroll grid min-h-0 flex-1 overflow-y-auto grid-rows-[auto_minmax(16rem,1fr)_auto]">
+      {showPanel('tools') && (
+        <div className="aether-tab-panel aether-panel-scroll grid min-h-0 flex-1 overflow-y-auto grid-rows-[auto_minmax(16rem,1fr)_auto]" data-settings-panel="tools">
           <div className="border-b border-[#ded6ca] p-4">
             <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
               <PackageCheck size={16} />
@@ -1389,12 +1394,14 @@ export function InspectorPanel(props: InspectorProps) {
         </div>
       )}
 
-      {activePanel === 'plugins' && (
-        <PluginCenter apiBase={props.apiBase} sessionId={props.sessionId} />
+      {showPanel('plugins') && (
+        <div data-settings-panel="plugins">
+          <PluginCenter apiBase={props.apiBase} sessionId={props.sessionId} />
+        </div>
       )}
 
-      {activePanel === 'connections' && (
-        <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto p-4">
+      {showPanel('connections') && (
+        <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto p-4" data-settings-panel="connections">
           <div className="mb-4 flex items-start gap-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#e5d9ca] text-[#684827]"><Cable size={17} /></div>
             <div>
@@ -1456,10 +1463,12 @@ export function InspectorPanel(props: InspectorProps) {
         </div>
       )}
 
-      {activePanel === 'computer' && <DesktopControlPanel />}
+      {showPanel('computer') && (
+        <div data-settings-panel="computer"><DesktopControlPanel /></div>
+      )}
 
-      {activePanel === 'models' && (
-        <div className="aether-tab-panel aether-panel-scroll grid min-h-0 flex-1 overflow-y-auto grid-rows-[auto_minmax(16rem,1fr)]">
+      {showPanel('models') && (
+        <div className="aether-tab-panel aether-panel-scroll grid min-h-0 flex-1 overflow-y-auto grid-rows-[auto_minmax(16rem,1fr)]" data-settings-panel="models">
           <div className="border-b border-[#ded6ca] p-4">
             <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
               <Cpu size={16} />
@@ -1549,7 +1558,8 @@ export function InspectorPanel(props: InspectorProps) {
         </div>
       )}
 
-      {activePanel === 'runs' && (
+      {showPanel('runs') && (
+        <div data-settings-panel="runs">
         <ErrorBoundary scope="运行面板" resetKey={`${props.sessionId}:${props.agentRuns.length}`}>
           <RunPanel
             sessionId={props.sessionId}
@@ -1567,9 +1577,10 @@ export function InspectorPanel(props: InspectorProps) {
             onRejectPlan={props.onRejectAgentPlan}
           />
         </ErrorBoundary>
+        </div>
       )}
 
-      {activePanel === 'voice' && (
+      {showPanel('voice') && (
         <VoiceSettingsPanel
           silenceMs={props.voiceSilenceMs ?? 1100}
           onSilenceMs={props.onVoiceSilenceMs ?? (() => undefined)}
@@ -1583,8 +1594,8 @@ export function InspectorPanel(props: InspectorProps) {
         />
       )}
 
-      {activePanel === 'settings' && (
-        <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto p-4">
+      {showPanel('settings') && (
+        <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto p-4" data-settings-panel="settings">
           <div className="mb-4 flex items-center gap-2 text-sm font-semibold">
             <ShieldCheck size={16} />
             {t('general')}
@@ -1644,11 +1655,11 @@ export function InspectorPanel(props: InspectorProps) {
         </div>
       )}
 
-      {activePanel === 'instructions' && (
+      {showPanel('instructions') && (
         <SkillsRulesPanel apiBase={props.apiBase} sessionId={props.sessionId} />
       )}
 
-      {activePanel === 'governance' && (
+      {showPanel('governance') && (
         <PlatformGovernancePanel apiBase={props.apiBase} />
       )}
     </aside>

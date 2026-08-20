@@ -21,7 +21,7 @@ export type UseEntityActionsParams = {
   wsClient: MutableRefObject<ReturnType<typeof connectWS> | null>;
   setNotice: Dispatch<SetStateAction<string>>;
   setApprovals: Dispatch<SetStateAction<ApprovalRequest[]>>;
-  setMainView: Dispatch<SetStateAction<'chat' | 'history' | 'tasks' | 'settings'>>;
+  setMainView: Dispatch<SetStateAction<'chat' | 'history' | 'tasks'>>;
   setConversations: SessionStoreState['setConversations'];
   selectConversation: SessionStoreState['selectConversation'];
   setActivePanel: SessionStoreState['setActivePanel'];

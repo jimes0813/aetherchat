@@ -107,7 +107,7 @@ interface WorkspaceSidebarProps {
 }
 
 interface MainViewTabsProps {
-  value: 'chat' | 'history' | 'tasks' | 'settings';
+  value: 'chat' | 'history' | 'tasks';
   onChange: (value: 'chat' | 'history' | 'tasks') => void;
 }
 

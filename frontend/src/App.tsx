@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Composer } from './components/Composer';
 import { VoiceModeOverlay } from './components/VoiceModeOverlay';
 import { SettingsPage } from './components/SettingsPage';
-import { isSettingsTab, type SettingsTabId } from './components/settingsTabs';
+import { isSettingsTab } from './components/settingsTabs';
 import { ModelWorkingStrip, type AgentActivityItem } from './components/ModelWorkingStrip';
 import { UnifiedFeed } from './components/UnifiedFeed';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -93,11 +93,7 @@ function App() {
   /** Avoid flashing the first-run wizard on the empty pre-fetch model list. */
   const [modelsHydrated, setModelsHydrated] = useState(false);
   const [commandOpen, setCommandOpen] = useState(false);
-  const [mainView, setMainView] = useState<'chat' | 'history' | 'tasks' | 'settings'>('chat');
-
-  useEffect(() => {
-    if (activePanel) setMainView('settings');
-  }, [activePanel]);
+  const [mainView, setMainView] = useState<'chat' | 'history' | 'tasks'>('chat');
   const [taskEvents, setTaskEvents] = useState<TaskEvent[]>([]);
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [agentRuns, setAgentRuns] = useState<AgentRun[]>([]);
@@ -481,7 +477,6 @@ function App() {
         if (voice.open) return;
         setCommandOpen(false);
         setActivePanel(null);
-        setMainView((current) => (current === 'settings' ? 'chat' : current));
       }
     };
     window.addEventListener('keydown', handleShortcut);
@@ -536,11 +531,13 @@ function App() {
         <ActivityRail
           activePanel={activePanel}
           setActivePanel={setActivePanel}
-          settingsOpen={mainView === 'settings'}
-          onOpenChat={() => setMainView('chat')}
+          settingsOpen={Boolean(activePanel)}
+          onOpenChat={() => {
+            setActivePanel(null);
+            setMainView('chat');
+          }}
           onOpenSettings={() => {
-            setMainView('settings');
-            if (!activePanel) setActivePanel('settings');
+            setActivePanel(activePanel ?? 'settings');
           }}
         />
 
@@ -575,7 +572,6 @@ function App() {
           fallbackClassName="flex min-h-0 min-w-0 flex-col border-x border-[#d8cfc3] bg-[#f8ece9] p-5 text-[#67372f]"
         >
         <section className="aether-chat-column border-x border-[#d8cfc3] bg-[#fbfaf7]">
-          {mainView !== 'settings' && (
           <CommandHeader
             connection={connection}
             providerCount={providers.length}
@@ -583,8 +579,6 @@ function App() {
             budgetRemaining={budget.remaining}
             onOpenSearch={() => setCommandOpen(true)}
           />
-          )}
-          {mainView !== 'settings' && (
           <div className="aether-toolbar">
             <MainViewTabs value={mainView} onChange={(view) => setMainView(view)} />
             <div className="h-4 w-px shrink-0 bg-[#d8cdbf]" aria-hidden />
@@ -609,7 +603,6 @@ function App() {
               />
             </div>
           </div>
-          )}
           {mainView === 'chat' && (
             <UnifiedFeed
               approvals={sessionApprovals}
@@ -621,7 +614,6 @@ function App() {
               onOpenGeneratedFile={(file, action) => void openGeneratedFile(file, action)}
               onOpenRunHistory={() => {
                 setActivePanel('runs');
-                setMainView('settings');
               }}
               onPickExample={(prompt) => {
                 setComposerDraft({
@@ -648,64 +640,6 @@ function App() {
             />
           )}
           {mainView === 'tasks' && <TaskHistory tasks={tasks} events={taskEvents} />}
-          {mainView === 'settings' && (
-            <SettingsPage
-              activeTab={isSettingsTab(activePanel) ? activePanel : 'settings'}
-              onChangeTab={(tab: SettingsTabId) => setActivePanel(tab)}
-              onBackToChat={() => {
-                setActivePanel(null);
-                setMainView('chat');
-              }}
-            >
-              <InspectorPanel
-                hideChrome
-                apiBase={API_BASE}
-                sessionId={sessionId}
-                selectedArtifactPath={selectedArtifactPath}
-                onSelectArtifact={setSelectedArtifactPath}
-                onCreateTask={createTask}
-                onPatchTask={patchTask}
-                onCreateMerge={createMerge}
-                onVoteMerge={voteMerge}
-                onReloadArtifacts={loadArtifacts}
-                onUpdateSettings={updateSettings}
-                onCreateTool={createTool}
-                onDeleteTool={deleteTool}
-                onInvokeTool={invokeTool}
-                onCreateModel={createModel}
-                onDeleteModel={deleteModel}
-                exportSession={exportSession}
-                agentRuns={agentRuns}
-                gitRepository={gitRepository}
-                verificationCommands={verificationCommands}
-                onVerificationCommandsChange={setVerificationCommands}
-                onSelectGitRepository={() => void selectGitRepository()}
-                onDecideWorkspaceCandidate={(candidate, decision) => {
-                  void decideWorkspaceCandidate(candidate, decision);
-                }}
-                onRetryAgentRun={retryAgentRun}
-                onInterruptAgentStep={interruptAgentStep}
-                onUpdateAgentPlan={updateAgentPlan}
-                onConfirmAgentPlan={confirmAgentPlan}
-                onRejectAgentPlan={rejectAgentPlan}
-                onInsertComposer={(text) => {
-                  setComposerDraft({ id: `knowledge-${Date.now()}`, text });
-                  setActivePanel(null);
-                  setMainView('chat');
-                }}
-                onStartVoice={() => {
-                  setActivePanel(null);
-                  setMainView('chat');
-                  void voice.start();
-                }}
-                voiceSilenceMs={voice.silenceMs}
-                onVoiceSilenceMs={voice.setSilenceMs}
-                voiceTtsEngine={voice.ttsEngine}
-                onVoiceTtsEngine={voice.setTtsEngine}
-                onStartCosyVoice={voice.startCosyVoice}
-              />
-            </SettingsPage>
-          )}
           {mainView === 'chat' && <ModelWorkingStrip activity={agentActivity} />}
           {mainView === 'chat' && (
             <div className="aether-composer-shell">
@@ -731,6 +665,60 @@ function App() {
         </ErrorBoundary>
 
       </main>
+
+      {isSettingsTab(activePanel) && (
+        <SettingsPage
+          activeTab={activePanel}
+          onChangeTab={setActivePanel}
+          onBackToChat={() => setActivePanel(null)}
+        >
+          <InspectorPanel
+            hideChrome
+            apiBase={API_BASE}
+            sessionId={sessionId}
+            selectedArtifactPath={selectedArtifactPath}
+            onSelectArtifact={setSelectedArtifactPath}
+            onCreateTask={createTask}
+            onPatchTask={patchTask}
+            onCreateMerge={createMerge}
+            onVoteMerge={voteMerge}
+            onReloadArtifacts={loadArtifacts}
+            onUpdateSettings={updateSettings}
+            onCreateTool={createTool}
+            onDeleteTool={deleteTool}
+            onInvokeTool={invokeTool}
+            onCreateModel={createModel}
+            onDeleteModel={deleteModel}
+            exportSession={exportSession}
+            agentRuns={agentRuns}
+            gitRepository={gitRepository}
+            verificationCommands={verificationCommands}
+            onVerificationCommandsChange={setVerificationCommands}
+            onSelectGitRepository={() => void selectGitRepository()}
+            onDecideWorkspaceCandidate={(candidate, decision) => {
+              void decideWorkspaceCandidate(candidate, decision);
+            }}
+            onRetryAgentRun={retryAgentRun}
+            onInterruptAgentStep={interruptAgentStep}
+            onUpdateAgentPlan={updateAgentPlan}
+            onConfirmAgentPlan={confirmAgentPlan}
+            onRejectAgentPlan={rejectAgentPlan}
+            onInsertComposer={(text) => {
+              setComposerDraft({ id: `knowledge-${Date.now()}`, text });
+              setActivePanel(null);
+            }}
+            onStartVoice={() => {
+              setActivePanel(null);
+              void voice.start();
+            }}
+            voiceSilenceMs={voice.silenceMs}
+            onVoiceSilenceMs={voice.setSilenceMs}
+            voiceTtsEngine={voice.ttsEngine}
+            onVoiceTtsEngine={voice.setTtsEngine}
+            onStartCosyVoice={voice.startCosyVoice}
+          />
+        </SettingsPage>
+      )}
 
       {commandOpen && (
         <CommandPalette

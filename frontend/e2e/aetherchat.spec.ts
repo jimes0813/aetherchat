@@ -1370,28 +1370,43 @@ async function installMockApi(page: Page) {
   });
 }
 
+const SETTINGS_NAV_ALIASES: Record<string, string> = {
+  设置: '通用',
+  Settings: 'General',
+  资料: '记忆',
+  Knowledge: 'Memory',
+  变更: '文件',
+  Artifacts: 'Files',
+  Changes: 'Files',
+  任务: '代理与自动化',
+  自动化: '代理与自动化',
+  运行: '代理与自动化',
+  Tasks: 'Agents and automation',
+  Automations: 'Agents and automation',
+  Runs: 'Agents and automation',
+  工具: '集成',
+  插件: '集成',
+  连接: '集成',
+  Tools: 'Integrations',
+  Plugins: 'Integrations',
+  Connections: 'Integrations',
+  电脑: '电脑使用',
+  Computer: 'Computer Use',
+  规范: '个性化',
+  Instructions: 'Personalization',
+  '治理（实验）': '高级',
+  'Governance (experimental)': 'Advanced',
+};
+
 async function openSettingsTab(page: Page, tab: string) {
   const settingsPage = page.getByTestId('settings-page');
   if (!(await settingsPage.isVisible())) {
     await page.getByTitle('设置').or(page.getByTitle('Settings')).click();
     await expect(settingsPage).toBeVisible();
   }
-  if (tab === '设置' || tab === 'Settings' || tab === '通用' || tab === 'General') {
-    const general = page.getByRole('tab', { name: /^通用$|^General$/ });
-    if (await general.count()) await general.click();
-    return;
-  }
-  const navTab = page.getByRole('tab', { name: tab, exact: true });
-  if (await navTab.count()) {
-    await navTab.click();
-    return;
-  }
-  await page.keyboard.press('Control+k');
-  const search = page.locator('[data-aether-search]');
-  await expect(search).toBeVisible();
-  await search.fill(`打开${tab}面板`);
-  await page.getByRole('button', { name: `打开${tab}面板` }).click();
-  await expect(settingsPage).toBeVisible();
+  const navName = SETTINGS_NAV_ALIASES[tab] || tab;
+  const navTab = page.getByRole('tab', { name: navName, exact: true });
+  await navTab.click();
 }
 
 async function acceptConfirmDialog(page: Page) {
@@ -2446,8 +2461,9 @@ test.describe('AetherChat Frontend E2E', () => {
     const panels = [
       ['General', 'General'],
       ['Memory', 'Local session memory'],
-      ['Plugins', 'Plugin center'],
-      ['Connections', 'MCP connections'],
+      ['Files', 'File tree'],
+      ['Agents and automation', 'Add'],
+      ['Integrations', 'Tool catalog'],
       ['Computer Use', 'Local computer'],
       ['Models', 'Model APIs'],
     ] as const;
@@ -2455,16 +2471,22 @@ test.describe('AetherChat Frontend E2E', () => {
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Back to chat' })).toBeVisible();
     await expect(page.getByRole('tablist', { name: 'Settings sections' })).toBeVisible();
-    await expect(page.getByRole('tab', { name: 'General', exact: true })).toBeVisible();
     await expect(page.getByRole('tab', { name: 'Personalization', exact: true })).toBeVisible();
     await expect(page.getByRole('tab', { name: 'Knowledge', exact: true })).toHaveCount(0);
     await expect(page.getByRole('tab', { name: 'Runs', exact: true })).toHaveCount(0);
     for (const [panel, expected] of panels) {
       await page.getByRole('tab', { name: panel, exact: true }).click();
-      const pane = page.getByLabel(panel === 'General' ? 'Settings panel' : panel === 'Computer Use' ? 'Computer panel' : `${panel} panel`);
+      const pane = page.getByLabel(`${panel} panel`);
       await expect(pane).toContainText(expected);
       await expect(pane).not.toContainText(untranslatedUi);
     }
+    await page.getByRole('tab', { name: 'Memory', exact: true }).click();
+    await expect(page.getByLabel('Memory panel')).toContainText('Project knowledge base');
+    await page.getByRole('tab', { name: 'Agents and automation', exact: true }).click();
+    await expect(page.getByLabel('Agents and automation panel')).toContainText('Agent run history');
+    await page.getByRole('tab', { name: 'Integrations', exact: true }).click();
+    await expect(page.getByLabel('Integrations panel')).toContainText('Plugin center');
+    await expect(page.getByLabel('Integrations panel')).toContainText('MCP connections');
 
     await page.getByRole('button', { name: 'Switch interface language' }).click();
     await page.getByRole('button', { name: '返回对话' }).click();
@@ -2541,7 +2563,7 @@ test.describe('AetherChat Frontend E2E', () => {
     expect(focusStyle.outlineWidth).toBeGreaterThanOrEqual(3);
 
     await page.getByTitle('设置').click();
-    const selectedTab = page.getByRole('tab', { name: '设置', exact: true });
+    const selectedTab = page.getByRole('tab', { name: '通用', exact: true });
     await expect(selectedTab).toHaveAttribute('aria-selected', 'true');
     const selectedStyle = await selectedTab.evaluate((element) => {
       const style = getComputedStyle(element);
@@ -2598,7 +2620,7 @@ test.describe('AetherChat progressive disclosure', () => {
     await page.getByRole('button', { name: '设置', exact: true }).click();
     await expect(page.getByTestId('settings-page')).toBeVisible();
     await expect(page.getByRole('tab', { name: '模型', exact: true })).toBeVisible();
-    await expect(page.getByRole('tab', { name: '运行', exact: true })).toBeVisible();
+    await expect(page.getByRole('tab', { name: '代理与自动化', exact: true })).toBeVisible();
     await expect(page.getByRole('tab', { name: '记忆', exact: true })).toBeVisible();
     await page.getByRole('tab', { name: '记忆', exact: true }).click();
     await expect(page.getByRole('heading', { name: '本机会话记忆' })).toBeVisible();

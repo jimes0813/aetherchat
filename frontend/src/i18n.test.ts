@@ -69,6 +69,8 @@ describe('i18n: en-US 词条表关键条目存在性', () => {
     ['general', 'General'],
     ['personalization', 'Personalization'],
     ['computerUse', 'Computer Use'],
+    ['files', 'Files'],
+    ['integrations', 'Integrations'],
     ['backToChat', 'Back to chat'],
     ['settingsGroups', 'Settings sections'],
     ['inspector', 'Inspector'],

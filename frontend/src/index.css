@@ -50,6 +50,12 @@ textarea {
 
 .aether-settings-content .aether-inspector-shell {
   background: #fff;
+  overflow: auto;
+}
+
+.aether-settings-content .aether-tab-panel {
+  flex: none;
+  overflow: visible;
 }
 
 /* WCAG AA replacement for legacy muted text utilities on light surfaces. */

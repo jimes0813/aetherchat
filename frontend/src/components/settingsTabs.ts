@@ -1,54 +1,36 @@
 import type { TranslationKey } from '../i18n';
 
-/** Preference categories shown in Settings, matching Codex's sparse list. */
-export const SETTINGS_NAV_TABS = [
-  'settings',
-  'models',
-  'voice',
-  'instructions',
-  'memory',
-  'computer',
-  'connections',
-  'plugins',
-  'governance',
+export const SETTINGS_NAV = [
+  { id: 'general', label: 'general', panels: ['settings'] },
+  { id: 'models', label: 'models', panels: ['models'] },
+  { id: 'voice', label: 'voice', panels: ['voice'] },
+  { id: 'personalization', label: 'personalization', panels: ['instructions'] },
+  { id: 'memory', label: 'memory', panels: ['memory', 'knowledge'] },
+  { id: 'files', label: 'files', panels: ['artifacts', 'changes'] },
+  { id: 'agent', label: 'agentsAndAutomation', panels: ['tasks', 'automations', 'runs'] },
+  { id: 'integrations', label: 'integrations', panels: ['tools', 'plugins', 'connections'] },
+  { id: 'computer', label: 'computerUse', panels: ['computer'] },
+  { id: 'advanced', label: 'advanced', panels: ['governance'] },
 ] as const;
 
-/** Workbench surfaces. Reachable from the command palette, not the Settings nav. */
-export const WORKSPACE_TABS = [
-  'knowledge',
-  'artifacts',
-  'runs',
-  'tasks',
-  'automations',
-  'tools',
-  'changes',
-] as const;
-
-export const SETTINGS_TABS = [...SETTINGS_NAV_TABS, ...WORKSPACE_TABS];
+export const SETTINGS_NAV_TABS = SETTINGS_NAV.map((group) => group.panels[0]);
+export const SETTINGS_TABS = SETTINGS_NAV.flatMap((group) => [...group.panels]);
 
 export type SettingsTabId = (typeof SETTINGS_TABS)[number];
-export type SettingsNavTabId = (typeof SETTINGS_NAV_TABS)[number];
-export type WorkspaceTabId = (typeof WORKSPACE_TABS)[number];
+export type SettingsNavId = (typeof SETTINGS_NAV)[number]['id'];
 
-const NAV_LABEL: Partial<Record<SettingsTabId, TranslationKey>> = {
-  settings: 'general',
-  instructions: 'personalization',
-  computer: 'computerUse',
-  governance: 'advanced',
-};
+export function navGroupForPanel(panel: SettingsTabId) {
+  return SETTINGS_NAV.find((group) => (group.panels as readonly string[]).includes(panel)) ?? SETTINGS_NAV[0];
+}
 
-export function settingsNavLabelKey(id: SettingsTabId): TranslationKey {
-  return NAV_LABEL[id] ?? id;
+export function panelsForTab(panel: SettingsTabId): readonly SettingsTabId[] {
+  return navGroupForPanel(panel).panels as readonly SettingsTabId[];
+}
+
+export function settingsNavLabelKey(panel: SettingsTabId): TranslationKey {
+  return navGroupForPanel(panel).label;
 }
 
 export function isSettingsTab(value: string | null | undefined): value is SettingsTabId {
   return Boolean(value && SETTINGS_TABS.some((id) => id === value));
-}
-
-export function isSettingsNavTab(value: string | null | undefined): value is SettingsNavTabId {
-  return Boolean(value && SETTINGS_NAV_TABS.some((id) => id === value));
-}
-
-export function isWorkspaceTab(value: string | null | undefined): value is WorkspaceTabId {
-  return Boolean(value && WORKSPACE_TABS.some((id) => id === value));
 }
