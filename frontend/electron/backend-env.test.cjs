@@ -68,3 +68,14 @@ test('resolveBackendDataDir defaults new installs to XDG share', () => {
   });
   assert.equal(resolved, '/home/demo/.local/share/aetherchat');
 });
+
+test('resolveBackendDataDir uses Windows local app data semantics', () => {
+  const resolved = resolveBackendDataDir({
+    userData: 'C:\\Users\\demo\\AppData\\Roaming\\aetherchat-frontend',
+    home: 'C:\\Users\\demo',
+    platform: 'win32',
+    env: { LOCALAPPDATA: 'C:\\Users\\demo\\AppData\\Local' },
+    existsSync: () => false,
+  });
+  assert.equal(resolved, 'C:\\Users\\demo\\AppData\\Local\\AetherChat');
+});

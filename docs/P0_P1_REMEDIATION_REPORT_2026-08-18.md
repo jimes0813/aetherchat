@@ -29,7 +29,7 @@
 | 门禁 | 结果 |
 |---|---|
 | Mypy | 107 个源码文件，0 issue |
-| Electron | 32/32 passed |
+| Electron | 33/33 passed |
 | 后端 pytest | 479 passed（仓库根与 `cd backend && pytest ../tests` 结果一致） |
 | Ruff | 全量通过 |
 | 后端模块边界 | 全部服务模块通过（`orchestrator/run.py` 2078/2100） |

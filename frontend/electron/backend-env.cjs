@@ -26,15 +26,23 @@ function sanitizeBackendProxyEnv(env) {
 
 const SQLITE_NAME = 'aetherchat.sqlite3';
 
-function xdgBackendDataDir({ platform = process.platform, home = '', env = {} } = {}) {
-  if (platform === 'win32') {
-    return path.join(env.LOCALAPPDATA || home, 'AetherChat');
-  }
-  return path.join(env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'aetherchat');
+function pathForPlatform(platform) {
+  return platform === 'win32' ? path.win32 : path.posix;
 }
 
-function packagedLegacyBackendDataDir(userData) {
-  return path.join(userData, 'backend-data');
+function xdgBackendDataDir({ platform = process.platform, home = '', env = {} } = {}) {
+  const platformPath = pathForPlatform(platform);
+  if (platform === 'win32') {
+    return platformPath.join(env.LOCALAPPDATA || home, 'AetherChat');
+  }
+  return platformPath.join(
+    env.XDG_DATA_HOME || platformPath.join(home, '.local', 'share'),
+    'aetherchat',
+  );
+}
+
+function packagedLegacyBackendDataDir(userData, platform = process.platform) {
+  return pathForPlatform(platform).join(userData, 'backend-data');
 }
 
 function resolveBackendDataDir({
@@ -45,10 +53,11 @@ function resolveBackendDataDir({
   existsSync = () => false,
 } = {}) {
   if (env.AETHERCHAT_DATA_DIR) return env.AETHERCHAT_DATA_DIR;
-  const packaged = packagedLegacyBackendDataDir(userData);
+  const platformPath = pathForPlatform(platform);
+  const packaged = packagedLegacyBackendDataDir(userData, platform);
   const xdg = xdgBackendDataDir({ platform, home, env });
-  if (existsSync(path.join(packaged, SQLITE_NAME))) return packaged;
-  if (existsSync(path.join(xdg, SQLITE_NAME))) return xdg;
+  if (existsSync(platformPath.join(packaged, SQLITE_NAME))) return packaged;
+  if (existsSync(platformPath.join(xdg, SQLITE_NAME))) return xdg;
   return xdg;
 }
 
