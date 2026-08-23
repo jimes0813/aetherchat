@@ -243,7 +243,9 @@ jobs:
         shell: bash
         run: |
           deb=$(find frontend/release -maxdepth 1 -name '*.deb' -print -quit)
-          sudo dpkg --install "$deb"
+          deb=$(realpath "$deb")
+          sudo apt-get update
+          sudo apt-get install --yes "$deb"
           xvfb-run --auto-servernum scripts/smoke_linux_install.sh
       - name: Build Windows NSIS package
         if: matrix.platform == 'windows'
