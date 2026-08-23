@@ -34,6 +34,17 @@ esac
 npm run dist:linux -- --"$electron_arch"
 "$SCRIPT_DIR/build-deb.sh" "$electron_arch"
 if [[ "$electron_arch" == "arm64" ]]; then
+  unpacked_dir="$SCRIPT_DIR/release/linux-arm64-unpacked"
+else
+  unpacked_dir="$SCRIPT_DIR/release/linux-unpacked"
+fi
+"$PYTHON_BIN" "$PROJECT_DIR/scripts/check_release_budgets.py" \
+  --unpacked "$unpacked_dir" \
+  --backend "$SCRIPT_DIR/backend" \
+  --renderer "$SCRIPT_DIR/dist" \
+  --release "$SCRIPT_DIR/release" \
+  --output "$PROJECT_DIR/release-meta/AetherChat-$VERSION-linux-$electron_arch-size-budget.json"
+if [[ "$electron_arch" == "arm64" ]]; then
   echo "Refreshing SBOM/build metadata and checking local release evidence..."
   "$PYTHON_BIN" "$PROJECT_DIR/scripts/release_evidence.py" check \
     --version "$VERSION" \

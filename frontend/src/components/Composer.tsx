@@ -45,6 +45,7 @@ interface ComposerProps {
   generationCatalog?: ComfyGenerationCatalog | null;
   onStartVoice?: () => void;
   voiceActive?: boolean;
+  onConfigureModels?: () => void;
 }
 
 const INTENTS: Array<{ id: Exclude<ComposerIntent, 'chat'>; icon: typeof Code2 }> = [
@@ -72,8 +73,12 @@ export const Composer = ({
   generationCatalog,
   onStartVoice,
   voiceActive = false,
+  onConfigureModels,
 }: ComposerProps) => {
-  const [input, setInput] = useState('');
+  const initialSessionId = useSessionStore.getState().sessionId;
+  const [input, setInput] = useState(
+    () => useSessionStore.getState().composerDrafts[initialSessionId] || '',
+  );
   const [target, setTarget] = useState('all');
   const [attachments, setAttachments] = useState<KnowledgeAttachment[]>([]);
   const [libraryAttachments, setLibraryAttachments] = useState<KnowledgeAttachment[]>([]);
@@ -105,6 +110,11 @@ export const Composer = ({
   const { t, ui } = useI18n();
   const sessionId = useSessionStore((state) => state.sessionId);
   const messages = useSessionStore((state) => state.messages);
+  const setComposerDraft = useSessionStore((state) => state.setComposerDraft);
+
+  useEffect(() => {
+    setComposerDraft(sessionId, input);
+  }, [input, sessionId, setComposerDraft]);
 
   useEffect(() => {
     if (target !== 'all' && !providers.includes(target)) setTarget('all');
@@ -241,6 +251,7 @@ export const Composer = ({
   );
 
   const send = () => {
+    if (providers.length === 0) return;
     const hasImageAttachment = attachments.some((item) => Boolean(item.preview_url))
       || references.some((item) => item.kind === 'image');
     const raw = buildComposerMessage({
@@ -628,15 +639,25 @@ export const Composer = ({
                   <AudioLines size={16} />
                 </button>
               )}
-              <button
-                type="button"
-                disabled={uploading || (!input.trim() && attachments.length === 0 && references.length === 0 && intent === 'chat')}
-                onClick={send}
-                aria-label={t('send')}
-                className="flex h-8 w-8 items-center justify-center rounded-full bg-[#2f2a24] text-white transition hover:bg-[#433a32] disabled:cursor-not-allowed disabled:opacity-35"
-              >
-                <ArrowUp size={16} />
-              </button>
+              {providers.length === 0 ? (
+                <button
+                  type="button"
+                  onClick={onConfigureModels}
+                  className="h-8 rounded-full bg-[#2f2a24] px-3 text-xs font-medium text-white transition hover:bg-[#433a32]"
+                >
+                  {t('configureModels')}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={uploading || (!input.trim() && attachments.length === 0 && references.length === 0 && intent === 'chat')}
+                  onClick={send}
+                  aria-label={t('send')}
+                  className="flex h-8 w-8 items-center justify-center rounded-full bg-[#2f2a24] text-white transition hover:bg-[#433a32] disabled:cursor-not-allowed disabled:opacity-35"
+                >
+                  <ArrowUp size={16} />
+                </button>
+              )}
             </div>
           </div>
         </div>

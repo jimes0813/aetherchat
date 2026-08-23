@@ -457,6 +457,7 @@ export interface WorkspaceSettings {
   language: '中文优先' | '中英双语';
   uiLocale: 'zh-CN' | 'en-US';
   reasoningDisplay: '显示' | '隐藏';
+  developerMode?: boolean;
   /** Preferred WP-8 governance project for newly created sessions. */
   preferredProjectId?: string | null;
 }

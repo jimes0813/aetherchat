@@ -86,6 +86,13 @@ a = Analysis(
         'reportlab.graphics.samples',
         'reportlab.lib.testutils',
         'sqlalchemy',
+        # Uvicorn falls back to asyncio+h11. These optional development and
+        # accelerator packages add roughly 20 MiB to the frozen backend and
+        # are not required by the loopback desktop service.
+        'uvloop',
+        'httptools',
+        'watchfiles',
+        'fastar',
     ],
     noarchive=False,
     optimize=0,
@@ -100,7 +107,10 @@ exe = EXE(
     name='aetherchat-backend',
     debug=False,
     bootloader_ignore_signals=False,
-    strip=False,
+    # Linux wheels contain removable symbol tables. Stripping them keeps the
+    # frozen service under budget without executable packers; retain symbols
+    # on Windows for Authenticode and native-extension compatibility.
+    strip=sys.platform != 'win32',
     # PyWin32 and document libraries ship native extensions. Keeping UPX off
     # avoids loader/antivirus issues caused by compressing those binaries.
     upx=False,
@@ -115,7 +125,7 @@ coll = COLLECT(
     exe,
     a.binaries,
     a.datas,
-    strip=False,
+    strip=sys.platform != 'win32',
     upx=False,
     upx_exclude=[],
     name='aetherchat-backend',

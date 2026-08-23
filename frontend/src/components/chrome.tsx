@@ -156,7 +156,7 @@ export function ConversationHistory({
   onContinue,
   onDelete,
 }: ConversationHistoryProps) {
-  const { t } = useI18n();
+  const { t, ui } = useI18n();
   const [query, setQuery] = useState('');
   const [showDiagnostic, setShowDiagnostic] = useState(false);
   const { visible, diagnostic } = partitionConversations(conversations);
@@ -246,11 +246,11 @@ export function ConversationHistory({
               >
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="truncate text-sm font-medium">{conversation.title}</span>
+                    <span className="truncate text-sm font-medium">{ui(conversation.title)}</span>
                     {conversation.id === currentSessionId && <span className="shrink-0 rounded bg-[#e7d8c8] px-1.5 py-0.5 text-[10px] text-[#6d4828]">{t('current')}</span>}
                     {conversation.projectId && (
                       <span className="shrink-0 rounded bg-[#ebe4da] px-1.5 py-0.5 text-[10px] text-[#5d4a3a]">
-                        {projectNames?.[conversation.projectId] || conversation.projectId}
+                        {ui(projectNames?.[conversation.projectId] || conversation.projectId)}
                       </span>
                     )}
                   </div>
@@ -373,7 +373,7 @@ export function WorkspaceSidebar({
   onSelectConversation,
   onDeleteConversation,
 }: WorkspaceSidebarProps) {
-  const { t } = useI18n();
+  const { t, ui } = useI18n();
   const [projectDraft, setProjectDraft] = useState<string | null>(null);
   const [showDiagnostic, setShowDiagnostic] = useState(false);
   const { visible, diagnostic } = partitionConversations(conversations);
@@ -458,7 +458,7 @@ export function WorkspaceSidebar({
                 onClick={() => onSelectProject?.(project.id)}
                 className={rowClass(project.id === activeProjectId)}
               >
-                <span className="truncate">{project.name}</span>
+                <span className="truncate">{ui(project.name)}</span>
               </button>
             ))}
           </div>
@@ -473,14 +473,14 @@ export function WorkspaceSidebar({
               type="button"
               onClick={() => onSelectConversation(conversation.id)}
               aria-current={conversation.id === currentSessionId ? 'page' : undefined}
-              title={conversation.title}
+              title={ui(conversation.title)}
               className={`${rowClass(conversation.id === currentSessionId)} pr-7`}
             >
-              <span className="min-w-0 flex-1 truncate">{conversation.title}</span>
+              <span className="min-w-0 flex-1 truncate">{ui(conversation.title)}</span>
             </button>
             <button
               type="button"
-              aria-label={t('deleteConversationNamed', { title: conversation.title })}
+              aria-label={t('deleteConversationNamed', { title: ui(conversation.title) })}
               title={t('deleteConversation')}
               onClick={() => onDeleteConversation(conversation.id)}
               className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded text-[#7b5a42] opacity-0 transition hover:text-[#962f25] focus:opacity-100 group-hover:opacity-100"
@@ -654,14 +654,14 @@ interface DesktopStatusBarProps {
 }
 
 export function DesktopStatusBar({ connection, budgetRemaining, runQueuePosition, onCancelQueuedRun, uiLocale, sandbox, tokenStatus, onRefreshToken, onToggleLanguage }: DesktopStatusBarProps) {
-  const { t } = useI18n();
+  const { t, ui } = useI18n();
   return (
     <>
       <DegradedInstallBanner />
     <footer className="flex h-7 items-center gap-4 border-t border-[#cfc4b7] bg-[#2f2a24] px-3 text-[11px] text-[#e7dfd3]">
       <span className="flex items-center gap-1"><FolderOpen size={12} /> {t('localWorkspace')}</span>
-      <span>{t('sandbox', { value: sandbox })}</span>
-      <span>WS {connection === 'online' ? 'connected' : connection === 'connecting' ? 'connecting' : 'offline'}</span>
+      <span>{t('sandbox', { value: ui(sandbox) })}</span>
+      <span>WS {connection === 'online' ? t('connected') : connection === 'connecting' ? t('connecting') : t('offline')}</span>
       {runQueuePosition !== undefined && (
         <button
           type="button"
@@ -683,7 +683,7 @@ export function DesktopStatusBar({ connection, budgetRemaining, runQueuePosition
           {window.aetherRuntime?.installChannel ? ` · ${window.aetherRuntime.installChannel}` : ''}
         </span>
       )}
-      <button onClick={onRefreshToken} title={t('refreshWsAuth')} className="rounded bg-[#8d5f35] px-1.5 py-0.5 text-[10px] text-white">{tokenStatus}</button>
+      <button onClick={onRefreshToken} title={t('refreshWsAuth')} className="rounded bg-[#8d5f35] px-1.5 py-0.5 text-[10px] text-white">{ui(tokenStatus)}</button>
       <button onClick={onToggleLanguage} title={t('switchUiLanguage')} aria-label={t('switchUiLanguage')} className="rounded bg-[#8d5f35] px-1.5 py-0.5 text-[10px] text-white">{uiLocale === 'zh-CN' ? 'EN' : t('chinese')}</button>
       {window.aetherRuntime?.quickEntryShortcut && (
         <span>{t('quickEntry', { shortcut: window.aetherRuntime.quickEntryShortcut })}</span>

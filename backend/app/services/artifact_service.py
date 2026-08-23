@@ -138,23 +138,6 @@ class ArtifactService:
         repo_path = self._session_root(session_id)
         if not repo_path.exists():
             repo_path.mkdir(parents=True, exist_ok=True)
-            (repo_path / "README.md").write_text(
-                "# AetherChat Project\n\nAetherChat desktop workspace initialized.\n",
-                encoding="utf-8",
-            )
-            (repo_path / "docs").mkdir(exist_ok=True)
-            (repo_path / "docs" / "PRD.md").write_text(
-                "# Product Notes\n\n- Multi-model collaboration\n- Task claiming and review\n- Artifact editing\n",
-                encoding="utf-8",
-            )
-            (repo_path / "src").mkdir(exist_ok=True)
-            (repo_path / "src" / "demo.ts").write_text(
-                "export const greeting = 'hello from AetherChat';\n",
-                encoding="utf-8",
-            )
-            self._append_history(repo_path, "README.md", "Initial commit", "system")
-            self._append_history(repo_path, "docs/PRD.md", "Initial commit", "system")
-            self._append_history(repo_path, "src/demo.ts", "Initial commit", "system")
         elif not repo_path.is_dir():
             raise ArtifactPathError("Session workspace is not a directory")
         return str(repo_path)
@@ -275,6 +258,33 @@ class ArtifactService:
             raise ArtifactPathError("Session artifact root is not a safe directory")
         shutil.rmtree(root)
         return True
+
+    async def delete_example_project(self, session_id: str) -> int:
+        """Remove only the explicit, namespaced sample project and its history."""
+        root = Path(await self.prepare_checkout(session_id))
+        example_root = root / "示例"
+        removed = 0
+        if example_root.exists():
+            if not example_root.is_dir() or example_root.is_symlink():
+                raise ArtifactPathError("Example project path is not a safe directory")
+            removed = sum(1 for item in example_root.rglob("*") if item.is_file())
+            shutil.rmtree(example_root)
+        history_file = root / HISTORY_FILENAME
+        with _lock_for(history_file):
+            retained = [
+                item for item in self._read_history(root)
+                if not str(item.get("path") or "").startswith("示例/")
+            ]
+            if retained:
+                temporary = history_file.with_suffix(".jsonl.tmp")
+                temporary.write_text(
+                    "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in retained),
+                    encoding="utf-8",
+                )
+                temporary.replace(history_file)
+            else:
+                history_file.unlink(missing_ok=True)
+        return removed
 
     async def read(self, session_id: str, path: str) -> str:
         await self.prepare_checkout(session_id)

@@ -1373,29 +1373,12 @@ async function installMockApi(page: Page) {
 const SETTINGS_NAV_ALIASES: Record<string, string> = {
   设置: '通用',
   Settings: 'General',
-  资料: '记忆',
-  Knowledge: 'Memory',
-  变更: '文件',
-  Artifacts: 'Files',
-  Changes: 'Files',
-  任务: '代理与自动化',
-  自动化: '代理与自动化',
-  运行: '代理与自动化',
-  Tasks: 'Agents and automation',
-  Automations: 'Agents and automation',
-  Runs: 'Agents and automation',
-  工具: '集成',
-  插件: '集成',
-  连接: '集成',
-  Tools: 'Integrations',
-  Plugins: 'Integrations',
-  Connections: 'Integrations',
-  电脑: '电脑使用',
-  Computer: 'Computer Use',
-  规范: '个性化',
-  Instructions: 'Personalization',
-  '治理（实验）': '高级',
-  'Governance (experimental)': 'Advanced',
+  记忆: '项目', 资料: '项目', 文件: '项目', 变更: '项目', 任务: '项目',
+  Memory: 'Project', Knowledge: 'Project', Artifacts: 'Project', Changes: 'Project', Tasks: 'Project',
+  自动化: '自动化', Automations: 'Automations',
+  模型: '能力', 语音: '能力', 插件: '能力', 连接: '能力', 电脑: '能力',
+  Models: 'Capabilities', Voice: 'Capabilities', Plugins: 'Capabilities', Connections: 'Capabilities', Computer: 'Capabilities',
+  运行: '运行与安全', 规范: '运行与安全', Runs: 'Runtime & security', Instructions: 'Runtime & security',
 };
 
 async function openSettingsTab(page: Page, tab: string) {
@@ -1407,6 +1390,12 @@ async function openSettingsTab(page: Page, tab: string) {
   const navName = SETTINGS_NAV_ALIASES[tab] || tab;
   const navTab = page.getByRole('tab', { name: navName, exact: true });
   await navTab.click();
+  if (navName !== tab) {
+    const subsection = settingsPage.getByRole('navigation', { name: /设置子区域|Settings subsections/ });
+    if (await subsection.count()) {
+      await subsection.getByRole('button', { name: tab, exact: true }).click();
+    }
+  }
 }
 
 async function acceptConfirmDialog(page: Page) {
@@ -2360,12 +2349,14 @@ test.describe('AetherChat Frontend E2E', () => {
 
     const persisted = await page.evaluate(() => JSON.parse(localStorage.getItem('aetherchat-workspace') || '{}'));
     expect(Object.keys(persisted.state).sort()).toEqual([
+      'composerDrafts',
       'conversations',
       'selectedArtifactPath',
       'sessionId',
       'settings',
     ]);
     expect(persisted.state.settings.language).toBe('中英双语');
+    expect(persisted.state.composerDrafts).toEqual({});
     expect(persisted.state.conversations[0].title).toBe('新协作会话');
 
     await page.reload();
@@ -2459,35 +2450,30 @@ test.describe('AetherChat Frontend E2E', () => {
     await expect(page.locator('html')).toHaveAttribute('lang', 'en-US');
     await expect(page.getByRole('button', { name: 'Send' })).toBeVisible();
 
-    const panels = [
-      ['General', 'General'],
-      ['Memory', 'Local session memory'],
-      ['Files', 'File tree'],
-      ['Agents and automation', 'Add'],
-      ['Integrations', 'Tool catalog'],
-      ['Computer Use', 'Local computer'],
-      ['Models', 'Model APIs'],
-    ] as const;
-    const untranslatedUi = /本机会话记忆|项目资料库|新建任务|本机后台自动化|创建定时任务|文件树|变更与合并|工具仓|插件中心|MCP 连接器|本地电脑|模型 API|Agent 运行记录|协作设置/;
+    const untranslatedUi = /本机会话记忆|项目资料库|新建任务|本机后台自动化|创建定时任务|文件树|变更与合并|工具仓|插件中心|MCP 连接器|本地电脑|模型 API|Agent 运行记录|协作设置|本机授权|严格沙箱/;
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Back to chat' })).toBeVisible();
     await expect(page.getByRole('tablist', { name: 'Settings sections' })).toBeVisible();
-    await expect(page.getByRole('tab', { name: 'Personalization', exact: true })).toBeVisible();
-    await expect(page.getByRole('tab', { name: 'Knowledge', exact: true })).toHaveCount(0);
-    await expect(page.getByRole('tab', { name: 'Runs', exact: true })).toHaveCount(0);
-    for (const [panel, expected] of panels) {
-      await page.getByRole('tab', { name: panel, exact: true }).click();
-      const pane = page.getByLabel(`${panel} panel`);
-      await expect(pane).toContainText(expected);
-      await expect(pane).not.toContainText(untranslatedUi);
+    await expect(page.getByRole('tab', { name: 'Developer tools', exact: true })).toHaveCount(0);
+    for (const [tab, expected] of [
+      ['Settings', 'General'],
+      ['Knowledge', 'Project knowledge base'],
+      ['Artifacts', 'File tree'],
+      ['Tasks', 'Add'],
+      ['Automations', 'Local background automation'],
+      ['Models', 'Model APIs'],
+      ['Plugins', 'Plugin center'],
+      ['Connections', 'MCP connections'],
+      ['Computer', 'Local computer'],
+      ['Runs', 'Agent run history'],
+    ] as const) {
+      await openSettingsTab(page, tab);
+      const content = page.getByTestId('settings-content');
+      await expect(content).toContainText(expected);
+      await expect(content).not.toContainText(untranslatedUi);
+      const labels = await content.locator('[aria-label]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('aria-label') || ''));
+      expect(labels.join('\n')).not.toMatch(/\{[A-Za-z0-9_]+\}/);
     }
-    await page.getByRole('tab', { name: 'Memory', exact: true }).click();
-    await expect(page.getByLabel('Memory panel')).toContainText('Project knowledge base');
-    await page.getByRole('tab', { name: 'Agents and automation', exact: true }).click();
-    await expect(page.getByLabel('Agents and automation panel')).toContainText('Agent run history');
-    await page.getByRole('tab', { name: 'Integrations', exact: true }).click();
-    await expect(page.getByLabel('Integrations panel')).toContainText('Plugin center');
-    await expect(page.getByLabel('Integrations panel')).toContainText('MCP connections');
 
     await page.getByRole('button', { name: 'Back to chat' }).click();
     await page.getByRole('button', { name: 'Switch interface language' }).click();
@@ -2620,10 +2606,12 @@ test.describe('AetherChat progressive disclosure', () => {
 
     await page.getByRole('button', { name: '设置', exact: true }).click();
     await expect(page.getByTestId('settings-page')).toBeVisible();
-    await expect(page.getByRole('tab', { name: '模型', exact: true })).toBeVisible();
-    await expect(page.getByRole('tab', { name: '代理与自动化', exact: true })).toBeVisible();
-    await expect(page.getByRole('tab', { name: '记忆', exact: true })).toBeVisible();
-    await page.getByRole('tab', { name: '记忆', exact: true }).click();
+    await expect(page.getByRole('tab', { name: '项目', exact: true })).toBeVisible();
+    await expect(page.getByRole('tab', { name: '能力', exact: true })).toBeVisible();
+    await expect(page.getByRole('tab', { name: '运行与安全', exact: true })).toBeVisible();
+    await expect(page.getByRole('tab', { name: '开发者工具', exact: true })).toHaveCount(0);
+    await page.getByRole('tab', { name: '项目', exact: true }).click();
+    await page.getByRole('button', { name: '记忆', exact: true }).click();
     await expect(page.getByRole('heading', { name: '本机会话记忆' })).toBeVisible();
   });
 });
@@ -2710,6 +2698,7 @@ test.describe('AetherChat first-run wizard', () => {
     const wizard = page.getByRole('dialog', { name: /欢迎使用 AetherChat|配置一个可对话的模型|已就绪/ });
     await expect(wizard).toBeVisible();
     await expect(page.getByRole('heading', { name: '欢迎使用 AetherChat' })).toBeVisible();
+    await page.getByRole('radio', { name: /云端 API/ }).click();
     await page.getByRole('button', { name: '开始配置' }).click();
     await expect(page.getByRole('heading', { name: '配置一个可对话的模型' })).toBeVisible();
     await page.getByPlaceholder('sk-...').fill('sk-e2e-test-key');

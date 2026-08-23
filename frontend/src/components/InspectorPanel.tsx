@@ -30,6 +30,8 @@ import { ErrorBoundary } from './ErrorBoundary';
 import { DesktopControlPanel } from './DesktopControlPanel';
 import { PluginCenter } from './PluginCenter';
 import { VoiceSettingsPanel } from './VoiceSettingsPanel';
+import { GeneralSettingsPanel } from './GeneralSettingsPanel';
+import { createExampleArtifacts } from './exampleProject';
 import {
   formatAskWithSources,
   formatCitationForComposer,
@@ -202,6 +204,7 @@ export function InspectorPanel(props: InspectorProps) {
   const [artifactView, setArtifactView] = useState<'preview' | 'edit' | 'diff' | 'history'>('preview');
   const [artifactDiff, setArtifactDiff] = useState('');
   const [artifactStatus, setArtifactStatus] = useState('');
+  const [exampleBusy, setExampleBusy] = useState(false);
   const [taskTitle, setTaskTitle] = useState('');
   const [taskDependencies, setTaskDependencies] = useState<string[]>([]);
   const [commitMessage, setCommitMessage] = useState('中文工作台更新');
@@ -622,6 +625,39 @@ export function InspectorPanel(props: InspectorProps) {
     }
   };
 
+  const createExampleProject = async () => {
+    setExampleBusy(true);
+    try {
+      await createExampleArtifacts(props.apiBase, props.sessionId);
+      props.onCreateTask('[示例] 明确目标与验收标准');
+      props.onCreateTask('[示例] 完成一个可审核的交付物');
+      props.onReloadArtifacts();
+      setArtifactStatus(t('exampleProjectCreated'));
+    } catch (error) {
+      setArtifactStatus(`${t('exampleProjectFailed')}：${String(error)}`);
+    } finally {
+      setExampleBusy(false);
+    }
+  };
+
+  const removeExampleProject = async () => {
+    if (!await confirmAction(t('removeExampleProjectConfirm'), { danger: true })) return;
+    setExampleBusy(true);
+    try {
+      await Promise.all([
+        fetchJson(`${props.apiBase}/artifacts/examples?session_id=${encodeURIComponent(props.sessionId)}`, { method: 'DELETE' }),
+        fetchJson(`${props.apiBase}/tasks/examples?session_id=${encodeURIComponent(props.sessionId)}`, { method: 'DELETE' }),
+      ]);
+      useSessionStore.getState().setTasks(tasks.filter((task) => !task.title.startsWith('[示例]')));
+      props.onReloadArtifacts();
+      setArtifactStatus(t('exampleProjectRemoved'));
+    } catch (error) {
+      setArtifactStatus(`${t('exampleProjectRemoveFailed')}：${String(error)}`);
+    } finally {
+      setExampleBusy(false);
+    }
+  };
+
   const compareArtifactVersion = async (version: number) => {
     if (!props.selectedArtifactPath || !artifactVersions[0]) return;
     try {
@@ -1037,7 +1073,7 @@ export function InspectorPanel(props: InspectorProps) {
                   <div className="truncate text-sm font-medium">{attachment.name}</div>
                   <div className="mt-0.5 text-xs text-[#84796d]">{t('chunksKB', { count: attachment.chunk_count, size: (attachment.size_bytes / 1024).toFixed(1), extension: attachment.extension || '' })}</div>
                 </div>
-                <button aria-label={t('preview', { name: attachment.name })} onClick={() => void previewKnowledge(attachment)} className="rounded border border-[#d5c6b6] px-2 py-1 text-xs text-[#654927] hover:bg-[#eee5da]">{t('preview')}</button>
+                <button aria-label={t('previewNamed', { name: attachment.name })} onClick={() => void previewKnowledge(attachment)} className="rounded border border-[#d5c6b6] px-2 py-1 text-xs text-[#654927] hover:bg-[#eee5da]">{t('preview')}</button>
                 <button aria-label={t('delete', { name: attachment.name })} onClick={() => void deleteKnowledge(attachment)} className="rounded p-1.5 text-[#8c4a3d] hover:bg-[#f3e3df]">
                   <Trash2 size={15} />
                 </button>
@@ -1123,6 +1159,11 @@ export function InspectorPanel(props: InspectorProps) {
               {t('fileTree')}
             </div>
             <div className="space-y-2">
+              {artifacts.some((artifact) => artifact.path.startsWith('示例/')) && (
+                <button type="button" disabled={exampleBusy} onClick={() => void removeExampleProject()} className="w-full rounded-md border border-[#d5aaa2] bg-[#fff5f2] px-3 py-2 text-xs font-medium text-[#8a4036] disabled:opacity-50">
+                  {t('removeExampleProject')}
+                </button>
+              )}
               {artifacts.map((artifact) => (
                 <button
                   key={artifact.path}
@@ -1145,7 +1186,15 @@ export function InspectorPanel(props: InspectorProps) {
               ))}
               {artifacts.length === 0 && (
                 <div className="rounded-lg border border-dashed border-[#d6cbbd] p-5 text-center text-xs text-[#7a7065]">
-                  {t('noFilesInThisConversation')}
+                  <p>{t('noFilesInThisConversation')}</p>
+                  <button
+                    type="button"
+                    disabled={exampleBusy}
+                    onClick={() => void createExampleProject()}
+                    className="mt-3 rounded-md border border-[#bca58e] bg-white px-3 py-1.5 font-medium text-[#654927] disabled:opacity-50"
+                  >
+                    {exampleBusy ? t('creatingExampleProject') : t('createExampleProject')}
+                  </button>
                 </div>
               )}
             </div>
@@ -1475,38 +1524,38 @@ export function InspectorPanel(props: InspectorProps) {
               {t('modelApis')}
             </div>
             <div className="grid grid-cols-2 gap-2">
-              <input value={modelName} onChange={(event) => setModelName(event.target.value)} readOnly={Boolean(editingModelName)} title={editingModelName ? t('modelNameIsAStable') : undefined} placeholder={t('nameForExampleMyGPT')} className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none read-only:bg-[#eee7de]" />
-              <select value={modelType} onChange={(event) => setModelType(event.target.value as ModelConfig['type'])} className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none">
+              <input aria-label={t('configurationName')} aria-describedby="model-config-status" value={modelName} onChange={(event) => setModelName(event.target.value)} readOnly={Boolean(editingModelName)} title={editingModelName ? t('modelNameIsAStable') : undefined} placeholder={t('nameForExampleMyGPT')} className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none read-only:bg-[#eee7de]" />
+              <select aria-label={t('modelType')} aria-describedby="model-config-status" value={modelType} onChange={(event) => setModelType(event.target.value as ModelConfig['type'])} className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none">
                 <option value="openai_compat">{t('openaiCompatible')}</option>
                 <option value="anthropic">Anthropic / Claude</option>
                 <option value="xai">xAI</option>
                 <option value="local">{t('localModel')}</option>
               </select>
-              <input value={modelId} onChange={(event) => setModelId(event.target.value)} placeholder={t('modelIDForExampleGpt')} className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none" />
-              <input value={modelBaseUrl} onChange={(event) => setModelBaseUrl(event.target.value)} placeholder={t('apiEndpointOptional')} className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none" />
-              <input value={modelApiKey} onChange={(event) => setModelApiKey(event.target.value)} placeholder={t('apiKeyStoredLocally')} type="password" autoComplete="new-password" className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none" />
-              <select value={modelPolicy} onChange={(event) => setModelPolicy(event.target.value as ModelConfig['participation_policy'])} className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none">
+              <input aria-label={t('modelID')} aria-describedby="model-config-status" value={modelId} onChange={(event) => setModelId(event.target.value)} placeholder={t('modelIDForExampleGpt')} className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none" />
+              <input aria-label={t('endpointBaseURL')} aria-describedby="model-config-status" value={modelBaseUrl} onChange={(event) => setModelBaseUrl(event.target.value)} placeholder={t('apiEndpointOptional')} className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none" />
+              <input aria-label={t('apiKey')} aria-describedby="model-config-status" value={modelApiKey} onChange={(event) => setModelApiKey(event.target.value)} placeholder={t('apiKeyStoredLocally')} type="password" autoComplete="new-password" className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none" />
+              <select aria-label={t('participationPolicy')} aria-describedby="model-config-status" value={modelPolicy} onChange={(event) => setModelPolicy(event.target.value as ModelConfig['participation_policy'])} className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none">
                 <option value="always">{t('alwaysParticipate')}</option>
                 <option value="mentioned">{t('participateWhenMentioned')}</option>
                 <option value="project_autonomous">{t('automaticInProjectMode')}</option>
               </select>
-              <input value={modelPersona} onChange={(event) => setModelPersona(event.target.value)} placeholder={t('roleForExampleCodeReviewer')} className="col-span-2 h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none" />
+              <input aria-label={t('modelRole')} aria-describedby="model-config-status" value={modelPersona} onChange={(event) => setModelPersona(event.target.value)} placeholder={t('roleForExampleCodeReviewer')} className="col-span-2 h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none" />
               {modelType === 'local' && <>
-                <select value={modelRuntime} onChange={(event) => setModelRuntime(event.target.value as 'external' | 'llama_cpp')} className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none">
+                <select aria-label={t('localRuntime')} aria-describedby="model-config-status" value={modelRuntime} onChange={(event) => setModelRuntime(event.target.value as 'external' | 'llama_cpp')} className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none">
                   <option value="external">{t('externalServiceConnectOnly')}</option>
                   <option value="llama_cpp">{t('startLlamaCppAutomatically')}</option>
                 </select>
-                <input value={modelPath} onChange={(event) => setModelPath(event.target.value)} disabled={modelRuntime !== 'llama_cpp'} placeholder={t('absoluteGGUFModelPath')} className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none disabled:bg-[#eee7de]" />
+                <input aria-label={t('ggufModelPath')} aria-describedby="model-config-status" value={modelPath} onChange={(event) => setModelPath(event.target.value)} disabled={modelRuntime !== 'llama_cpp'} placeholder={t('absoluteGGUFModelPath')} className="h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none disabled:bg-[#eee7de]" />
                 {modelRuntime === 'llama_cpp' && <>
-                  <input value={modelExecutable} onChange={(event) => setModelExecutable(event.target.value)} placeholder={t('absoluteLlamaServerPath')} className="col-span-2 h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none" />
-                  <textarea value={modelRuntimeArgs} onChange={(event) => setModelRuntimeArgs(event.target.value)} aria-label={t('llamaCppStartupArguments')} placeholder={t('oneStartupArgumentPerLine')} className="col-span-2 min-h-24 rounded-lg border border-[#ded6ca] bg-white px-3 py-2 text-xs outline-none" />
+                  <input aria-label={t('llamaServerPath')} aria-describedby="model-config-status" value={modelExecutable} onChange={(event) => setModelExecutable(event.target.value)} placeholder={t('absoluteLlamaServerPath')} className="col-span-2 h-9 rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none" />
+                  <textarea value={modelRuntimeArgs} onChange={(event) => setModelRuntimeArgs(event.target.value)} aria-label={t('llamaCppStartupArguments')} aria-describedby="model-config-status" placeholder={t('oneStartupArgumentPerLine')} className="col-span-2 min-h-24 rounded-lg border border-[#ded6ca] bg-white px-3 py-2 text-xs outline-none" />
                 </>}
               </>}
               <button onClick={submitModel} className="col-span-2 flex h-9 items-center justify-center gap-1 rounded-lg bg-[#2f2a24] px-3 text-sm font-medium text-white">
                 <Plus size={15} />
                 {editingModelName ? t('updateAndVerify') : t('addAndVerify')}
               </button>
-              {modelVerifyStatus && <div className="col-span-2 rounded-md bg-[#ebe3d8] px-3 py-2 text-xs text-[#6d6258]">{ui(modelVerifyStatus)}</div>}
+              {modelVerifyStatus && <div id="model-config-status" role={/失败|不能为空|请先/.test(modelVerifyStatus) ? 'alert' : 'status'} aria-live="polite" className="col-span-2 rounded-md bg-[#ebe3d8] px-3 py-2 text-xs text-[#6d6258]">{ui(modelVerifyStatus)}</div>}
             </div>
           </div>
           <div className="p-4">
@@ -1515,7 +1564,7 @@ export function InspectorPanel(props: InspectorProps) {
               models={modelConfigs}
               onNotice={setModelVerifyStatus}
             />
-            <div className="mb-2 text-xs font-semibold text-[#7a7065]">{t('connectedModels')}</div>
+            <div className="mb-2 text-xs font-semibold text-[#7a7065]">{t('configuredModels')}</div>
             <div className="space-y-2">
               {modelConfigs.map((model) => (
                 <div key={model.name} className="rounded-lg border border-[#ded6ca] bg-[#fbfaf7] p-3">
@@ -1523,9 +1572,9 @@ export function InspectorPanel(props: InspectorProps) {
                     <div className="min-w-0">
                       <div className="truncate text-sm font-semibold">{model.name}</div>
                       <div className="mt-1 text-xs leading-5 text-[#7a7065]">{model.type} - {model.model}</div>
-                      <div className="mt-1 text-xs leading-5 text-[#7a7065]">{model.persona || t('noRoleSet')} · {model.participation_policy === 'always' ? t('online') : t('onDemand')}</div>
+                      <div className="mt-1 text-xs leading-5 text-[#7a7065]">{model.persona || t('noRoleSet')} · {model.participation_policy === 'always' ? t('participatesByDefault') : t('onDemand')}</div>
                     </div>
-                    <span className={model.has_api_key || model.type === 'local' ? 'rounded-md bg-[#dcebd7] px-2 py-1 text-[11px] text-[#326022]' : 'rounded-md bg-[#ebe3d8] px-2 py-1 text-[11px] text-[#7a7065]'}>{model.type === 'local' ? t('localEndpointConfigured') : model.has_api_key ? t('keyStored') : t('notConfigured')}</span>
+                    <span className={isConfiguredModel(model) ? 'rounded-md bg-[#dcebd7] px-2 py-1 text-[11px] text-[#326022]' : 'rounded-md bg-[#ebe3d8] px-2 py-1 text-[11px] text-[#7a7065]'}>{isConfiguredModel(model) ? t('configuredNotVerified') : t('notConfigured')}</span>
                   </div>
                   <div className="mt-3 flex items-center justify-between text-xs text-[#7a7065]">
                     <span>{model.base_url || t('defaultEndpoint')}</span>
@@ -1536,7 +1585,7 @@ export function InspectorPanel(props: InspectorProps) {
                         title={!model.has_api_key && model.type !== 'local' ? t('configureAnAPIKeyFirst') : undefined}
                         className={model.participation_policy === 'always' ? 'rounded-md bg-[#2f2a24] px-2 py-1 text-white disabled:opacity-50' : 'rounded-md border border-[#d6cbbd] px-2 py-1 disabled:opacity-50'}
                       >
-                        {model.participation_policy === 'always' ? t('online2') : t('enable')}
+                        {model.participation_policy === 'always' ? t('pause') : t('enable')}
                       </button>
                       <button onClick={() => editModel(model)} className="rounded-md border border-[#d6cbbd] px-2 py-1">{t('edit')}</button>
                       <button onClick={async () => {
@@ -1595,64 +1644,7 @@ export function InspectorPanel(props: InspectorProps) {
       )}
 
       {showPanel('settings') && (
-        <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto p-4" data-settings-panel="settings">
-          <div className="mb-4 flex items-center gap-2 text-sm font-semibold">
-            <ShieldCheck size={16} />
-            {t('general')}
-          </div>
-          {([
-            ['mode', '协作模式', ['日常讨论', '圆桌评审', '项目协作']],
-            ['mergeRule', '合并规则', ['两票通过', '主持人通过', '人工确认']],
-            ['sandbox', '沙箱策略', ['Docker 严格沙箱', '只读预览', '关闭执行']],
-            ['language', '语言策略', ['中文优先', '中英双语']],
-            ['uiLocale', t('uiLanguage'), ['zh-CN', 'en-US']],
-            ['reasoningDisplay', '思考过程摘要', ['显示', '隐藏']],
-          ] as Array<[keyof WorkspaceSettings, string, string[]]>).map(([key, label, options]) => (
-            <label key={String(key)} className="mb-4 block">
-              <span className="mb-1 block text-xs font-semibold text-[#7a7065]">{ui(String(label))}</span>
-              <select
-                value={workspaceSettings[key] ?? (key === 'reasoningDisplay' ? '显示' : '')}
-                onChange={(event) => props.onUpdateSettings({ [key]: event.target.value } as Partial<WorkspaceSettings>)}
-                className="h-10 w-full rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none"
-              >
-                {(options as string[]).map((option) => <option key={option} value={option}>{option === 'zh-CN' ? t('simplifiedChinese') : option === 'en-US' ? 'English' : ui(option)}</option>)}
-              </select>
-            </label>
-          ))}
-          <section className="mb-5 rounded-xl border border-[#ded6ca] bg-[#fbfaf7] p-3">
-            <div className="flex items-start gap-2">
-              <Archive size={16} className="mt-0.5 shrink-0 text-[#6b523c]" />
-              <div>
-                <div className="text-xs font-semibold text-[#574a3e]">{t('redactedDiagnosticBundle')}</div>
-                <p className="mt-1 text-xs leading-5 text-[#7a7065]">
-                  {t('exportSchemaRunMetricsHashed')}
-                </p>
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => void downloadDiagnosticBundle()}
-              className="mt-3 rounded-md bg-[#2f2a24] px-3 py-1.5 text-xs font-medium text-white"
-            >
-              {t('exportRedactedDiagnosticBundle')}
-            </button>
-            {diagnosticStatus && (
-              <div role="status" className="mt-2 text-xs text-[#6d6258]">{diagnosticStatus}</div>
-            )}
-          </section>
-          <div className="mt-5 text-xs font-semibold text-[#7a7065]">{t('modelRoles')}</div>
-          <div className="mt-2 space-y-2">
-            {providers.map((provider) => (
-              <div key={provider.name} className="rounded-lg border border-[#ded6ca] bg-[#fbfaf7] p-3">
-                <div className="flex items-center justify-between text-sm font-medium">
-                  <span>{provider.name}</span>
-                  <span className={`status-dot status-${provider.status}`} />
-                </div>
-                <div className="mt-1 text-xs text-[#7a7065]">{provider.role} · {provider.persona}</div>
-              </div>
-            ))}
-          </div>
-        </div>
+        <GeneralSettingsPanel settings={workspaceSettings} providers={providers} diagnosticStatus={diagnosticStatus} onUpdate={props.onUpdateSettings} onDownloadDiagnostics={() => void downloadDiagnosticBundle()} />
       )}
 
       {showPanel('instructions') && (

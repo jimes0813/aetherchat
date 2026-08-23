@@ -2,7 +2,8 @@ import type { ReactNode } from 'react';
 import { useI18n } from '../i18n';
 import { useDialogFocus } from './useDialogFocus';
 import {
-  SETTINGS_NAV,
+  navGroupForPanel,
+  visibleSettingsNav,
   type SettingsTabId,
 } from './settingsTabs';
 
@@ -11,6 +12,7 @@ type SettingsPageProps = {
   onChangeTab: (tab: SettingsTabId) => void;
   onBackToChat: () => void;
   children: ReactNode;
+  developerMode?: boolean;
 };
 
 export function SettingsPage({
@@ -18,6 +20,7 @@ export function SettingsPage({
   onChangeTab,
   onBackToChat,
   children,
+  developerMode = false,
 }: SettingsPageProps) {
   const { t } = useI18n();
   const dialogFocus = useDialogFocus<HTMLDivElement>(true, onBackToChat);
@@ -55,7 +58,7 @@ export function SettingsPage({
             aria-label={t('settingsGroups')}
             className="min-h-0 flex-1 overflow-auto px-2 pb-3"
           >
-            {SETTINGS_NAV.map((group) => {
+            {visibleSettingsNav(developerMode).map((group) => {
               const selected = (group.panels as readonly string[]).includes(activeTab);
               return (
                 <button
@@ -80,6 +83,21 @@ export function SettingsPage({
           className="aether-settings-content min-h-0 min-w-0 flex-1 overflow-y-auto bg-white"
           data-testid="settings-content"
         >
+          {navGroupForPanel(activeTab).panels.length > 1 && (
+            <nav aria-label={t('settingsSubsections')} className="sticky top-0 z-10 flex flex-wrap gap-1 border-b border-[#ececec] bg-white px-4 py-2">
+              {navGroupForPanel(activeTab).panels.map((panel) => (
+                <button
+                  key={panel}
+                  type="button"
+                  aria-current={panel === activeTab ? 'page' : undefined}
+                  onClick={() => onChangeTab(panel)}
+                  className={`rounded-md px-2.5 py-1.5 text-xs ${panel === activeTab ? 'bg-[#2f2a24] text-white' : 'bg-[#f3f0ec] text-[#5d5147]'}`}
+                >
+                  {t(panel)}
+                </button>
+              ))}
+            </nav>
+          )}
           {children}
         </div>
       </div>

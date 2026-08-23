@@ -81,6 +81,14 @@ async def list_artifacts(session_id: str):
         raise _bad_path(exc) from exc
 
 
+@router.delete("/examples")
+async def delete_example_project(session_id: str):
+    try:
+        return {"removed": await artifact_svc.delete_example_project(session_id)}
+    except ArtifactPathError as exc:
+        raise _bad_path(exc) from exc
+
+
 @router.get("/merge/proposals")
 async def list_merge_proposals(session_id: str):
     try:

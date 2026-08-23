@@ -25,32 +25,9 @@ cp -f "$SRC" "$DEST"
 chmod +x "$DEST"
 install -m 0755 "$LAUNCHER_SRC" "$LAUNCHER_DEST"
 install -m 0644 "$ROOT/frontend/build/icon.svg" "$ICON_DEST"
-{
-  printf '%s\n' \
-    '[Desktop Entry]' \
-    'Type=Application' \
-    'Name=AetherChat' \
-    'Comment=多模型协作桌面工作台' \
-    "Exec=$LAUNCHER_DEST %U" \
-    'Icon=aetherchat' \
-    'Terminal=false' \
-    'Categories=Utility;' \
-    'Keywords=AI;Agent;Chat;MCP;' \
-    'MimeType=x-scheme-handler/aetherchat;' \
-    'Actions=NewWindow;QuickEntry;' \
-    'StartupNotify=true' \
-    'StartupWMClass=aetherchat' \
-    '' \
-    '[Desktop Action NewWindow]' \
-    'Name=New Window' \
-    'Name[zh_CN]=新建窗口' \
-    "Exec=$LAUNCHER_DEST" \
-    '' \
-    '[Desktop Action QuickEntry]' \
-    'Name=Quick Entry' \
-    'Name[zh_CN]=快速输入' \
-    "Exec=$LAUNCHER_DEST aetherchat://chat"
-} > "$DESKTOP_DEST"
+sed "s|@EXEC@|$LAUNCHER_DEST|g" \
+  "$ROOT/frontend/linux/aetherchat.desktop.in" \
+  > "$DESKTOP_DEST"
 chmod 0644 "$DESKTOP_DEST"
 if command -v update-desktop-database >/dev/null 2>&1; then
   update-desktop-database "$APPLICATIONS_DIR" >/dev/null 2>&1 || true

@@ -1,0 +1,25 @@
+[Desktop Entry]
+Type=Application
+Name=AetherChat
+Name[zh_CN]=AetherChat
+Comment=Local-first multi-model agent workspace
+Comment[zh_CN]=本地优先的多模型 Agent 工作台
+Exec=@EXEC@ %U
+Icon=aetherchat
+Terminal=false
+Categories=Utility;
+Keywords=AI;Agent;Chat;MCP;Voice;Automation;
+MimeType=x-scheme-handler/aetherchat;
+Actions=NewWindow;QuickEntry;
+StartupNotify=true
+StartupWMClass=aetherchat
+
+[Desktop Action NewWindow]
+Name=New Window
+Name[zh_CN]=新建窗口
+Exec=@EXEC@
+
+[Desktop Action QuickEntry]
+Name=Quick Entry
+Name[zh_CN]=快速输入
+Exec=@EXEC@ aetherchat://chat

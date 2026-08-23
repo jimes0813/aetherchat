@@ -6,7 +6,25 @@ readonly APP="$APP_DIR/aetherchat-frontend"
 readonly SANDBOX="$APP_DIR/chrome-sandbox"
 
 fail() {
-  printf 'AetherChat: %s\n' "$1" >&2
+  local message="$1"
+  local state_root="${XDG_STATE_HOME:-${HOME:-/tmp}/.local/state}"
+  local log_dir="$state_root/aetherchat"
+  printf 'AetherChat: %s\n' "$message" >&2
+  if mkdir -p "$log_dir" 2>/dev/null; then
+    chmod 0700 "$log_dir" 2>/dev/null || true
+    printf '%s AetherChat: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$message" \
+      >> "$log_dir/launcher.log" 2>/dev/null || true
+    chmod 0600 "$log_dir/launcher.log" 2>/dev/null || true
+  fi
+  if [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+    if command -v zenity >/dev/null 2>&1; then
+      zenity --error --title='AetherChat 启动失败' --text="$message" 2>/dev/null || true
+    elif command -v kdialog >/dev/null 2>&1; then
+      kdialog --error "$message" --title 'AetherChat 启动失败' 2>/dev/null || true
+    elif command -v xmessage >/dev/null 2>&1; then
+      xmessage -center "AetherChat 启动失败：$message" 2>/dev/null || true
+    fi
+  fi
   exit 1
 }
 

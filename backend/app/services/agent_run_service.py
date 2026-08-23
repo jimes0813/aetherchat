@@ -54,6 +54,26 @@ class AgentRunService:
         self._observed_running_steps: set[tuple[str, str]] = set()
 
     @staticmethod
+    def _log_finished(run_id: str, status: str, error: str | None = None) -> None:
+        extra = {
+            "event": "agent_run_finished",
+            "trace_id": diagnostic_ref("run", run_id),
+            "run_status": status,
+        }
+        normalized_error = str(error or "")
+        configuration_failure = any(
+            marker in normalized_error
+            for marker in ("没有选中可用模型", "未配置", "配置错误", "无可用模型")
+        )
+        if status == "failed":
+            log = logger.warning if configuration_failure else logger.error
+        elif status in {"recoverable", "uncertain", "completed_unverified"}:
+            log = logger.warning
+        else:
+            log = logger.info
+        log("Agent run finished", extra=extra)
+
+    @staticmethod
     def _canonical_json(value: Any) -> str:
         return json.dumps(
             value,
@@ -1221,14 +1241,7 @@ class AgentRunService:
                 ),
             },
         )
-        logger.info(
-            "Agent run finished",
-            extra={
-                "event": "agent_run_finished",
-                "trace_id": diagnostic_ref("run", run_id),
-                "run_status": status,
-            },
-        )
+        self._log_finished(run_id, status, None if status == "completed_verified" else summary)
         return updated
 
     def finish(self, run_id: str, *, disconnected: bool = False) -> dict[str, Any] | None:
@@ -1248,14 +1261,7 @@ class AgentRunService:
         if disconnected and current["status"] not in AGENT_RUN_TERMINAL_STATUSES:
             updated = self.database.update_agent_run(run_id, "recoverable", error="连接中断，运行结果未确认")
             self.database.append_agent_event(run_id, "recovery_required", {"reason": "connection_lost"})
-            logger.info(
-                "Agent run finished",
-                extra={
-                    "event": "agent_run_finished",
-                    "trace_id": diagnostic_ref("run", run_id),
-                    "run_status": "recoverable",
-                },
-            )
+            self._log_finished(run_id, "recoverable", "连接中断，运行结果未确认")
             return updated
         plan_steps = current.get("plan_steps") or []
         synthesizer = next(
@@ -1284,14 +1290,7 @@ class AgentRunService:
                 updated = self.database.update_agent_run(run_id, "failed", error=error)
                 self.database.update_agent_goal_status(run_id, "failed")
                 self.database.append_agent_event(run_id, "run_failed", {"error": error})
-                logger.info(
-                    "Agent run finished",
-                    extra={
-                        "event": "agent_run_finished",
-                        "trace_id": diagnostic_ref("run", run_id),
-                        "run_status": "failed",
-                    },
-                )
+                self._log_finished(run_id, "failed", error)
                 return updated
             if interrupted_step is not None:
                 self.database.set_agent_plan_status(run_id, "interrupted")
@@ -1302,28 +1301,14 @@ class AgentRunService:
                 self.database.append_agent_event(
                     run_id, "run_interrupted", {"error": "计划执行被中断"}
                 )
-                logger.info(
-                    "Agent run finished",
-                    extra={
-                        "event": "agent_run_finished",
-                        "trace_id": diagnostic_ref("run", run_id),
-                        "run_status": "interrupted",
-                    },
-                )
+                self._log_finished(run_id, "interrupted", "计划执行被中断")
                 return updated
             error = "计划尚未完成最终综合步骤"
             self.database.set_agent_plan_status(run_id, "failed")
             updated = self.database.update_agent_run(run_id, "failed", error=error)
             self.database.update_agent_goal_status(run_id, "failed")
             self.database.append_agent_event(run_id, "run_failed", {"error": error})
-            logger.info(
-                "Agent run finished",
-                extra={
-                    "event": "agent_run_finished",
-                    "trace_id": diagnostic_ref("run", run_id),
-                    "run_status": "failed",
-                },
-            )
+            self._log_finished(run_id, "failed", error)
             return updated
         steps = current.get("steps") or []
         statuses = {step["status"] for step in steps}
@@ -1341,14 +1326,7 @@ class AgentRunService:
             self.database.update_agent_goal_status(run_id, status)
         updated = self.database.update_agent_run(run_id, status, error=error)
         self.database.append_agent_event(run_id, f"run_{status}", {"error": error} if error else {})
-        logger.info(
-            "Agent run finished",
-            extra={
-                "event": "agent_run_finished",
-                "trace_id": diagnostic_ref("run", run_id),
-                "run_status": status,
-            },
-        )
+        self._log_finished(run_id, status, error)
         return updated
 
     def prepare_retry(self, run_id: str, session_id: str) -> tuple[dict[str, Any], dict[str, Any]]:

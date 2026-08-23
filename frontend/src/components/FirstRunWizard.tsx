@@ -98,7 +98,13 @@ const PRESETS: Preset[] = [
   },
 ];
 
+const PROVIDER_PRIVACY_URLS: Record<string, string> = {
+  kimi: 'https://platform.kimi.com/docs/agreement/userprivacy',
+  deepseek: 'https://cdn.deepseek.com/policies/zh-CN/deepseek-privacy-policy.html',
+};
+
 type Step = 1 | 2 | 3;
+type SetupPath = 'local-managed' | 'local-service' | 'cloud';
 
 export function shouldShowFirstRunWizard(
   models: ModelConfig[],
@@ -123,11 +129,12 @@ export function FirstRunWizard({
 }: FirstRunWizardProps) {
   const { t, ui } = useI18n();
   const [step, setStep] = useState<Step>(1);
-  const [presetId, setPresetId] = useState(PRESETS[0].id);
+  const [setupPath, setSetupPath] = useState<SetupPath>('local-managed');
+  const [presetId, setPresetId] = useState('local-llama');
   const [apiKey, setApiKey] = useState('');
-  const [modelId, setModelId] = useState(PRESETS[0].model);
-  const [baseUrl, setBaseUrl] = useState(PRESETS[0].base_url);
-  const [name, setName] = useState(PRESETS[0].name);
+  const [modelId, setModelId] = useState('');
+  const [baseUrl, setBaseUrl] = useState(DEFAULT_LOCAL_BASE_URL);
+  const [name, setName] = useState('local-llama');
   const [modelPath, setModelPath] = useState(DEFAULT_GGUF_PATH);
   const [runtimeExecutable, setRuntimeExecutable] = useState(DEFAULT_LLAMA_SERVER);
   const [runtimeArgs, setRuntimeArgs] = useState(
@@ -137,6 +144,9 @@ export function FirstRunWizard({
   const [error, setError] = useState('');
   const [verifySample, setVerifySample] = useState('');
   const [statusLine, setStatusLine] = useState('');
+  const feedbackIds = [statusLine && 'first-run-status', error && 'first-run-error']
+    .filter(Boolean)
+    .join(' ') || undefined;
 
   const preset = useMemo(
     () => PRESETS.find((item) => item.id === presetId) || PRESETS[0],
@@ -145,6 +155,13 @@ export function FirstRunWizard({
   const configuredCount = models.filter(isConfiguredModel).length;
   const isLocal = preset.type === 'local';
   const isLlamaManaged = isLocal && preset.local_runtime === 'llama_cpp';
+  const visiblePresets = PRESETS.filter((item) => (
+    setupPath === 'local-managed'
+      ? item.id === 'local-llama'
+      : setupPath === 'local-service'
+        ? item.id === 'local-external'
+        : item.type !== 'local'
+  ));
 
   const applyPreset = (id: string) => {
     const next = PRESETS.find((item) => item.id === id) || PRESETS[0];
@@ -158,6 +175,34 @@ export function FirstRunWizard({
     setError('');
     setVerifySample('');
     setStatusLine('');
+  };
+
+  const continueFromPath = () => {
+    applyPreset(
+      setupPath === 'local-managed'
+        ? 'local-llama'
+        : setupPath === 'local-service'
+          ? 'local-external'
+          : 'kimi',
+    );
+    setStep(2);
+  };
+
+  const selectLocalPath = async (kind: 'gguf' | 'runtime') => {
+    const selected = await window.aetherRuntime?.selectLocalModelPath?.(kind);
+    if (!selected) return;
+    if (kind === 'gguf') setModelPath(selected);
+    else setRuntimeExecutable(selected);
+  };
+
+  const openProviderPrivacyPolicy = () => {
+    const url = PROVIDER_PRIVACY_URLS[preset.id];
+    if (!url) return;
+    if (window.aetherRuntime?.openExternal) {
+      void window.aetherRuntime.openExternal(url);
+      return;
+    }
+    window.open(url, '_blank', 'noopener,noreferrer');
   };
 
   const saveAndVerify = async () => {
@@ -305,12 +350,26 @@ export function FirstRunWizard({
 
         {step === 1 && (
           <div className="mt-4 space-y-3 text-sm leading-6 text-[#5f554d]">
-            <p>{t('completeTheMainPathIn')}</p>
-            <ol className="list-decimal space-y-1 pl-5">
-              <li>{t('cloudKimiDeepSeek')}</li>
-              <li>{t('localManagedLlamaCppOr')}</li>
-              <li>{t('runARealConnectivityCheck')}</li>
-            </ol>
+            <p>{t('chooseModelLocation')}</p>
+            <div role="radiogroup" aria-label={t('modelLocation')} className="grid gap-2">
+              {([
+                ['local-managed', t('fullyLocalManaged'), t('fullyLocalManagedDetail')],
+                ['local-service', t('existingLocalService'), t('existingLocalServiceDetail')],
+                ['cloud', t('cloudApi'), t('cloudApiDetail')],
+              ] as Array<[SetupPath, string, string]>).map(([id, label, detail]) => (
+                <button
+                  key={id}
+                  type="button"
+                  role="radio"
+                  aria-checked={setupPath === id}
+                  onClick={() => setSetupPath(id)}
+                  className={`rounded-xl border p-3 text-left ${setupPath === id ? 'border-[#8d5f35] bg-[#fff8f0]' : 'border-[#d8cec4] bg-[#fbfaf7]'}`}
+                >
+                  <span className="block font-semibold text-[#3f352d]">{label}</span>
+                  <span className="mt-1 block text-xs leading-5 text-[#6d6259]">{detail}</span>
+                </button>
+              ))}
+            </div>
             <p className="text-xs text-[#6d6259]">
               {t('modelsAreConfiguredManagedMode', { count: configuredCount })}
             </p>
@@ -326,14 +385,25 @@ export function FirstRunWizard({
                 value={presetId}
                 onChange={(event) => applyPreset(event.target.value)}
               >
-                {PRESETS.map((item) => (
+                {visiblePresets.map((item) => (
                   <option key={item.id} value={item.id}>{ui(item.label)}</option>
                 ))}
               </select>
             </label>
+            {!isLocal && (
+              <div role="note" className="rounded-xl border border-[#e3c596] bg-[#fff8e8] p-3 text-xs leading-5 text-[#6d4c1f]">
+                {t('cloudDataDisclosure')}
+                {PROVIDER_PRIVACY_URLS[preset.id] && (
+                  <button type="button" onClick={openProviderPrivacyPolicy} className="mt-2 block font-semibold underline underline-offset-2">
+                    {t('readProviderPrivacyPolicy')}
+                  </button>
+                )}
+              </div>
+            )}
             <label className="block">
               <span className="mb-1 block text-xs font-medium text-[#6d6259]">{t('configurationName')}</span>
               <input
+                aria-describedby={feedbackIds}
                 className="w-full rounded-lg border border-[#d8cec4] bg-[#fbfaf7] px-3 py-2"
                 value={name}
                 onChange={(event) => setName(event.target.value)}
@@ -342,6 +412,7 @@ export function FirstRunWizard({
             <label className="block">
               <span className="mb-1 block text-xs font-medium text-[#6d6259]">{t('modelID')}</span>
               <input
+                aria-describedby={feedbackIds}
                 className="w-full rounded-lg border border-[#d8cec4] bg-[#fbfaf7] px-3 py-2"
                 value={modelId}
                 onChange={(event) => setModelId(event.target.value)}
@@ -351,6 +422,7 @@ export function FirstRunWizard({
             <label className="block">
               <span className="mb-1 block text-xs font-medium text-[#6d6259]">{t('endpointBaseURL')}</span>
               <input
+                aria-describedby={feedbackIds}
                 className="w-full rounded-lg border border-[#d8cec4] bg-[#fbfaf7] px-3 py-2"
                 value={baseUrl}
                 onChange={(event) => setBaseUrl(event.target.value)}
@@ -361,8 +433,9 @@ export function FirstRunWizard({
               <label className="block">
                 <span className="mb-1 block text-xs font-medium text-[#6d6259]">{t('apiKey')}</span>
                 <input
+                  aria-describedby={feedbackIds}
                   type="password"
-                  autoComplete="off"
+                  autoComplete="new-password"
                   className="w-full rounded-lg border border-[#d8cec4] bg-[#fbfaf7] px-3 py-2"
                   value={apiKey}
                   onChange={(event) => setApiKey(event.target.value)}
@@ -378,25 +451,34 @@ export function FirstRunWizard({
                 </p>
                 <label className="block">
                   <span className="mb-1 block text-xs font-medium text-[#6d6259]">{t('ggufModelPath')}</span>
-                  <input
-                    className="w-full rounded-lg border border-[#d8cec4] bg-white px-3 py-2 font-mono text-xs"
-                    value={modelPath}
-                    onChange={(event) => setModelPath(event.target.value)}
-                    placeholder="/path/to/model.gguf"
-                  />
+                  <div className="flex gap-2">
+                    <input
+                      aria-describedby={feedbackIds}
+                      className="min-w-0 flex-1 rounded-lg border border-[#d8cec4] bg-white px-3 py-2 font-mono text-xs"
+                      value={modelPath}
+                      onChange={(event) => setModelPath(event.target.value)}
+                      placeholder="/path/to/model.gguf"
+                    />
+                    {window.aetherRuntime?.selectLocalModelPath && <button type="button" onClick={() => void selectLocalPath('gguf')} className="rounded-lg border border-[#bfa98f] bg-white px-3 text-xs">{t('browse')}</button>}
+                  </div>
                 </label>
                 <label className="block">
                   <span className="mb-1 block text-xs font-medium text-[#6d6259]">{t('llamaServerPath')}</span>
-                  <input
-                    className="w-full rounded-lg border border-[#d8cec4] bg-white px-3 py-2 font-mono text-xs"
-                    value={runtimeExecutable}
-                    onChange={(event) => setRuntimeExecutable(event.target.value)}
-                    placeholder="/path/to/llama-server"
-                  />
+                  <div className="flex gap-2">
+                    <input
+                      aria-describedby={feedbackIds}
+                      className="min-w-0 flex-1 rounded-lg border border-[#d8cec4] bg-white px-3 py-2 font-mono text-xs"
+                      value={runtimeExecutable}
+                      onChange={(event) => setRuntimeExecutable(event.target.value)}
+                      placeholder="/path/to/llama-server"
+                    />
+                    {window.aetherRuntime?.selectLocalModelPath && <button type="button" onClick={() => void selectLocalPath('runtime')} className="rounded-lg border border-[#bfa98f] bg-white px-3 text-xs">{t('browse')}</button>}
+                  </div>
                 </label>
                 <label className="block">
                   <span className="mb-1 block text-xs font-medium text-[#6d6259]">{t('startupArgumentsOnePerLine')}</span>
                   <textarea
+                    aria-describedby={feedbackIds}
                     className="min-h-20 w-full rounded-lg border border-[#d8cec4] bg-white px-3 py-2 font-mono text-xs"
                     value={runtimeArgs}
                     onChange={(event) => setRuntimeArgs(event.target.value)}
@@ -413,7 +495,7 @@ export function FirstRunWizard({
             )}
 
             {statusLine && (
-              <p className="text-xs text-[#6d6258]">{statusLine}</p>
+              <p id="first-run-status" role="status" aria-live="polite" className="text-xs text-[#6d6258]">{statusLine}</p>
             )}
           </div>
         )}
@@ -429,13 +511,13 @@ export function FirstRunWizard({
               </p>
             )}
             {statusLine && (
-              <p className="text-xs text-[#6d6258]">{statusLine}</p>
+              <p id="first-run-status" role="status" aria-live="polite" className="text-xs text-[#6d6258]">{statusLine}</p>
             )}
           </div>
         )}
 
         {error && (
-          <p role="alert" className="mt-4 rounded-lg border border-[#e2b8b0] bg-[#fff5f2] px-3 py-2 text-xs text-[#8a4036]">
+          <p id="first-run-error" role="alert" className="mt-4 rounded-lg border border-[#e2b8b0] bg-[#fff5f2] px-3 py-2 text-xs text-[#8a4036]">
             {ui(error)}
           </p>
         )}
@@ -454,7 +536,7 @@ export function FirstRunWizard({
                 type="button"
                 data-dialog-initial-focus
                 className="rounded-lg bg-[#8d5f35] px-3 py-2 text-sm text-white"
-                onClick={() => setStep(2)}
+                onClick={continueFromPath}
               >
                 {t('startSetup')}
               </button>

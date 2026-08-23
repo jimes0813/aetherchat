@@ -119,6 +119,10 @@ declare global {
       backendErrorCode?: string;
       backendRequestId?: string;
       appVersion?: string;
+      buildCommit?: string;
+      buildTimestamp?: string;
+      buildChannel?: string;
+      packageHash?: string;
       platform?: string;
       quickEntryShortcut?: string;
       chromiumSandbox?: 'on' | 'off' | string;
@@ -127,6 +131,7 @@ declare global {
       dataDir?: string;
       authIntercept?: boolean;
       getApiToken?: () => Promise<string>;
+      selectLocalModelPath?: (kind: 'gguf' | 'runtime') => Promise<string>;
       openExternal?: (
         url: string,
         options?: { browser?: 'default' | 'firefox' },

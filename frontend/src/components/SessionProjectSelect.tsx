@@ -33,7 +33,7 @@ export function SessionProjectSelect({
     );
   }
 
-  const currentLabel = projectLabel(value, projects) || ui('未绑定');
+  const currentLabel = ui(projectLabel(value, projects) || '未绑定');
 
   return (
     <div className="flex flex-wrap items-center gap-2" data-testid="session-project-select">
@@ -52,7 +52,7 @@ export function SessionProjectSelect({
           {!value && <option value="">{ui('未绑定')}</option>}
           {projects.map((item) => (
             <option key={item.id} value={item.id}>
-              {item.name}
+              {ui(item.name)}
             </option>
           ))}
         </select>
@@ -72,7 +72,7 @@ export function SessionProjectSelect({
           >
             {projects.map((item) => (
               <option key={item.id} value={item.id}>
-                {item.name}
+                {ui(item.name)}
               </option>
             ))}
           </select>

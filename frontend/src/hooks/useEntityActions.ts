@@ -99,11 +99,18 @@ export function useEntityActions({
     attachmentIds: string[],
     references: Array<{ kind: string; id: string; session_id?: string; label?: string }> = [],
   ) => {
+    const configuredModels = modelConfigs.filter(isConfiguredModel);
+    if (configuredModels.length === 0) {
+      setNotice('请先配置并验证至少一个模型；当前草稿已保留。');
+      return false;
+    }
     const resolvedTargets = targets.includes('all')
-      ? modelConfigs
-          .filter(isConfiguredModel)
-          .map((model) => model.name)
-      : targets;
+      ? configuredModels.map((model) => model.name)
+      : targets.filter((target) => configuredModels.some((model) => model.name === target));
+    if (resolvedTargets.length === 0) {
+      setNotice('所选模型当前不可用，请重新选择已验证的模型；草稿已保留。');
+      return false;
+    }
     const sent = wsClient.current?.sendAction({
       type: 'post_message',
       content,

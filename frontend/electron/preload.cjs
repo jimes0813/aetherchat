@@ -18,6 +18,10 @@ contextBridge.exposeInMainWorld('aetherRuntime', {
   backendErrorCode: argumentValue('aether-backend-error-code'),
   backendRequestId: argumentValue('aether-backend-request-id'),
   appVersion: argumentValue('aether-app-version'),
+  buildCommit: argumentValue('aether-build-commit'),
+  buildTimestamp: argumentValue('aether-build-timestamp'),
+  buildChannel: argumentValue('aether-build-channel'),
+  packageHash: argumentValue('aether-package-hash'),
   platform: argumentValue('aether-platform', process.platform),
   quickEntryShortcut: argumentValue('aether-quick-entry-shortcut'),
   chromiumSandbox: argumentValue('aether-chromium-sandbox', 'on'),
@@ -26,6 +30,7 @@ contextBridge.exposeInMainWorld('aetherRuntime', {
   dataDir: argumentValue('aether-data-dir'),
   authIntercept: argumentValue('aether-auth-intercept') === '1',
   getApiToken: () => ipcRenderer.invoke('aether-runtime:api-token'),
+  selectLocalModelPath: (kind) => ipcRenderer.invoke('aether-runtime:select-local-model-path', kind),
   openExternal: (url, options = {}) => ipcRenderer.invoke(
     'aether-external:open',
     { url, ...options },

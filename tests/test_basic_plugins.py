@@ -44,7 +44,7 @@ def test_plugin_lifecycle_permissions_and_builtin_actions(client):
     })
     assert health.status_code == 200
     assert health.json()["result"]["healthy"] is True
-    assert health.json()["result"]["artifacts"] >= 3
+    assert health.json()["result"]["artifacts"] == 0
 
     blocked_scheme = client.post("/plugins/browser-links/invoke", json={
         "action": "open_url",

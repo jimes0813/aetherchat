@@ -1,6 +1,6 @@
 {
   "name": "aetherchat-frontend",
-  "version": "0.2.0",
+  "version": "0.2.1-rc.3",
   "description": "AetherChat 多模型协作桌面工作台",
   "desktopName": "aetherchat.desktop",
   "homepage": "https://github.com/jimes0813/AetherChat",
@@ -13,7 +13,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "node scripts/generate-build-info.mjs && tsc && vite build",
     "preview": "vite preview",
     "generate:api": "openapi-typescript openapi/openapi.json -o src/api/schema.d.ts",
     "electron:dev": "npm run build && electron electron/main.cjs",
@@ -66,12 +66,17 @@
       }
     ],
     "asar": true,
+    "electronLanguages": [
+      "en-US",
+      "zh-CN"
+    ],
     "directories": {
       "output": "release"
     },
     "files": [
       "dist/**/*",
       "electron/**/*",
+      "build-info.json",
       "!electron/*.test.cjs",
       "package.json"
     ],

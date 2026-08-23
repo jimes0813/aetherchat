@@ -17,6 +17,7 @@ import {
   WorkspaceSidebar,
 } from './components/chrome';
 import { buildCommandItems } from './app/commandItems';
+import { useAppKeyboardShortcuts } from './app/useAppKeyboardShortcuts';
 import { API_BASE, isConfiguredModel } from './components/shared';
 import {
   createGovernanceProject,
@@ -471,37 +472,31 @@ function App() {
     hasApproval: approvals.some((item) => item.session_id === sessionId && !item.decision),
   });
 
+  useAppKeyboardShortcuts({
+    activePanel,
+    voiceOpen: voice.open,
+    setActivePanel,
+    setCommandOpen,
+  });
+
   useEffect(() => {
-    const handleShortcut = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
-        event.preventDefault();
-        setCommandOpen(true);
-      }
-      if ((event.ctrlKey || event.metaKey) && event.key === ',') {
-        event.preventDefault();
-        setActivePanel(activePanel ?? 'settings');
-      }
-      if (event.key === 'Escape') {
-        if (voice.open) return;
-        setCommandOpen(false);
-        setActivePanel(null);
-      }
-    };
-    window.addEventListener('keydown', handleShortcut);
-    return () => window.removeEventListener('keydown', handleShortcut);
-  }, [activePanel, setActivePanel, voice.open]);
+    if (!workspaceSettings.developerMode && (activePanel === 'tools' || activePanel === 'governance')) {
+      setActivePanel('settings');
+    }
+  }, [activePanel, setActivePanel, workspaceSettings.developerMode]);
 
   const commandItems = useMemo(() => buildCommandItems({
     conversations,
     tasks,
     artifacts,
     modelConfigs,
+    developerMode: workspaceSettings.developerMode,
     t,
     setActivePanel,
     selectConversation,
     setSelectedArtifactPath,
     startVoice: () => { void voice.start(); },
-  }), [artifacts, conversations, modelConfigs, selectConversation, setActivePanel, setSelectedArtifactPath, tasks, t, voice]);
+  }), [artifacts, conversations, modelConfigs, selectConversation, setActivePanel, setSelectedArtifactPath, tasks, t, voice, workspaceSettings.developerMode]);
 
   const {
     inspectGeneratedFile,
@@ -651,11 +646,13 @@ function App() {
           {mainView === 'chat' && (
             <div className="aether-composer-shell">
             <Composer
+              key={sessionId}
               apiBase={API_BASE}
               catalogEnabled={Boolean(authReady && authToken)}
               onSend={sendMessage}
               onUpload={uploadAttachments}
               providers={modelConfigs.filter(isConfiguredModel).map((model) => model.name)}
+              onConfigureModels={() => setActivePanel('models')}
               onInterrupt={canInterrupt
                 ? (scope) => wsClient.current?.sendAction({ type: 'interrupt', scope })
                 : undefined}
@@ -681,6 +678,7 @@ function App() {
         )}>
           <SettingsPage
             activeTab={activePanel}
+            developerMode={Boolean(workspaceSettings.developerMode)}
             onChangeTab={setActivePanel}
             onBackToChat={() => setActivePanel(null)}
           >

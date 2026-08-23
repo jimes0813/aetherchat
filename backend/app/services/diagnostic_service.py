@@ -149,6 +149,11 @@ class DiagnosticService:
     ) -> dict[str, Any]:
         version = str(os.environ.get("AETHERCHAT_APP_VERSION") or "unknown")[:80]
         channel = str(os.environ.get("AETHERCHAT_BUILD_CHANNEL") or "unknown")[:40]
+        commit = str(os.environ.get("AETHERCHAT_BUILD_COMMIT") or "unknown")[:64]
+        build_timestamp = str(
+            os.environ.get("AETHERCHAT_BUILD_TIMESTAMP") or "unknown"
+        )[:64]
+        package_hash = str(os.environ.get("AETHERCHAT_PACKAGE_HASH") or "")[:64]
         try:
             telemetry = (
                 self.telemetry_service.snapshot(run_limit=50)
@@ -171,6 +176,9 @@ class DiagnosticService:
             "application": {
                 "version": version,
                 "channel": channel,
+                "commit": commit,
+                "build_timestamp": build_timestamp,
+                "package_hash": package_hash,
                 "platform": platform.system(),
                 "architecture": platform.machine(),
                 "python": platform.python_version(),

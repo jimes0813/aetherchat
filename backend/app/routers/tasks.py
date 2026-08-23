@@ -50,11 +50,8 @@ TASKS_PATH = _storage_path()
 
 
 def _seed_tasks() -> list[Task]:
-    return [
-        Task(id=uuid4(), session_id=DEFAULT_SESSION_ID, title="补齐 WebSocket 流式消息", description="前后端 ack、delta、complete、cost_update 串联", status="in_progress", claimed_by="gpt", priority=2),
-        Task(id=uuid4(), session_id=DEFAULT_SESSION_ID, title="Artifact Git MVP 验证", description="写入、读取、提交 hash 可追踪", status="review", claimed_by="deepseek", priority=1),
-        Task(id=uuid4(), session_id=DEFAULT_SESSION_ID, title="Facilitator 循环检测提示词", description="从 docs 模板接入 orchestrator", status="backlog", priority=0),
-    ]
+    """A new workspace is intentionally empty; examples require explicit opt-in."""
+    return []
 
 
 def _write_tasks(tasks: list[Task], path: Path | None = None):
@@ -230,6 +227,19 @@ async def list_tasks(session_id: UUID):
         for task in fake_tasks
         if task.session_id == session_id
     ]
+
+
+@router.delete("/examples")
+async def delete_example_tasks(session_id: UUID):
+    retained = [
+        task for task in fake_tasks
+        if task.session_id != session_id or not task.title.startswith("[示例]")
+    ]
+    removed = len(fake_tasks) - len(retained)
+    if removed:
+        fake_tasks[:] = retained
+        await _save_tasks_async()
+    return {"removed": removed}
 
 @router.post("/{task_id}/claim")
 async def claim_task(task_id: UUID, by: str = "model:claude"):

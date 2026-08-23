@@ -216,6 +216,33 @@ def test_diagnostic_snapshot_and_bundle_are_redacted(client):
     assert os.environ["AETHERCHAT_DATA_DIR"] not in bundle.content.decode("latin-1")
 
 
+def test_diagnostic_snapshot_exposes_release_identity(client, monkeypatch):
+    monkeypatch.setenv("AETHERCHAT_APP_VERSION", "0.2.1-rc.3")
+    monkeypatch.setenv("AETHERCHAT_BUILD_CHANNEL", "rc")
+    monkeypatch.setenv("AETHERCHAT_BUILD_COMMIT", "abc123def456")
+    monkeypatch.setenv("AETHERCHAT_BUILD_TIMESTAMP", "2026-08-24T10:00:00Z")
+    monkeypatch.setenv("AETHERCHAT_PACKAGE_HASH", "f" * 64)
+
+    application = client.get("/diagnostics/snapshot").json()["application"]
+
+    assert {
+        key: application[key]
+        for key in (
+            "version",
+            "channel",
+            "commit",
+            "build_timestamp",
+            "package_hash",
+        )
+    } == {
+        "version": "0.2.1-rc.3",
+        "channel": "rc",
+        "commit": "abc123def456",
+        "build_timestamp": "2026-08-24T10:00:00Z",
+        "package_hash": "f" * 64,
+    }
+
+
 def test_local_model_runtime_config_round_trip_and_start_api(client, monkeypatch):
     name = f"local-runtime-{uuid4()}"
     payload = {
@@ -1213,9 +1240,7 @@ def test_workspace_artifact_merge_tool_and_export_flow(client):
 
     seeded = client.get("/artifacts/", params={"session_id": session_id})
     assert seeded.status_code == 200
-    seeded_artifacts = {item["path"]: item for item in seeded.json()}
-    assert set(seeded_artifacts) >= {"README.md", "docs/PRD.md", "src/demo.ts"}
-    assert seeded_artifacts["src/demo.ts"]["mime_type"] == "text/typescript"
+    assert seeded.json() == []
 
     for content in ("version one", "version two"):
         written = client.post("/artifacts/write", json={
@@ -1308,6 +1333,102 @@ def test_workspace_artifact_merge_tool_and_export_flow(client):
     assert markdown.status_code == 200
     assert "## Artifacts (content and complete history)" in markdown.text
     assert "written by dispatcher" in markdown.text
+
+
+def test_explicit_example_cleanup_is_session_scoped_and_preserves_user_content(
+    client,
+    tmp_path,
+    monkeypatch,
+):
+    original_tasks = list(task_router.fake_tasks)
+    monkeypatch.setattr(task_router, "TASKS_PATH", tmp_path / "example-tasks.json")
+    task_router.fake_tasks.clear()
+    session_id = str(uuid4())
+    other_session_id = str(uuid4())
+    try:
+        for path, content, author in (
+            ("示例/README.md", "explicit sample", "example-template"),
+            ("notes/real.md", "user-owned", "user"),
+        ):
+            response = client.post(
+                "/artifacts/write",
+                json={
+                    "session_id": session_id,
+                    "path": path,
+                    "content": content,
+                    "commit_message": "test",
+                    "author": author,
+                },
+            )
+            assert response.status_code == 200
+
+        for target_session, title in (
+            (session_id, "[示例] 教程任务"),
+            (session_id, "真实任务"),
+            (other_session_id, "[示例] 其他会话教程"),
+        ):
+            response = client.post(
+                "/tasks/",
+                json={"session_id": target_session, "title": title},
+            )
+            assert response.status_code == 200
+
+        artifact_result = client.delete(
+            "/artifacts/examples",
+            params={"session_id": session_id},
+        )
+        task_result = client.delete(
+            "/tasks/examples",
+            params={"session_id": session_id},
+        )
+
+        assert artifact_result.json() == {"removed": 1}
+        assert task_result.json() == {"removed": 1}
+        artifacts = client.get(
+            "/artifacts/",
+            params={"session_id": session_id},
+        ).json()
+        assert [item["path"] for item in artifacts] == ["notes/real.md"]
+        assert client.get(
+            "/artifacts/notes/real.md",
+            params={"session_id": session_id},
+        ).json()["content"] == "user-owned"
+        assert [
+            item["title"]
+            for item in client.get(
+                "/tasks/",
+                params={"session_id": session_id},
+            ).json()
+        ] == ["真实任务"]
+        assert [
+            item["title"]
+            for item in client.get(
+                "/tasks/",
+                params={"session_id": other_session_id},
+            ).json()
+        ] == ["[示例] 其他会话教程"]
+    finally:
+        task_router.fake_tasks.clear()
+        task_router.fake_tasks.extend(original_tasks)
+
+
+def test_agent_run_finish_logs_use_operational_severity(caplog):
+    import logging
+
+    from app.services.agent_run_service import AgentRunService
+
+    logger_name = "app.services.agent_run_service"
+    with caplog.at_level(logging.INFO, logger=logger_name):
+        AgentRunService._log_finished("run-config", "failed", "未配置可用模型")
+        AgentRunService._log_finished("run-provider", "failed", "provider timeout")
+        AgentRunService._log_finished("run-cancel", "interrupted", "user cancelled")
+
+    levels = [
+        record.levelname
+        for record in caplog.records
+        if getattr(record, "event", "") == "agent_run_finished"
+    ]
+    assert levels == ["WARNING", "ERROR", "INFO"]
 
 
 def test_interactive_artifact_preview_versions_office_exports_and_rejections(client):

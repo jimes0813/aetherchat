@@ -169,8 +169,11 @@ export function RunPanel({
       setAuditLoading(null);
     }
   };
+  const buildSuffix = window.aetherRuntime?.buildCommit
+    ? ` · ${window.aetherRuntime.buildCommit.slice(0, 12)} · ${window.aetherRuntime.buildChannel || 'unknown'}`
+    : '';
   const frontendDetail = window.aetherRuntime?.appVersion
-    ? t('desktopFrontendVersion', { version: window.aetherRuntime.appVersion })
+    ? `${t('desktopFrontendVersion', { version: window.aetherRuntime.appVersion })}${buildSuffix}`
     : t('localDesktopFrontend');
   const dataDir = window.aetherRuntime?.dataDir || '';
   const dataDirRow: RunCheckRow = {
@@ -213,12 +216,18 @@ export function RunPanel({
       }>(`${API_BASE}/health/ready`);
       const database = health.checks?.database;
       const schemaDetail = database?.schema_version === undefined
-        ? '数据库已响应'
-        : `数据库 schema ${database.schema_version}/${database.expected_schema_version ?? database.schema_version}`;
+        ? ui('数据库已响应')
+        : ui('数据库 schema {current}/{expected}', {
+          current: database.schema_version,
+          expected: database.expected_schema_version ?? database.schema_version,
+        });
       const redisStatus = health.optional_dependencies?.redis?.status || 'not_probed';
+      const redisDetail = redisStatus === 'ready'
+        ? ui('Redis 已启用')
+        : ui('Redis 未启用（可选，本机模式不受影响）');
       nextRows.unshift({
         id: 'backendApi',
-        detail: `${API_BASE} · ${schemaDetail} · Redis ${redisStatus}${health.service ? ` · ${health.service}` : ''}`,
+        detail: `${API_BASE} · ${schemaDetail} · ${redisDetail}${health.service ? ` · ${health.service}` : ''}`,
         status: health.ready && health.status === 'ready' ? '就绪' : '异常',
         tone: health.ready && health.status === 'ready' ? 'ok' : 'bad',
       });
@@ -234,7 +243,11 @@ export function RunPanel({
       ).length;
       nextRows.push({
         id: 'modelConfig',
-        detail: `已配置 ${configured.length}/${models.length} 个模型，其中 ${alwaysParticipating} 个始终参与；基础检查不会调用模型 API`,
+        detail: ui('已配置 {configured}/{total} 个模型，其中 {always} 个始终参与；基础检查不会调用模型 API', {
+          configured: configured.length,
+          total: models.length,
+          always: alwaysParticipating,
+        }),
         status: configured.length ? '已加载' : '未配置',
         tone: configured.length ? 'ok' : 'warn',
       });
@@ -246,7 +259,7 @@ export function RunPanel({
       const tools = await fetchJson<ToolItem[]>(`${API_BASE}/tools/`);
       nextRows.push({
         id: 'toolCatalog',
-        detail: Array.isArray(tools) ? `已加载 ${tools.length} 个工具` : '返回格式异常',
+        detail: Array.isArray(tools) ? ui('已加载 {count} 个工具', { count: tools.length }) : '返回格式异常',
         status: Array.isArray(tools) ? '正常' : '异常',
         tone: Array.isArray(tools) ? 'ok' : 'bad',
       });
@@ -259,7 +272,7 @@ export function RunPanel({
       const enabled = plugins.filter((plugin) => plugin.enabled).length;
       nextRows.push({
         id: 'pluginCenter',
-        detail: `已加载 ${plugins.length} 个插件，其中 ${enabled} 个已启用`,
+        detail: ui('已加载 {count} 个插件，其中 {enabled} 个已启用', { count: plugins.length, enabled }),
         status: '正常',
         tone: 'ok',
       });
@@ -273,7 +286,7 @@ export function RunPanel({
         const formats = Array.isArray(desktop.document_formats) ? desktop.document_formats.join(' / ') : '未知';
         nextRows.push({
           id: 'computerControl',
-          detail: `文件读写、鼠标和截图桥接已保护；文档格式：${formats}`,
+          detail: ui('文件读写、鼠标和截图桥接已保护；文档格式：{formats}', { formats }),
           status: desktop.available ? '正常' : '不可用',
           tone: desktop.available ? 'ok' : 'bad',
         });
@@ -281,7 +294,7 @@ export function RunPanel({
         nextRows.push({ id: 'computerControl', detail: String(error), status: '不可用', tone: 'bad' });
       }
     } else {
-      nextRows.push({ id: 'computerControl', detail: '浏览器预览不提供本地电脑权限', status: '仅桌面版', tone: 'warn' });
+      nextRows.push({ id: 'computerControl', detail: ui('浏览器预览不提供本地电脑权限'), status: '仅桌面版', tone: 'warn' });
     }
 
     setRows(nextRows);
@@ -316,8 +329,8 @@ export function RunPanel({
         {
           id: 'modelConnectionCheck',
           detail: enabled.length
-            ? `已验证 ${enabled.length} 个启用模型，通过 ${passed} 个${failures.length ? `；${failures.join('；')}` : ''}`
-            : '没有已启用的模型',
+            ? `${ui('已验证 {count} 个启用模型，通过 {passed} 个', { count: enabled.length, passed })}${failures.length ? `; ${failures.join('; ')}` : ''}`
+            : ui('没有已启用的模型'),
           status: failures.length === 0 && enabled.length > 0 ? '全部通过' : enabled.length ? '存在失败' : '未执行',
           tone: failures.length === 0 && enabled.length > 0 ? 'ok' : enabled.length ? 'bad' : 'warn',
         },

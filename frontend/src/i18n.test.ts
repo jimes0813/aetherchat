@@ -113,6 +113,15 @@ describe('i18n: localize()（ui() 底层）', () => {
 
   it('en-US 命中英文表时返回译文', () => {
     expect(localize('en-US', '新建会话')).toBe('New conversation');
+    expect(localize('en-US', '默认项目')).toBe('Default project');
+    expect(localize('en-US', '新会话')).toBe('New conversation');
+    expect(localize('en-US', '新协作会话')).toBe('New collaboration chat');
+    expect(localize('en-US', '界面语言')).toBe('Interface language');
+    expect(localize('en-US', '思考过程摘要')).toBe('Reasoning summary');
+    expect(localize('en-US', '显示')).toBe('Show');
+    expect(localize('en-US', '隐藏')).toBe('Hide');
+    expect(localize('en-US', '已加载')).toBe('Loaded');
+    expect(localize('en-US', '已加载 {count} 个工具', { count: 3 })).toBe('3 tools loaded');
     expect(localize('en-US', '历史聊天')).toBe('Chat history');
     expect(localize('en-US', '已连接')).toBe('Connected');
     expect(localize('en-US', '离线')).toBe('Offline');

@@ -13,7 +13,7 @@ const {
   shell,
 } = require('electron');
 const { spawn } = require('child_process');
-const { randomBytes, randomUUID, timingSafeEqual } = require('crypto');
+const { createHash, randomBytes, randomUUID, timingSafeEqual } = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
@@ -64,6 +64,34 @@ let quitRequested = false;
 let trayNoticeShown = false;
 let automationPollTimer = null;
 let knownReviewItems = null;
+let cachedBuildIdentity = null;
+
+function runtimeBuildIdentity() {
+  if (cachedBuildIdentity) return cachedBuildIdentity;
+  let declared = {};
+  try {
+    declared = JSON.parse(fs.readFileSync(path.join(app.getAppPath(), 'build-info.json'), 'utf8'));
+  } catch {
+    declared = {};
+  }
+  let packageHash = '';
+  if (app.isPackaged) {
+    try {
+      const appArchive = path.join(process.resourcesPath, 'app.asar');
+      packageHash = createHash('sha256').update(fs.readFileSync(appArchive)).digest('hex');
+    } catch {
+      packageHash = '';
+    }
+  }
+  cachedBuildIdentity = {
+    commit: String(declared.commit || 'unknown').slice(0, 64),
+    timestamp: String(declared.timestamp || 'unknown').slice(0, 64),
+    channel: String(declared.channel || (app.isPackaged ? 'packaged' : 'development')).slice(0, 40),
+    dirty: declared.dirty === true,
+    packageHash,
+  };
+  return cachedBuildIdentity;
+}
 
 const unregisterTerminationHandlers = registerTerminationHandlers(process, () => {
   quitRequested = true;
@@ -504,12 +532,16 @@ function startBackend(port) {
     if (!noProxyEntries.includes(localHost)) noProxyEntries.push(localHost);
   }
   const noProxy = noProxyEntries.join(',');
+  const buildIdentity = runtimeBuildIdentity();
   const backendEnv = sanitizeBackendProxyEnv({
     ...process.env,
     AETHERCHAT_DATA_DIR: dataDir,
     AETHERCHAT_PORT: String(port),
     AETHERCHAT_APP_VERSION: app.getVersion(),
-    AETHERCHAT_BUILD_CHANNEL: app.isPackaged ? 'packaged' : 'development',
+    AETHERCHAT_BUILD_CHANNEL: buildIdentity.channel,
+    AETHERCHAT_BUILD_COMMIT: buildIdentity.commit,
+    AETHERCHAT_BUILD_TIMESTAMP: buildIdentity.timestamp,
+    AETHERCHAT_PACKAGE_HASH: buildIdentity.packageHash,
     AETHERCHAT_DESKTOP_TOKEN: desktopBridgeToken,
     AETHERCHAT_API_TOKEN: apiAccessToken,
     AETHERCHAT_COMPUTER_CONSENT_URL: computerConsentUrl,
@@ -652,7 +684,7 @@ async function maybeWarnDegradedSandbox() {
   await dialog.showMessageBox({
     type: 'warning',
     title: '降级模式：Chromium 沙箱已关闭',
-    message: '当前是用户本地安装，未启用 Chromium setuid 沙箱。',
+    message: '当前安装的 Chromium 沙箱已关闭。',
     detail: [
       `通道：${describeInstallChannel(channel)}`,
       `可执行文件：${process.execPath}`,
@@ -681,6 +713,7 @@ function createWindow() {
     existing.focus();
     return existing;
   }
+  const buildIdentity = runtimeBuildIdentity();
   const win = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -699,6 +732,10 @@ function createWindow() {
         `--aether-backend-error-code=${backendErrorCode}`,
         `--aether-backend-request-id=${backendRequestId}`,
         `--aether-app-version=${app.getVersion()}`,
+        `--aether-build-commit=${buildIdentity.commit}`,
+        `--aether-build-timestamp=${buildIdentity.timestamp}`,
+        `--aether-build-channel=${buildIdentity.channel}`,
+        `--aether-package-hash=${buildIdentity.packageHash}`,
         `--aether-platform=${process.platform}`,
         `--aether-quick-entry-shortcut=${quickEntryShortcut}`,
         `--aether-chromium-sandbox=${isChromiumSandboxDegraded(currentInstallChannel(), process.argv.includes('--no-sandbox')) ? 'off' : 'on'}`,
@@ -788,6 +825,7 @@ const menu = Menu.buildFromTemplate([
         label: '关于 AetherChat',
         click: () => {
           const channel = currentInstallChannel();
+          const buildIdentity = runtimeBuildIdentity();
           const sandboxOff = isChromiumSandboxDegraded(
             channel,
             process.argv.includes('--no-sandbox'),
@@ -799,6 +837,10 @@ const menu = Menu.buildFromTemplate([
             detail: [
               '多模型中文协作桌面工作台 · 本地 RC',
               `通道：${describeInstallChannel(channel)}`,
+              `构建通道：${buildIdentity.channel}`,
+              `提交：${buildIdentity.commit}${buildIdentity.dirty ? '（构建时工作区非干净）' : ''}`,
+              `构建时间：${buildIdentity.timestamp}`,
+              `包标识：${buildIdentity.packageHash || 'development'}${buildIdentity.packageHash ? '' : '（开发模式）'}`,
               `可执行文件：${process.execPath}`,
               `平台：${process.platform}/${process.arch}`,
               `Chromium 沙箱：${sandboxOff ? '已关闭（降级模式）' : '已启用'}`,
@@ -872,6 +914,24 @@ ipcMain.handle('aether-artifact:open', async (event, value) => {
 ipcMain.handle('aether-runtime:api-token', async (event) => {
   assertTrustedDesktopSender(event);
   return apiAccessToken;
+});
+
+ipcMain.handle('aether-runtime:select-local-model-path', async (event, kind) => {
+  assertTrustedDesktopSender(event);
+  if (!['gguf', 'runtime'].includes(kind)) throw new Error('Unsupported local model path kind');
+  const result = await dialog.showOpenDialog({
+    title: kind === 'gguf' ? '选择 GGUF 模型文件' : '选择 llama-server 可执行文件',
+    properties: ['openFile'],
+    filters: kind === 'gguf' ? [{ name: 'GGUF 模型', extensions: ['gguf'] }] : undefined,
+  });
+  if (result.canceled || !result.filePaths[0]) return '';
+  const selected = path.resolve(result.filePaths[0]);
+  const stat = fs.lstatSync(selected);
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Selected path is not a safe regular file');
+  if (kind === 'gguf' && path.extname(selected).toLowerCase() !== '.gguf') {
+    throw new Error('Selected model must be a .gguf file');
+  }
+  return selected;
 });
 
 ipcMain.handle('aether-intent:ready', async (event) => {

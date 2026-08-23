@@ -231,6 +231,18 @@ describe('sessionStore: resetStream / finishStream', () => {
 });
 
 describe('sessionStore: 会话切换与创建', () => {
+  it('按会话隔离草稿，新会话默认没有旧草稿', () => {
+    const store = useSessionStore.getState();
+    store.setComposerDraft('session-1', '旧会话草稿');
+    store.selectConversation('session-2');
+    expect(useSessionStore.getState().composerDrafts['session-2']).toBeUndefined();
+    store.setComposerDraft('session-2', '新会话草稿');
+    expect(useSessionStore.getState().composerDrafts).toMatchObject({
+      'session-1': '旧会话草稿',
+      'session-2': '新会话草稿',
+    });
+  });
+
   it('selectConversation 切换 sessionId 并清空会话级状态', () => {
     const store = useSessionStore.getState();
     store.addMessage(makeMessage('m1'));

@@ -32,10 +32,12 @@ export function DegradedInstallBanner() {
   return (
     <div
       role="status"
-      className="fixed left-0 right-0 top-0 z-[80] flex items-start justify-between gap-3 border-b border-[#e2b8b0] bg-[#fff5f2] px-4 py-2 text-xs leading-5 text-[#8a4036]"
+      className="relative z-10 flex shrink-0 items-start justify-between gap-3 border-b border-[#e2b8b0] bg-[#fff5f2] px-4 py-2 text-xs leading-5 text-[#8a4036]"
     >
       <p>
-        {ui('当前是用户本地安装，Chromium 沙箱已关闭（降级模式）。这适合本机 RC，不适合发给他人。系统 Deb（/opt/AetherChat）才会启用 setuid 沙箱。')}
+        {ui('Chromium 沙箱已关闭（降级模式）。当前安装通道：{channel}。请重新安装正式 Deb；在此之前不要处理不可信内容。', {
+          channel: window.aetherRuntime?.installChannel || 'unknown',
+        })}
       </p>
       <button
         type="button"

@@ -21,10 +21,14 @@ def test_linux_desktop_entry_and_icon_match_electron_package():
     build_script = (PROJECT_ROOT / "frontend" / "build-deb.sh").read_text(
         encoding="utf-8"
     )
-    assert "StartupWMClass=aetherchat" in build_script
-    assert "StartupWMClass=AetherChat" not in build_script
-    assert "Exec=/usr/bin/aetherchat %U" in build_script
-    assert "Exec=/usr/bin/aetherchat aetherchat://chat" in build_script
+    desktop_template = (PROJECT_ROOT / "frontend" / "linux" / "aetherchat.desktop.in").read_text(encoding="utf-8")
+    assert "StartupWMClass=aetherchat" in desktop_template
+    assert "StartupWMClass=AetherChat" not in desktop_template
+    assert "Exec=@EXEC@ %U" in desktop_template
+    assert "Exec=@EXEC@ aetherchat://chat" in desktop_template
+    assert "Actions=NewWindow;QuickEntry;" in desktop_template
+    assert "StartupNotify=true" in desktop_template
+    assert "linux/aetherchat.desktop.in" in build_script
     assert "Exec=/opt/AetherChat/aetherchat-frontend" not in build_script
     assert '"$SCRIPT_DIR/build/icon.svg"' in build_script
     assert "electron-linux/256x256.png" not in build_script
@@ -41,6 +45,12 @@ def test_linux_desktop_entry_and_icon_match_electron_package():
     assert '"$mode" != "4755"' in launcher
     assert "--no-sandbox" not in launcher
     assert "--disable-setuid-sandbox" not in launcher
+    assert "zenity" in launcher
+    assert "launcher.log" in launcher
+    assert "dpkg-deb --root-owner-group" in build_script
+    assert "postinst" in build_script
+    assert '"$owner" != "0:0"' in build_script
+    assert '"$mode" != "4755"' in build_script
 
 
 def test_user_unpacked_launcher_documents_explicit_degraded_no_sandbox():
@@ -67,9 +77,11 @@ def test_user_unpacked_launcher_documents_explicit_degraded_no_sandbox():
     installer = (PROJECT_ROOT / "scripts" / "install-user-appimage.sh").read_text(
         encoding="utf-8"
     )
-    assert "Categories=Utility;" in installer
-    assert "Categories=Development;Office;Utility;" not in installer
-    assert "Actions=NewWindow;QuickEntry;" in installer
+    desktop_template = (PROJECT_ROOT / "frontend" / "linux" / "aetherchat.desktop.in").read_text(encoding="utf-8")
+    assert "Categories=Utility;" in desktop_template
+    assert "Categories=Development;Office;Utility;" not in desktop_template
+    assert "Actions=NewWindow;QuickEntry;" in desktop_template
+    assert "linux/aetherchat.desktop.in" in installer
     assert 'install -m 0644 "$ROOT/frontend/build/icon.svg"' in installer
 
 
@@ -87,6 +99,44 @@ def test_packaged_backend_excludes_retired_drivers_and_test_suites():
         "sqlalchemy",
     ):
         assert repr(module) in spec
+    for optional_runtime in ("uvloop", "httptools", "watchfiles", "fastar"):
+        assert repr(optional_runtime) in spec
+    assert "strip=sys.platform != 'win32'" in spec
+
+
+def test_release_build_has_identity_locales_budgets_and_installed_smoke():
+    package = json.loads(
+        (PROJECT_ROOT / "frontend" / "package.json").read_text(encoding="utf-8")
+    )
+    assert package["version"] == "0.2.1-rc.3"
+    assert package["build"]["electronLanguages"] == ["en-US", "zh-CN"]
+    assert "scripts/generate-build-info.mjs" in package["scripts"]["build"]
+    assert "build-info.json" in package["build"]["files"]
+
+    generator = (
+        PROJECT_ROOT / "frontend" / "scripts" / "generate-build-info.mjs"
+    ).read_text(encoding="utf-8")
+    assert "AETHERCHAT_BUILD_CHANNEL" in generator
+    assert "commit:" in generator
+    assert "timestamp," in generator
+
+    linux_build = (PROJECT_ROOT / "frontend" / "build-linux.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "check_release_budgets.py" in linux_build
+    workflow = (PROJECT_ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "smoke_linux_install.sh" in workflow
+
+    smoke = (PROJECT_ROOT / "scripts" / "smoke_linux_install.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "/usr/bin/aetherchat" in smoke
+    assert "--no-sandbox" in smoke
+    assert "NoNewPrivs:" in smoke
+    assert "Seccomp:" in smoke
+    assert "aetherchat://chat" in smoke
 
 
 def test_release_workflow_fails_fast_when_signing_secrets_are_missing():
@@ -111,6 +161,8 @@ def test_release_workflow_fails_fast_when_signing_secrets_are_missing():
     assert "Attach packages to GitHub Release" in workflow
     assert "if: ${{ !startsWith(github.ref, 'refs/tags/v') }}" in workflow
     assert "Download packages from GitHub Release" in workflow
+    assert "--clobber" not in workflow
+    assert 'test "$GITHUB_REF_NAME" = "v$package_version"' in workflow
 
 
 def test_windows_installer_workflow_signs_when_csc_secret_present():

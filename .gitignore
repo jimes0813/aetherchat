@@ -25,6 +25,8 @@ frontend/backend/
 # 前端构建与发布产物（AppImage / deb / nsis / SBOM 等）
 frontend/dist/
 frontend/release/
+# 每次构建按当前提交生成，不作为源码提交
+frontend/build-info.json
 # CI 生成的发布元数据
 release-meta/
 

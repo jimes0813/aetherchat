@@ -35,6 +35,21 @@ function renderComposer(onSend = vi.fn(() => true)) {
 }
 
 describe('Composer generation toolbar', () => {
+  it('keeps the draft and opens model setup when no model is available', () => {
+    const onSend = vi.fn(() => true);
+    const onConfigureModels = vi.fn();
+    render(
+      <Composer providers={[]} onSend={onSend} onUpload={vi.fn(async () => [])} onConfigureModels={onConfigureModels} />,
+    );
+    const input = screen.getByLabelText('问点什么，输入 @ 引用本对话中的消息、图片或文档…');
+    fireEvent.change(input, { target: { value: '保留这份草稿' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(input).toHaveValue('保留这份草稿');
+    fireEvent.click(screen.getByRole('button', { name: '配置模型' }));
+    expect(onConfigureModels).toHaveBeenCalled();
+  });
+
   it('shows code, image, and video actions in the chat box', () => {
     renderComposer();
     expect(screen.getByRole('button', { name: '代码' })).toBeTruthy();

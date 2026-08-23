@@ -1,5 +1,5 @@
 import type { CommandItem } from '../components/chrome';
-import { SETTINGS_TABS } from '../components/settingsTabs';
+import { SETTINGS_TABS, visibleSettingsNav } from '../components/settingsTabs';
 import type { TranslationKey } from '../i18n';
 import type { Artifact, Conversation, ModelConfig, Task } from '../types';
 
@@ -15,8 +15,12 @@ export function buildCommandItems(input: {
   selectConversation: (id: string) => void;
   setSelectedArtifactPath: (path: string) => void;
   startVoice: () => void;
+  developerMode?: boolean;
 }): CommandItem[] {
-  const panels = SETTINGS_PANELS.map((panel) => ({
+  const visiblePanels = new Set(
+    visibleSettingsNav(Boolean(input.developerMode)).flatMap((group) => [...group.panels]),
+  );
+  const panels = SETTINGS_PANELS.filter((panel) => visiblePanels.has(panel)).map((panel) => ({
     id: `panel-${panel}`,
     label: input.t('openPanel', { panel: input.t(panel) }),
     hint: input.t('command'),

@@ -87,6 +87,7 @@ describe('FirstRunWizard UI', () => {
     );
 
     expect(screen.getByRole('heading', { name: '欢迎使用 AetherChat' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('radio', { name: /云端 API/ }));
     fireEvent.click(screen.getByRole('button', { name: '开始配置' }));
     expect(screen.getByRole('heading', { name: '配置一个可对话的模型' })).toBeTruthy();
 
@@ -246,9 +247,8 @@ describe('FirstRunWizard UI', () => {
         apiBase="http://127.0.0.1:8000"
       />,
     );
+    fireEvent.click(screen.getByRole('radio', { name: /已运行的本地服务/ }));
     fireEvent.click(screen.getByRole('button', { name: '开始配置' }));
-    const select = screen.getByRole('combobox');
-    fireEvent.change(select, { target: { value: 'local-external' } });
     expect(screen.getByText(/外部本地服务模式/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '保存并验证' }));
     await waitFor(() => {

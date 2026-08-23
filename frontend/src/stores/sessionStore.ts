@@ -27,6 +27,7 @@ const providerFromModel = (model: ModelConfig, current?: Provider): Provider => 
 interface SessionState {
   sessionId: string;
   conversations: Conversation[];
+  composerDrafts: Record<string, string>;
   activePanel: SettingsTabId | null;
   selectedArtifactPath: string;
   messages: Message[];
@@ -43,6 +44,7 @@ interface SessionState {
   budget: { total: number; remaining: number };
   connection: 'offline' | 'connecting' | 'online';
   selectConversation: (id: string) => void;
+  setComposerDraft: (sessionId: string, value: string) => void;
   createConversation: (title?: string) => string;
   setConversations: (conversations: Conversation[]) => void;
   setMessages: (messages: Message[]) => void;
@@ -74,6 +76,7 @@ interface SessionState {
 export const useSessionStore = create<SessionState>()(persist((set) => ({
   sessionId: '11111111-1111-4111-8111-111111111111',
   conversations: [],
+  composerDrafts: {},
   activePanel: null,
   selectedArtifactPath: '',
   messages: [],
@@ -91,6 +94,7 @@ export const useSessionStore = create<SessionState>()(persist((set) => ({
     language: '中文优先',
     uiLocale: 'zh-CN',
     reasoningDisplay: '显示',
+    developerMode: false,
   },
   providers: [],
   modelConfigs: [],
@@ -106,6 +110,17 @@ export const useSessionStore = create<SessionState>()(persist((set) => ({
     selectedArtifactPath: '',
     mergeProposals: [],
     budget: { total: 10, remaining: 10 },
+  }),
+  setComposerDraft: (sessionId, value) => set((state) => {
+    const next = { ...state.composerDrafts };
+    if (value) next[sessionId] = value;
+    else delete next[sessionId];
+    const entries = Object.entries(next);
+    return {
+      composerDrafts: entries.length > 50
+        ? Object.fromEntries(entries.slice(entries.length - 50))
+        : next,
+    };
   }),
   createConversation: (title) => {
     const id = crypto.randomUUID();
@@ -244,6 +259,7 @@ export const useSessionStore = create<SessionState>()(persist((set) => ({
     settings: state.settings,
     sessionId: state.sessionId,
     conversations: state.conversations,
+    composerDrafts: state.composerDrafts,
     selectedArtifactPath: state.selectedArtifactPath,
   }),
 }));
