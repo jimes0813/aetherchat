@@ -139,7 +139,7 @@ def test_release_build_has_identity_locales_budgets_and_installed_smoke():
     assert "aetherchat://chat" in smoke
 
 
-def test_release_workflow_fails_fast_when_signing_secrets_are_missing():
+def test_release_workflow_enforces_signing_and_routes_build_assets():
     workflow = (PROJECT_ROOT / ".github" / "workflows" / "release.yml").read_text(
         encoding="utf-8"
     )
@@ -159,9 +159,18 @@ def test_release_workflow_fails_fast_when_signing_secrets_are_missing():
     assert "fromJSON(needs.release-preflight.outputs.matrix)" in workflow
     assert "INCLUDE_WINDOWS" in workflow
     assert "Attach packages to GitHub Release" in workflow
-    assert "if: ${{ !startsWith(github.ref, 'refs/tags/v') }}" in workflow
+    assert "Upload pull-request artifact" in workflow
+    assert "if: github.event_name == 'pull_request'" in workflow
+    assert "Prepare private draft release for branch build" in workflow
+    assert "Attach branch-build packages to private draft release" in workflow
+    assert "branch_release_tag" in workflow
+    assert "--draft" in workflow
     assert "Download packages from GitHub Release" in workflow
-    assert "--clobber" not in workflow
+    assert 'gh release upload "$BRANCH_RELEASE_TAG" "${files[@]}" --clobber' in workflow
+    assert (
+        'gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber'
+        not in workflow
+    )
     assert 'test "$GITHUB_REF_NAME" = "v$package_version"' in workflow
 
 
