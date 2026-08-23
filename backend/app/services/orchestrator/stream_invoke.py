@@ -227,4 +227,3 @@ class StreamInvokeMixin:
             tool_run_id=run.get("id"),
         )
         await queue.put({"type": "tool_run", "run": {**run, "output": safe_output}})
-

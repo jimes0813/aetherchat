@@ -118,4 +118,3 @@ class StreamPlanBatchMixin:
                 continue
             yield event
         await asyncio.gather(*tasks, return_exceptions=True)
-
