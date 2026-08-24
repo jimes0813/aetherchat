@@ -879,7 +879,10 @@ async def test_interrupt_all_stops_remaining_project_plan_phases(tmp_path):
         return events
 
     collecting = asyncio.create_task(collect())
-    await asyncio.wait_for(started.wait(), timeout=1)
+    # Hosted Windows runners can spend more than one second preparing the
+    # planned run before the fake provider is entered. Keep the synchronization
+    # bounded without turning normal runner scheduling jitter into a failure.
+    await asyncio.wait_for(started.wait(), timeout=5)
     orchestrator.interrupt("all")
     events = await asyncio.wait_for(collecting, timeout=2)
     interrupted = run_service.finish(run["id"])
