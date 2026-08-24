@@ -43,6 +43,17 @@ build-windows.bat
 frontend/release/AetherChat-Setup-0.2.0.exe
 ```
 
+## 公开发布与代码签名
+
+正式 Windows 发布遵循仓库根目录的
+[`CODE_SIGNING_POLICY.md`](../CODE_SIGNING_POLICY.md)。项目获 SignPath
+Foundation 开源计划批准后，官方安装包只能从公开仓库的 GitHub Actions
+可信构建提交签名；SignPath 私钥保存在其 HSM 中，不会以 PFX 文件下载到
+开发者电脑。
+
+未获批准前生成的安装包是未签名测试构建，Windows 可能显示“未知发布者”或
+SmartScreen 提示。自签证书只适合受控测试环境，不得作为公开可信签名发布。
+
 ## 手动构建命令
 
 ```powershell

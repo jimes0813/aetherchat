@@ -134,6 +134,9 @@ jobs:
           GitHub Actions run: $runUrl
 
           This CI build is not Authenticode-signed. Windows SmartScreen may show a warning.
+
+          Code signing policy: https://github.com/$repository/blob/main/CODE_SIGNING_POLICY.md
+          Privacy policy: https://github.com/$repository/blob/main/PRIVACY.md
           "@
 
           gh release view $tag --repo $repository *> $null

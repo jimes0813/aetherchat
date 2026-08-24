@@ -1,8 +1,8 @@
 # AetherChat - 本地优先的多模型 Agent 工作台
 
-AetherChat 0.2.1-rc.3 是一个 **Linux/Windows 桌面工作台**（React + Electron + FastAPI），把多模型对话、工具授权、本地资料检索、后台自动化和 Agent Run 审计放在同一套本机 SQLite 存储上。仓库 homepage：<https://github.com/jimes0813/aetherchat>。许可： [MIT](LICENSE)。
+AetherChat 0.2.1-rc.3 是一个 **Linux/Windows 桌面工作台**（React + Electron + FastAPI），把多模型对话、工具授权、本地资料检索、后台自动化和 Agent Run 审计放在同一套本机 SQLite 存储上。仓库 homepage：<https://github.com/jimes0813/aetherchat>。许可：[MIT](LICENSE)。隐私说明：[PRIVACY.md](PRIVACY.md)。代码签名政策：[CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md)。
 
-Linux 桌面版的构建与安装说明见 [`frontend/LINUX_PACKAGING.md`](frontend/LINUX_PACKAGING.md)。
+Linux 桌面版的构建与安装说明见 [`frontend/LINUX_PACKAGING.md`](frontend/LINUX_PACKAGING.md)，Windows EXE 安装包说明见 [`frontend/WINDOWS_PACKAGING.md`](frontend/WINDOWS_PACKAGING.md)。
 
 > 早期 web 原型（PostgreSQL + MinIO + Alembic + PR0–PR13 叙事）已经不是当前架构。`docs/CLAUDE_DESKTOP_PARITY_2026-08-01.md`、`docs/LINUX_PORT_REPORT.md` 等标注为历史报告，仅供参考。
 
