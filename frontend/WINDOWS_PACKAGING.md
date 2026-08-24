@@ -54,6 +54,20 @@ Foundation 开源计划批准后，官方安装包只能从公开仓库的 GitHu
 未获批准前生成的安装包是未签名测试构建，Windows 可能显示“未知发布者”或
 SmartScreen 提示。自签证书只适合受控测试环境，不得作为公开可信签名发布。
 
+SignPath 批准项目后，在 GitHub 仓库中配置以下内容：
+
+- Actions Secret：`SIGNPATH_API_TOKEN`；
+- Actions Variables：`SIGNPATH_ORGANIZATION_ID`、`SIGNPATH_PROJECT_SLUG`、
+  `SIGNPATH_SIGNING_POLICY_SLUG`，以及需要选择非默认配置时使用的可选
+  `SIGNPATH_ARTIFACT_CONFIGURATION_SLUG`。
+
+这些值以 SignPath 项目的 CI integration 页面生成的信息为准。API Token 只能
+写入 GitHub Secret，不得粘贴到 Issue、日志或源码。不要同时配置 SignPath 和
+传统的 `WINDOWS_CSC_LINK`。`publish-windows-installer` 工作流会先完成测试和
+未签名安装检查，再将 GitHub artifact 提交给 SignPath；返回产物只有通过
+`Get-AuthenticodeSignature` 验证后才会作为已签名安装包发布。未配置 SignPath
+时，该工作流仍会生成明确标注为未签名的测试安装包。
+
 ## 手动构建命令
 
 ```powershell

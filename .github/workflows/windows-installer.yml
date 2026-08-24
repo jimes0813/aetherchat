@@ -19,15 +19,18 @@ jobs:
   windows-x64:
     runs-on: windows-2025
     permissions:
+      actions: read
       contents: write
     env:
       AETHERCHAT_ALLOW_UNAUTHENTICATED: '1'
-      WINDOWS_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
-      WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
-      CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
-      CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
-      AETHERCHAT_REQUIRE_CODE_SIGNING: ${{ secrets.WINDOWS_CSC_LINK != '' && '1' || '0' }}
+      AETHERCHAT_ARTIFACT_SIGNED: '0'
+      AETHERCHAT_USE_SIGNPATH: '0'
+      AETHERCHAT_REQUIRE_CODE_SIGNING: ${{ secrets.WINDOWS_CSC_LINK != '' && secrets.WINDOWS_CSC_KEY_PASSWORD != '' && '1' || '0' }}
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+      SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+      SIGNPATH_ARTIFACT_CONFIGURATION_SLUG: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+      SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
 
     steps:
       - uses: actions/checkout@v6
@@ -43,6 +46,36 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: frontend/package-lock.json
+
+      - name: Validate signing configuration
+        shell: pwsh
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          WINDOWS_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+        run: |
+          $requiredSignPathSettings = @(
+            $env:SIGNPATH_API_TOKEN,
+            $env:SIGNPATH_ORGANIZATION_ID,
+            $env:SIGNPATH_PROJECT_SLUG,
+            $env:SIGNPATH_SIGNING_POLICY_SLUG
+          )
+          $configured = @($requiredSignPathSettings | Where-Object { $_ }).Count
+          if ($configured -ne 0 -and $configured -ne $requiredSignPathSettings.Count) {
+            throw "SignPath configuration is incomplete; configure the API token and organization, project, and signing-policy variables"
+          }
+          if ($configured -eq 0 -and $env:SIGNPATH_ARTIFACT_CONFIGURATION_SLUG) {
+            throw "SignPath artifact configuration is set without the required SignPath settings"
+          }
+          if ([bool]$env:WINDOWS_CSC_LINK -ne [bool]$env:WINDOWS_CSC_KEY_PASSWORD) {
+            throw "WINDOWS_CSC_LINK and WINDOWS_CSC_KEY_PASSWORD must be configured together"
+          }
+          if ($configured -eq $requiredSignPathSettings.Count) {
+            if ($env:WINDOWS_CSC_LINK) {
+              throw "Configure either SignPath or WINDOWS_CSC_LINK, not both"
+            }
+            "AETHERCHAT_USE_SIGNPATH=1" >> $env:GITHUB_ENV
+          }
 
       - name: Install Python dependencies
         run: python -m pip install --requirement backend/requirements.txt
@@ -64,6 +97,9 @@ jobs:
 
       - name: Build Windows NSIS installer
         shell: pwsh
+        env:
+          CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
         run: frontend/build-windows.ps1
       - name: Verify install, upgrade, and uninstall
         shell: pwsh
@@ -71,6 +107,66 @@ jobs:
           $installer = Get-ChildItem frontend/release/AetherChat-Setup-*.exe | Select-Object -First 1
           if (-not $installer) { throw "NSIS installer was not created" }
           scripts/smoke_windows_install.ps1 $installer.FullName
+
+      - name: Upload unsigned installer for SignPath
+        id: upload-unsigned-installer
+        if: env.AETHERCHAT_USE_SIGNPATH == '1'
+        uses: actions/upload-artifact@v7
+        with:
+          name: AetherChat-windows-x64-unsigned
+          path: frontend/release/AetherChat-Setup-*.exe
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Submit installer to SignPath
+        id: signpath
+        if: env.AETHERCHAT_USE_SIGNPATH == '1'
+        # v2, pinned because this action is part of the signing trust boundary.
+        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ env.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ env.SIGNPATH_PROJECT_SLUG }}
+          artifact-configuration-slug: ${{ env.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          signing-policy-slug: ${{ env.SIGNPATH_SIGNING_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.upload-unsigned-installer.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signpath-signed
+
+      - name: Install and verify SignPath result
+        if: env.AETHERCHAT_USE_SIGNPATH == '1'
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem frontend/release/AetherChat-Setup-*.exe | Select-Object -First 1
+          $signed = @(
+            Get-ChildItem signpath-signed -Recurse -File -Filter $installer.Name
+          )
+          if ($signed.Count -ne 1) {
+            throw "Expected one signed installer named $($installer.Name), found $($signed.Count)"
+          }
+          Copy-Item -Force $signed[0].FullName $installer.FullName
+
+      - name: Record Authenticode status
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem frontend/release/AetherChat-Setup-*.exe | Select-Object -First 1
+          $signature = Get-AuthenticodeSignature $installer.FullName
+          $signatureRequired = (
+            $env:AETHERCHAT_USE_SIGNPATH -eq "1" -or
+            $env:AETHERCHAT_REQUIRE_CODE_SIGNING -eq "1"
+          )
+          if ($signature.Status -eq "Valid") {
+            if (-not $signature.SignerCertificate.Subject) {
+              throw "Authenticode signer subject is missing"
+            }
+            "AETHERCHAT_ARTIFACT_SIGNED=1" >> $env:GITHUB_ENV
+            "AETHERCHAT_SIGNER_SUBJECT=$($signature.SignerCertificate.Subject)" >> $env:GITHUB_ENV
+          } elseif ($signatureRequired) {
+            throw "Installer Authenticode signature is not valid: $($signature.Status)"
+          } else {
+            Write-Host "Installer is unsigned; publishing an explicitly labeled test build"
+          }
 
       - name: Generate build metadata
         shell: pwsh
@@ -124,8 +220,16 @@ jobs:
 
           $runUrl = "https://github.com/$repository/actions/runs/$env:GITHUB_RUN_ID"
           $commitUrl = "https://github.com/$repository/commit/$env:GITHUB_SHA"
+          if ($env:AETHERCHAT_ARTIFACT_SIGNED -eq "1") {
+            $buildKind = "Automated Authenticode-signed Windows x64 installer"
+            $signatureNotice = "Authenticode status: valid. Signer: $env:AETHERCHAT_SIGNER_SUBJECT"
+          } else {
+            $buildKind = "Automated unsigned Windows x64 test installer"
+            $signatureNotice = "This CI build is not Authenticode-signed. Windows SmartScreen may show a warning."
+          }
+
           $notes = @"
-          Automated unsigned Windows x64 installer for AetherChat $version.
+          $buildKind for AetherChat $version.
 
           Validation: backend tests, Electron supply-chain tests, frontend production build,
           and silent install/upgrade/uninstall smoke test on Windows Server 2025.
@@ -133,7 +237,7 @@ jobs:
           Source commit: $commitUrl
           GitHub Actions run: $runUrl
 
-          This CI build is not Authenticode-signed. Windows SmartScreen may show a warning.
+          $signatureNotice
 
           Code signing policy: https://github.com/$repository/blob/main/CODE_SIGNING_POLICY.md
           Privacy policy: https://github.com/$repository/blob/main/PRIVACY.md
@@ -172,4 +276,5 @@ jobs:
           "### Windows installer published" >> $env:GITHUB_STEP_SUMMARY
           "- Release: $releaseUrl" >> $env:GITHUB_STEP_SUMMARY
           "- Installer: $($installer.Name)" >> $env:GITHUB_STEP_SUMMARY
+          "- Authenticode signed: $($env:AETHERCHAT_ARTIFACT_SIGNED -eq '1')" >> $env:GITHUB_STEP_SUMMARY
           "- SHA-256: $((Get-FileHash -Algorithm SHA256 $installer.FullName).Hash.ToLowerInvariant())" >> $env:GITHUB_STEP_SUMMARY

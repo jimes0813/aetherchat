@@ -174,12 +174,16 @@ def test_release_workflow_enforces_signing_and_routes_build_assets():
     assert 'test "$GITHUB_REF_NAME" = "v$package_version"' in workflow
 
 
-def test_windows_installer_workflow_signs_when_csc_secret_present():
+def test_windows_installer_workflow_supports_signpath_and_csc():
     workflow = (PROJECT_ROOT / ".github" / "workflows" / "windows-installer.yml").read_text(
         encoding="utf-8"
     )
     assert "CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}" in workflow
     assert "AETHERCHAT_REQUIRE_CODE_SIGNING:" in workflow
+    assert "signpath/github-action-submit-signing-request@" in workflow
+    assert "SIGNPATH_API_TOKEN" in workflow
+    assert "SIGNPATH_ARTIFACT_CONFIGURATION_SLUG" in workflow
+    assert "Get-AuthenticodeSignature" in workflow
     smoke = (PROJECT_ROOT / "scripts" / "smoke_windows_install.ps1").read_text(
         encoding="utf-8"
     )
