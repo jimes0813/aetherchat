@@ -108,7 +108,7 @@ def test_release_build_has_identity_locales_budgets_and_installed_smoke():
     package = json.loads(
         (PROJECT_ROOT / "frontend" / "package.json").read_text(encoding="utf-8")
     )
-    assert package["version"] == "0.2.1-rc.3"
+    assert package["version"] == "0.2.1-rc.4"
     assert package["build"]["electronLanguages"] == ["en-US", "zh-CN"]
     assert "scripts/generate-build-info.mjs" in package["scripts"]["build"]
     assert "build-info.json" in package["build"]["files"]
@@ -184,6 +184,10 @@ def test_windows_installer_workflow_supports_signpath_and_csc():
     assert "SIGNPATH_API_TOKEN" in workflow
     assert "SIGNPATH_ARTIFACT_CONFIGURATION_SLUG" in workflow
     assert "Get-AuthenticodeSignature" in workflow
+    assert "Embed release verification public key" in workflow
+    assert "AETHERCHAT_RELEASE_PUBLIC_KEY_B64" in workflow
+    assert "Generate signed rolling update manifest" in workflow
+    assert "update-manifest.signed.json" in workflow
     smoke = (PROJECT_ROOT / "scripts" / "smoke_windows_install.ps1").read_text(
         encoding="utf-8"
     )

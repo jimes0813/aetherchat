@@ -18,8 +18,17 @@ const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const net = require('net');
+const {
+  DEFAULT_UPDATE_INTERVAL_MS,
+  DEFAULT_UPDATE_STARTUP_DELAY_MS,
+  createAutoUpdateManager,
+  resolveUpdateManifestUrl,
+} = require('./auto-updater.cjs');
 const { stageUpdate } = require('./update-verifier.cjs');
-const { launchWindowsInstaller } = require('./update-launcher.cjs');
+const {
+  launchWindowsInstaller,
+  verifyWindowsInstallerSignature,
+} = require('./update-launcher.cjs');
 const { buildContextMenuTemplate } = require('./context-menu.cjs');
 const { openExternalNavigation } = require('./external-navigation.cjs');
 const { launchIntentFromArgv, quickEntryIntent } = require('./launch-intent.cjs');
@@ -63,6 +72,7 @@ let tray = null;
 let quitRequested = false;
 let trayNoticeShown = false;
 let automationPollTimer = null;
+let autoUpdateManager = null;
 let knownReviewItems = null;
 let cachedBuildIdentity = null;
 
@@ -220,14 +230,145 @@ function updatePublicKey() {
   return fs.existsSync(publicKeyPath) ? fs.readFileSync(publicKeyPath, 'utf8') : '';
 }
 
+function updateManifestUrl() {
+  return resolveUpdateManifestUrl({
+    override: process.env.AETHERCHAT_UPDATE_MANIFEST_URL,
+    currentVersion: app.getVersion(),
+    platform: process.platform,
+  });
+}
+
+function boundedUpdateTiming(name, fallback, minimum, maximum) {
+  const value = Number(process.env[name]);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.min(maximum, Math.max(minimum, Math.floor(value)));
+}
+
+function startAutomaticUpdates() {
+  if (autoUpdateManager) return autoUpdateManager.getState().enabled;
+  const manifestUrl = updateManifestUrl();
+  const publicKey = updatePublicKey();
+  const enabled = (
+    app.isPackaged
+    && process.platform === 'win32'
+    && process.env.AETHERCHAT_AUTO_UPDATE_DISABLED !== '1'
+    && Boolean(manifestUrl)
+    && Boolean(publicKey)
+  );
+  autoUpdateManager = createAutoUpdateManager({
+    enabled,
+    startupDelayMs: boundedUpdateTiming(
+      'AETHERCHAT_UPDATE_STARTUP_DELAY_MS',
+      DEFAULT_UPDATE_STARTUP_DELAY_MS,
+      0,
+      10 * 60 * 1000,
+    ),
+    intervalMs: boundedUpdateTiming(
+      'AETHERCHAT_UPDATE_INTERVAL_MS',
+      DEFAULT_UPDATE_INTERVAL_MS,
+      15 * 60 * 1000,
+      7 * 24 * 60 * 60 * 1000,
+    ),
+    downloadUpdate: () => stageUpdate({
+      manifestUrl,
+      publicKey,
+      currentVersion: app.getVersion(),
+      platform: 'windows',
+      arch: process.arch,
+      downloadDir: path.join(app.getPath('userData'), 'updates'),
+    }),
+    installUpdate: async (staged) => {
+      if (!staged?.path?.toLowerCase().endsWith('.exe')) {
+        throw new Error('Automatic Windows update is not an EXE installer');
+      }
+      const signature = await verifyWindowsInstallerSignature(staged.path);
+      console.info(`Automatic update Authenticode signer: ${signature.signerSubject}`);
+      await launchWindowsInstaller(staged.path, {
+        silent: true,
+        forceRunAfter: true,
+      });
+      if (Notification.isSupported()) {
+        new Notification({
+          title: 'AetherChat 更新已验证',
+          body: `正在安装 ${staged.manifest.version}，应用将自动重启。`,
+        }).show();
+      }
+      app.quit();
+    },
+    onStatus: (status) => {
+      if (status.phase === 'error') {
+        console.warn(`Automatic update ${status.reason} check failed: ${status.error}`);
+      } else if (status.phase !== 'up-to-date') {
+        console.info(`Automatic update: ${status.phase} (${status.reason})`);
+      }
+    },
+  });
+  if (autoUpdateManager.start()) {
+    console.info('Automatic signed updates enabled');
+  } else if (app.isPackaged && process.platform === 'win32') {
+    console.warn('Automatic signed updates disabled: release key or channel is unavailable');
+  }
+  return enabled;
+}
+
+function stopAutomaticUpdates() {
+  autoUpdateManager?.stop();
+}
+
 async function checkForSignedUpdate() {
   const owner = BrowserWindow.getAllWindows().find((window) => !window.isDestroyed());
-  const manifestUrl = String(
-    process.env.AETHERCHAT_UPDATE_MANIFEST_URL
-      || 'https://github.com/jimes0813/AetherChat/releases/latest/download/update-manifest.signed.json',
-  ).trim();
-  const publicKey = updatePublicKey();
-  if (!manifestUrl || !publicKey) {
+  if (process.platform !== 'win32') {
+    const manifestUrl = updateManifestUrl();
+    const publicKey = updatePublicKey();
+    if (!manifestUrl || !publicKey) {
+      await dialog.showMessageBox(owner, {
+        type: 'info', title: 'AetherChat 更新', message: '此构建未配置正式更新通道',
+        detail: '为避免接受无签名软件包，缺少 HTTPS 清单地址或 Ed25519 公钥时更新功能保持禁用。',
+        buttons: ['确定'],
+      });
+      return;
+    }
+    const consent = await dialog.showMessageBox(owner, {
+      type: 'question', title: '检查签名更新', message: '允许连接正式更新服务器吗？',
+      detail: 'AetherChat 只会下载已签名清单；软件包还必须通过版本、平台、架构、大小和 SHA-256 校验。',
+      buttons: ['允许本次检查', '取消'], defaultId: 1, cancelId: 1, noLink: true,
+    });
+    if (consent.response !== 0) return;
+    try {
+      const staged = await stageUpdate({
+        manifestUrl,
+        publicKey,
+        currentVersion: app.getVersion(),
+        platform: process.platform,
+        arch: process.arch,
+        downloadDir: path.join(app.getPath('userData'), 'updates'),
+      });
+      if (staged.path.endsWith('.AppImage')) fs.chmodSync(staged.path, 0o700);
+      const install = await dialog.showMessageBox(owner, {
+        type: 'info', title: '签名更新已验证',
+        message: `AetherChat ${staged.manifest.version} 已安全暂存`,
+        detail: `SHA-256：${staged.sha256}\n\n当前版本和用户数据尚未修改。`,
+        buttons: ['打开更新包', '稍后'], defaultId: 1, cancelId: 1, noLink: true,
+      });
+      if (install.response === 0) {
+        const error = await shell.openPath(staged.path);
+        if (error) throw new Error(error);
+      }
+    } catch (error) {
+      if (error?.code === 'UPDATE_NOT_AVAILABLE') {
+        await dialog.showMessageBox(owner, {
+          type: 'info', title: 'AetherChat 更新', message: '当前已经是最新版本', buttons: ['确定'],
+        });
+      } else {
+        await dialog.showMessageBox(owner, {
+          type: 'error', title: '更新已拒绝', message: '更新验证或暂存失败',
+          detail: `${String(error?.message || error)}\n\n当前安装和用户数据未被修改。`, buttons: ['确定'],
+        });
+      }
+    }
+    return;
+  }
+  if (!autoUpdateManager?.getState().enabled) {
     await dialog.showMessageBox(owner, {
       type: 'info', title: 'AetherChat 更新', message: '此构建未配置正式更新通道',
       detail: '为避免接受无签名软件包，缺少 HTTPS 清单地址或 Ed25519 公钥时更新功能保持禁用。',
@@ -235,41 +376,17 @@ async function checkForSignedUpdate() {
     });
     return;
   }
-  const consent = await dialog.showMessageBox(owner, {
-    type: 'question', title: '检查签名更新', message: '允许连接正式更新服务器吗？',
-    detail: 'AetherChat 只会下载已签名清单；软件包还必须通过版本、平台、架构、大小和 SHA-256 校验。',
-    buttons: ['允许本次检查', '取消'], defaultId: 1, cancelId: 1, noLink: true,
-  });
-  if (consent.response !== 0) return;
-  try {
-    const staged = await stageUpdate({
-      manifestUrl,
-      publicKey,
-      currentVersion: app.getVersion(),
-      platform: process.platform === 'win32' ? 'windows' : process.platform,
-      arch: process.arch,
-      downloadDir: path.join(app.getPath('userData'), 'updates'),
+  const result = await autoUpdateManager.check('manual');
+  if (result.status === 'up-to-date') {
+    await dialog.showMessageBox(owner, {
+      type: 'info', title: 'AetherChat 更新', message: '当前已经是最新版本',
+      buttons: ['确定'],
     });
-    if (staged.path.endsWith('.AppImage')) fs.chmodSync(staged.path, 0o700);
-    const install = await dialog.showMessageBox(owner, {
-      type: 'info', title: '签名更新已验证',
-      message: `AetherChat ${staged.manifest.version} 已安全暂存`,
-      detail: `SHA-256：${staged.sha256}\n\n当前版本和用户数据尚未修改。启动安装程序后如果安装失败，仍可继续使用当前版本。`,
-      buttons: ['启动安装程序', '稍后'], defaultId: 1, cancelId: 1, noLink: true,
-    });
-    if (install.response === 0) {
-      if (process.platform === 'win32') {
-        await launchWindowsInstaller(staged.path);
-        app.quit();
-      } else {
-        const error = await shell.openPath(staged.path);
-        if (error) throw new Error(error);
-      }
-    }
-  } catch (error) {
+  } else if (result.status === 'error') {
     await dialog.showMessageBox(owner, {
       type: 'error', title: '更新已拒绝', message: '更新验证或暂存失败',
-      detail: `${String(error?.message || error)}\n\n当前安装和用户数据未被修改。`, buttons: ['确定'],
+      detail: `${String(result.error?.message || result.error)}\n\n当前安装和用户数据未被修改，稍后会自动重试。`,
+      buttons: ['确定'],
     });
   }
 }
@@ -819,7 +936,10 @@ const menu = Menu.buildFromTemplate([
         click: () => activateLaunchIntent(quickEntryIntent()),
       },
       { type: 'separator' },
-      { label: '检查签名更新', click: () => checkForSignedUpdate() },
+      {
+        label: process.platform === 'win32' ? '立即检查自动更新' : '检查签名更新',
+        click: () => checkForSignedUpdate(),
+      },
       { type: 'separator' },
       {
         label: '关于 AetherChat',
@@ -1299,6 +1419,7 @@ app.whenReady().then(async () => {
   flushLaunchIntent(win);
   await maybeWarnDegradedSandbox();
   startAutomationReviewPolling();
+  startAutomaticUpdates();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
@@ -1312,6 +1433,7 @@ app.on('will-quit', () => {
   unregisterTerminationHandlers();
   globalShortcut.unregisterAll();
   stopAutomationReviewPolling();
+  stopAutomaticUpdates();
   if (tray) tray.destroy();
   tray = null;
 });
@@ -1334,6 +1456,7 @@ app.on('before-quit', (event) => {
     desktopFileHandles.clear();
     desktopHandleOwners.clear();
     stopAutomationReviewPolling();
+    stopAutomaticUpdates();
     stopComputerConsentServer();
     await stopBackend();
     gracefulShutdownComplete = true;

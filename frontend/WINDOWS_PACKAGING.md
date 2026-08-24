@@ -40,7 +40,7 @@ build-windows.bat
 当前版本的预期产物为：
 
 ```text
-frontend/release/AetherChat-Setup-0.2.0.exe
+frontend/release/AetherChat-Setup-0.2.1-rc.4.exe
 ```
 
 ## 公开发布与代码签名
@@ -67,6 +67,17 @@ SignPath 批准项目后，在 GitHub 仓库中配置以下内容：
 未签名安装检查，再将 GitHub artifact 提交给 SignPath；返回产物只有通过
 `Get-AuthenticodeSignature` 验证后才会作为已签名安装包发布。未配置 SignPath
 时，该工作流仍会生成明确标注为未签名的测试安装包。
+
+## 自动更新
+
+打包工作流会把 `AETHERCHAT_RELEASE_PUBLIC_KEY_B64` 对应的 Ed25519 公钥嵌入
+Windows 客户端。正式安装版启动 30 秒后检查签名更新，并每 6 小时重试；新包
+只有通过签名清单、版本、平台/架构、大小、SHA-256 和系统 Authenticode
+校验后，才使用
+`--updated /S --force-run` 静默覆盖安装并自动重启。开发版或缺少公钥的构建
+不会联网检查。设置 `AETHERCHAT_AUTO_UPDATE_DISABLED=1` 可作为紧急停用开关。
+RC 版本读取 `windows-ci-latest` 的滚动签名清单，稳定版读取 GitHub Latest；
+CI 只为 Authenticode 已验证的安装器生成和发布该清单。
 
 ## 手动构建命令
 

@@ -139,7 +139,7 @@
 - [x] Linux 构建继续输出 AppImage/Deb；Deb 强制 `chrome-sandbox` 为 root 所有、模式 4755，并由 CI 读取归档验证。
 - [x] 移除 `aetherchat.local`，统一使用项目 GitHub 主页和维护者 noreply 邮箱。
 - [x] tag 构建只从 GitHub Secrets 注入 Ed25519 私钥/公钥和 Windows 代码签名证书；缺失时发布失败，普通构建的更新功能默认禁用。
-- [x] 实现 Ed25519 签名更新清单和 Electron “检查签名更新”入口；严格验证 HTTPS、签名、新版本、平台、架构、大小与 SHA-256。
+- [x] 实现 Ed25519 签名更新清单和 Electron 更新入口；Windows 正式包启动与每 6 小时自动检查、静默下载，并在 Ed25519、HTTPS、新版本、平台、架构、大小、SHA-256 与 Authenticode 全部通过后静默安装重启；Linux 保留手动签名更新。
 - [x] 更新包流式写入随机 `.partial`，校验成功后原子暂存；失败清理临时文件且不修改当前安装或用户数据。
 - [x] 生成 CycloneDX 1.5 SBOM、逐产物 SHA-256 和可追溯构建元数据；Python 关键依赖已固定精确版本，npm 使用 lockfile。
 - [x] 覆盖签名缺失/错误、清单篡改、降级、错误架构、HTTP URL、大小/哈希不符和残留临时文件拒绝路径。

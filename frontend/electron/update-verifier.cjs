@@ -5,6 +5,23 @@ const path = require('path');
 const MAX_UPDATE_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 1024 * 1024;
 
+function codedError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function writeAllSync(descriptor, bytes, writeImpl = fs.writeSync) {
+  let offset = 0;
+  while (offset < bytes.length) {
+    const written = writeImpl(descriptor, bytes, offset, bytes.length - offset);
+    if (!Number.isInteger(written) || written <= 0) {
+      throw new Error('Update package could not be written completely');
+    }
+    offset += written;
+  }
+}
+
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
   if (value && typeof value === 'object') {
@@ -28,7 +45,19 @@ function compareVersions(left, right) {
   if (a.prerelease === b.prerelease) return 0;
   if (!a.prerelease) return 1;
   if (!b.prerelease) return -1;
-  return a.prerelease > b.prerelease ? 1 : -1;
+  const aParts = a.prerelease.split('.');
+  const bParts = b.prerelease.split('.');
+  for (let index = 0; index < Math.max(aParts.length, bParts.length); index += 1) {
+    if (aParts[index] === undefined) return -1;
+    if (bParts[index] === undefined) return 1;
+    if (aParts[index] === bParts[index]) continue;
+    const aNumeric = /^\d+$/.test(aParts[index]);
+    const bNumeric = /^\d+$/.test(bParts[index]);
+    if (aNumeric && bNumeric) return Number(aParts[index]) > Number(bParts[index]) ? 1 : -1;
+    if (aNumeric !== bNumeric) return aNumeric ? -1 : 1;
+    return aParts[index] > bParts[index] ? 1 : -1;
+  }
+  return 0;
 }
 
 function assertHttpsUrl(value, label) {
@@ -59,7 +88,7 @@ function verifyManifestEnvelope(envelope, options) {
     throw new Error('Update manifest signature verification failed');
   }
   if (compareVersions(envelope.manifest.version, options.currentVersion) <= 0) {
-    throw new Error('Update version is not newer than the installed version');
+    throw codedError('UPDATE_NOT_AVAILABLE', 'Update version is not newer than the installed version');
   }
   const release = envelope.manifest.releases.find((item) => (
     item && item.platform === options.platform && item.arch === options.arch
@@ -101,6 +130,7 @@ async function stageUpdate({ manifestUrl, publicKey, currentVersion, platform, a
   let received = 0;
   let descriptor;
   try {
+    fs.rmSync(finalPath, { force: true });
     descriptor = fs.openSync(partialPath, 'wx', 0o600);
     if (!packageResponse.body) throw new Error('Update package response has no body');
     for await (const chunk of packageResponse.body) {
@@ -108,7 +138,7 @@ async function stageUpdate({ manifestUrl, publicKey, currentVersion, platform, a
       received += bytes.length;
       if (received > verified.release.size || received > MAX_UPDATE_BYTES) throw new Error('Update package exceeds the signed size');
       hash.update(bytes);
-      fs.writeSync(descriptor, bytes);
+      writeAllSync(descriptor, bytes);
     }
     fs.fsyncSync(descriptor);
     fs.closeSync(descriptor);
@@ -134,6 +164,8 @@ module.exports = {
   MAX_MANIFEST_BYTES,
   canonicalJson,
   compareVersions,
+  codedError,
+  writeAllSync,
   verifyManifestEnvelope,
   stageUpdate,
 };

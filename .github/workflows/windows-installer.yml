@@ -95,6 +95,19 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+      - name: Embed release verification public key
+        shell: pwsh
+        env:
+          AETHERCHAT_RELEASE_PUBLIC_KEY_B64: ${{ secrets.AETHERCHAT_RELEASE_PUBLIC_KEY_B64 }}
+        run: |
+          if (-not $env:AETHERCHAT_RELEASE_PUBLIC_KEY_B64) {
+            throw "Release public key secret is required for automatic updates"
+          }
+          [IO.File]::WriteAllBytes(
+            "frontend/electron/update-public-key.pem",
+            [Convert]::FromBase64String($env:AETHERCHAT_RELEASE_PUBLIC_KEY_B64)
+          )
+
       - name: Build Windows NSIS installer
         shell: pwsh
         env:
@@ -196,6 +209,29 @@ jobs:
             $encoding
           )
 
+      - name: Generate signed rolling update manifest
+        if: env.AETHERCHAT_ARTIFACT_SIGNED == '1'
+        shell: pwsh
+        env:
+          AETHERCHAT_RELEASE_PRIVATE_KEY_B64: ${{ secrets.AETHERCHAT_RELEASE_PRIVATE_KEY_B64 }}
+          AETHERCHAT_RELEASE_PUBLIC_KEY_B64: ${{ secrets.AETHERCHAT_RELEASE_PUBLIC_KEY_B64 }}
+        run: |
+          if (-not $env:AETHERCHAT_RELEASE_PRIVATE_KEY_B64 -or -not $env:AETHERCHAT_RELEASE_PUBLIC_KEY_B64) {
+            throw "Release manifest signing keys are required for automatic updates"
+          }
+          $version = node -p "require('./frontend/package.json').version"
+          $installer = Get-ChildItem frontend/release/AetherChat-Setup-*.exe | Select-Object -First 1
+          $downloadUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/windows-ci-latest/$($installer.Name)"
+          python scripts/release_security.py manifest `
+            --version $version `
+            --release "windows,x64,$($installer.FullName),$downloadUrl" `
+            --output release-meta/update-manifest.json
+          python scripts/release_security.py sign `
+            --manifest release-meta/update-manifest.json `
+            --output release-meta/update-manifest.signed.json
+          python scripts/release_security.py verify `
+            --envelope release-meta/update-manifest.signed.json
+
       - name: Publish GitHub prerelease
         shell: pwsh
         env:
@@ -264,6 +300,10 @@ jobs:
             (Resolve-Path "release-meta/AetherChat-$version-windows-x64.build.json").Path
             (Resolve-Path "release-meta/SHA256SUMS").Path
           )
+          $signedUpdateManifest = Resolve-Path "release-meta/update-manifest.signed.json" -ErrorAction SilentlyContinue
+          if ($signedUpdateManifest) {
+            $assets += $signedUpdateManifest.Path
+          }
           $blockmaps = @(
             Get-ChildItem frontend/release/*.blockmap -ErrorAction SilentlyContinue |
               ForEach-Object { $_.FullName }

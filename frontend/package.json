@@ -1,6 +1,6 @@
 {
   "name": "aetherchat-frontend",
-  "version": "0.2.1-rc.3",
+  "version": "0.2.1-rc.4",
   "description": "AetherChat 多模型协作桌面工作台",
   "desktopName": "aetherchat.desktop",
   "homepage": "https://github.com/jimes0813/AetherChat",

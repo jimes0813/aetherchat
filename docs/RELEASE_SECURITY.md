@@ -66,8 +66,19 @@ python scripts/public_rc_preflight.py
 4. 平台和架构完全匹配。
 5. 文件名安全，签名大小不超过 2 GB。
 6. 流式下载的实际大小和 SHA-256 与签名清单一致。
+7. Windows 安装器的系统 Authenticode 状态为 `Valid`，且签名者主题非空。
 
-软件包先以权限 `0600` 写入随机 `.partial` 文件，校验成功后才原子重命名。任何错误都会删除临时文件。当前安装、会话数据库、密钥引用和资料索引在用户明确启动安装程序前都不会改变，因此验证/下载失败天然回滚到当前版本。
+软件包先以权限 `0600` 写入随机 `.partial` 文件，校验成功后才原子重命名。任何错误都会删除临时文件，因此验证或下载失败不会改变当前安装、会话数据库、密钥引用和资料索引。
+
+正式 Windows 安装版在启动 30 秒后自动执行第一次检查，此后每 6 小时检查。
+发现并完整验证新版本后，客户端使用 electron-builder NSIS 更新参数
+`--updated /S --force-run` 静默安装并重新启动。检查、下载或启动安装失败时，
+当前版本继续运行并在下个周期重试；并发检查会合并为一次请求。开发模式、
+非 Windows 平台、缺少嵌入公钥的构建默认禁用自动更新。紧急运维可设置
+`AETHERCHAT_AUTO_UPDATE_DISABLED=1` 禁用，检查周期只能在 15 分钟到 7 天之间调整。
+Windows RC 读取滚动的 `windows-ci-latest/update-manifest.signed.json`，稳定版读取
+GitHub `releases/latest`；滚动清单只在安装器 Authenticode 验证成功后才由 CI
+签名并发布，未签名测试包不会进入自动更新通道。
 
 ## SBOM 与构建元数据
 

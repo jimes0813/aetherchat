@@ -4,7 +4,13 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { canonicalJson, stageUpdate, verifyManifestEnvelope } = require('./update-verifier.cjs');
+const {
+  canonicalJson,
+  compareVersions,
+  stageUpdate,
+  verifyManifestEnvelope,
+  writeAllSync,
+} = require('./update-verifier.cjs');
 
 const keys = crypto.generateKeyPairSync('ed25519');
 const payload = Buffer.from('signed aetherchat update payload');
@@ -31,6 +37,25 @@ test('accepts a correctly signed update for the current platform', () => {
   assert.equal(result.release.sha256, release.sha256);
 });
 
+test('compares numeric prerelease identifiers using SemVer ordering', () => {
+  assert.equal(compareVersions('0.2.1-rc.10', '0.2.1-rc.9'), 1);
+  assert.equal(compareVersions('0.2.1-rc.9', '0.2.1-rc.10'), -1);
+  assert.equal(compareVersions('0.2.1', '0.2.1-rc.10'), 1);
+  assert.equal(compareVersions('0.2.1-rc.10', '0.2.1-rc.10'), 0);
+});
+
+test('writes every byte even when the file API returns short writes', () => {
+  const payload = Buffer.from('complete update package');
+  const chunks = [];
+  const writeImpl = (_descriptor, bytes, offset, length) => {
+    const written = Math.min(3, length);
+    chunks.push(Buffer.from(bytes.subarray(offset, offset + written)));
+    return written;
+  };
+  writeAllSync(123, payload, writeImpl);
+  assert.deepEqual(Buffer.concat(chunks), payload);
+});
+
 test('rejects missing/bad signatures, downgrade, wrong architecture and unsafe URLs', () => {
   const base = { publicKey: keys.publicKey, currentVersion: '0.2.0', platform: 'linux', arch: 'arm64' };
   assert.throws(() => verifyManifestEnvelope({ manifest: envelope().manifest }, base), /incomplete/);
@@ -45,6 +70,7 @@ test('rejects missing/bad signatures, downgrade, wrong architecture and unsafe U
 test('stages only a hash-matching package and leaves no partial file after rejection', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'aetherchat-update-test-'));
   const signed = envelope();
+  fs.writeFileSync(path.join(directory, 'AetherChat.AppImage'), 'stale partial retry');
   const fetchOk = async (url) => String(url).endsWith('.AppImage')
     ? new Response(payload, { status: 200, headers: { 'content-length': String(payload.length) } })
     : new Response(JSON.stringify(signed), { status: 200, headers: { 'content-type': 'application/json' } });

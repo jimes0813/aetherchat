@@ -7,10 +7,11 @@ attachments, indexes, memories, task state, settings, and audit records are
 stored on the user's device in the AetherChat data directory. The project does
 not operate an analytics, advertising, or telemetry collection service.
 
-## Network connections chosen by the user
+## Network connections
 
-AetherChat transfers data to another system only when the user configures or
-invokes the corresponding feature:
+AetherChat transfers data to another system only for a configured or invoked
+feature, or for the signed automatic-update maintenance connection described
+below:
 
 - A configured cloud model provider receives the messages, selected
   attachments, system instructions, and tool context needed to answer the
@@ -21,9 +22,15 @@ invokes the corresponding feature:
   local or remote depending on the address supplied by the user.
 - Opening a web link uses the selected external browser. The destination site
   receives ordinary browser request data under its own policy.
-- Checking for an update requires explicit confirmation. It downloads a signed
-  release manifest, and, if an update is selected, the release package from the
-  configured HTTPS update location (GitHub Releases by default).
+- Packaged Windows releases check GitHub Releases for a signed update manifest
+  shortly after startup and every six hours while the application is running.
+  When a newer compatible version is available, AetherChat downloads the
+  release package, verifies its Ed25519-signed metadata, size, and SHA-256, and
+  then installs it silently and restarts. These requests disclose ordinary
+  connection metadata such as the user's IP address and user agent to GitHub,
+  but do not include conversations, attachments, indexes, credentials, or
+  telemetry. Development builds and packages without the embedded release
+  public key do not make automatic-update requests.
 
 API keys and OAuth credentials are stored in the operating system's keyring
 when that facility is available. They are not intentionally placed in project
