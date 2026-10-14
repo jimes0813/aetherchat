@@ -24,6 +24,20 @@ export function GeneralSettingsPanel({ settings, providers, diagnosticStatus, on
   return (
     <div className="aether-tab-panel aether-panel-scroll min-h-0 flex-1 overflow-auto p-4" data-settings-panel="settings">
       <div className="mb-4 flex items-center gap-2 text-sm font-semibold"><ShieldCheck size={16} />{t('general')}</div>
+
+      <label className="mb-4 block">
+        <span className="mb-1 block text-xs font-semibold text-ink-muted">{t('workspaceMode')}</span>
+        <select
+          aria-label={t('workspaceMode')}
+          value={settings.workspaceMode || 'simple'}
+          onChange={(event) => onUpdate({ workspaceMode: event.target.value as WorkspaceSettings['workspaceMode'] })}
+          className="h-10 w-full rounded-control border border-border bg-paper-raised px-3 text-sm outline-none"
+        >
+          <option value="simple">{t('workspaceModeSimple')}</option>
+          <option value="advanced">{t('workspaceModeAdvanced')}</option>
+        </select>
+        <span className="mt-1 block text-xs leading-5 text-ink-muted">{t('workspaceModeDescription')}</span>
+      </label>
       {SELECTS.map(([key, label, options]) => (
         <label key={String(key)} className="mb-4 block">
           <span className="mb-1 block text-xs font-semibold text-[#7a7065]">{ui(label)}</span>
@@ -31,7 +45,7 @@ export function GeneralSettingsPanel({ settings, providers, diagnosticStatus, on
             aria-label={ui(label)}
             value={String(settings[key] ?? (key === 'reasoningDisplay' ? '显示' : ''))}
             onChange={(event) => onUpdate({ [key]: event.target.value } as Partial<WorkspaceSettings>)}
-            className="h-10 w-full rounded-lg border border-[#ded6ca] bg-white px-3 text-sm outline-none"
+            className="h-10 w-full rounded-control border border-border bg-paper-raised px-3 text-sm outline-none"
           >
             {options.map((option) => <option key={option} value={option}>{option === 'zh-CN' ? t('simplifiedChinese') : option === 'en-US' ? 'English' : ui(option)}</option>)}
           </select>

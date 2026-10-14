@@ -1,6 +1,6 @@
 # AetherChat - 本地优先的多模型 Agent 工作台
 
-AetherChat 0.2.1-rc.4 是一个 **Linux/Windows 桌面工作台**（React + Electron + FastAPI），把多模型对话、工具授权、本地资料检索、后台自动化和 Agent Run 审计放在同一套本机 SQLite 存储上。仓库 homepage：<https://github.com/jimes0813/aetherchat>。许可：[MIT](LICENSE)。隐私说明：[PRIVACY.md](PRIVACY.md)。代码签名政策：[CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md)。
+AetherChat 0.2.1-rc.4 是一个 **Linux/Windows 桌面工作台**（React + Electron + FastAPI），把多模型对话、工具授权、本地资料检索、后台自动化和 Agent Run 审计放在同一套本机 SQLite 存储上。仓库 homepage：<https://github.com/jimes0813/aetherchat>。许可：[MIT](LICENSE)。隐私说明：[PRIVACY.md](PRIVACY.md)。代码签名政策：[CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md)。威胁模型：[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)。
 
 Linux 桌面版的构建与安装说明见 [`frontend/LINUX_PACKAGING.md`](frontend/LINUX_PACKAGING.md)，Windows EXE 安装包说明见 [`frontend/WINDOWS_PACKAGING.md`](frontend/WINDOWS_PACKAGING.md)。
 

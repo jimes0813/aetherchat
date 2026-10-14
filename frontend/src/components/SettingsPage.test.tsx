@@ -4,10 +4,15 @@ import { SettingsPage } from './SettingsPage';
 import { SETTINGS_NAV, visibleSettingsNav } from './settingsTabs';
 
 describe('SettingsPage', () => {
-  it('opens as a dialog and lists integrated Codex-style categories', () => {
+  it('opens as a dialog and lists integrated Codex-style categories in advanced mode', () => {
     const onChangeTab = vi.fn();
     render(
-      <SettingsPage activeTab="settings" onChangeTab={onChangeTab} onBackToChat={vi.fn()}>
+      <SettingsPage
+        activeTab="settings"
+        workspaceMode="advanced"
+        onChangeTab={onChangeTab}
+        onBackToChat={vi.fn()}
+      >
         <div>设置内容</div>
       </SettingsPage>,
     );
@@ -23,7 +28,7 @@ describe('SettingsPage', () => {
     expect(screen.queryByRole('tab', { name: '运行' })).toBeNull();
     expect(screen.queryByRole('tab', { name: '资料' })).toBeNull();
     expect(screen.queryByText('对话与模型')).toBeNull();
-    expect(screen.getAllByRole('tab')).toHaveLength(visibleSettingsNav(false).length);
+    expect(screen.getAllByRole('tab')).toHaveLength(visibleSettingsNav(false, 'advanced').length);
 
     fireEvent.click(screen.getByRole('tab', { name: '项目' }));
     expect(onChangeTab).toHaveBeenCalledWith('memory');
@@ -31,15 +36,30 @@ describe('SettingsPage', () => {
     expect(onChangeTab).toHaveBeenCalledWith('models');
   });
 
+  it('hides automations in simple mode', () => {
+    render(
+      <SettingsPage activeTab="settings" workspaceMode="simple" onChangeTab={vi.fn()} onBackToChat={vi.fn()}>
+        <div>设置内容</div>
+      </SettingsPage>,
+    );
+    expect(screen.queryByRole('tab', { name: '自动化' })).toBeNull();
+    expect(screen.getAllByRole('tab')).toHaveLength(visibleSettingsNav(false, 'simple').length);
+  });
+
   it('keeps the matching category selected when a nested panel is open', () => {
     render(
-      <SettingsPage activeTab="runs" onChangeTab={vi.fn()} onBackToChat={vi.fn()}>
+      <SettingsPage
+        activeTab="runs"
+        workspaceMode="advanced"
+        onChangeTab={vi.fn()}
+        onBackToChat={vi.fn()}
+      >
         <div>运行内容</div>
       </SettingsPage>,
     );
     expect(screen.getByRole('tab', { name: '运行与安全' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('button', { name: '运行' })).toHaveAttribute('aria-current', 'page');
-    expect(screen.getAllByRole('tab')).toHaveLength(visibleSettingsNav(false).length);
+    expect(screen.getAllByRole('tab')).toHaveLength(visibleSettingsNav(false, 'advanced').length);
   });
 
   it('maps nested workspace panels onto integrated settings categories', () => {
@@ -55,7 +75,13 @@ describe('SettingsPage', () => {
 
   it('reveals internal controls only in developer mode', () => {
     render(
-      <SettingsPage activeTab="tools" developerMode onChangeTab={vi.fn()} onBackToChat={vi.fn()}>
+      <SettingsPage
+        activeTab="tools"
+        developerMode
+        workspaceMode="advanced"
+        onChangeTab={vi.fn()}
+        onBackToChat={vi.fn()}
+      >
         <div>开发者内容</div>
       </SettingsPage>,
     );

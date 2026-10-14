@@ -95,6 +95,7 @@ export const useSessionStore = create<SessionState>()(persist((set) => ({
     uiLocale: 'zh-CN',
     reasoningDisplay: '显示',
     developerMode: false,
+    workspaceMode: 'simple',
   },
   providers: [],
   modelConfigs: [],
@@ -254,7 +255,7 @@ export const useSessionStore = create<SessionState>()(persist((set) => ({
   setConnection: (connection) => set({ connection }),
 }), {
   name: 'aetherchat-workspace',
-  version: 1,
+  version: 2,
   partialize: (state) => ({
     settings: state.settings,
     sessionId: state.sessionId,
@@ -262,4 +263,15 @@ export const useSessionStore = create<SessionState>()(persist((set) => ({
     composerDrafts: state.composerDrafts,
     selectedArtifactPath: state.selectedArtifactPath,
   }),
+  migrate: (persisted: unknown) => {
+    const state = (persisted || {}) as {
+      settings?: Record<string, unknown>;
+      [key: string]: unknown;
+    };
+    const settings = { ...(state.settings || {}) };
+    if (!settings.workspaceMode) {
+      settings.workspaceMode = settings.developerMode ? 'advanced' : 'simple';
+    }
+    return { ...state, settings };
+  },
 }));

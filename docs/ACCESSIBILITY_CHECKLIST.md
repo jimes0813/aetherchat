@@ -28,3 +28,22 @@
 - [ ] 在正式安装版 Electron 沙箱开启状态重复关键键盘流程。
 
 人工检查发现的问题必须记录页面、控件、键盘步骤、屏幕阅读器及版本，不得仅以“可用”结论关闭。
+
+## F2 manual verification path (required before public_1.0 a11y claim)
+
+Automated (already gated in CI / Playwright+axe):
+
+- [x] Core chat + first-run wizard axe 4.12.1 (no serious/critical)
+- [x] Keyboard dialog focus trap / Escape restore
+- [x] Forced-colors + 2× deviceScaleFactor chrome reflow checks
+- [x] i18n static coverage gate
+
+Manual (must be recorded with SR name/version, OS, steps):
+
+- [ ] **Orca** (Linux) or **NVDA** (Windows): cold start → send message → approval card (subject/action/risk/outcome announced) → attachment → settings Simple/Advanced toggle → MCP grant (Advanced only)
+- [ ] **200% OS/browser zoom**: composer, approval card, settings dialog, degraded-install Banner — no clipped controls; focus rings ≥3px visible
+- [ ] **High contrast / forced colors**: Banner, Dialog close control, primary Button, Tabs selected state remain distinguishable
+- [ ] Banner/Dialog primitives (`frontend/src/ui`): confirm `role=status|alert|dialog`, `aria-modal`, initial focus on close where configured
+
+Failures must cite page, control, keyboard path, and SR/output — do not close as “usable”.
+

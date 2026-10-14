@@ -90,6 +90,15 @@ class DiagnosticService:
 
 
 
+
+    def _sandbox_snapshot(self) -> dict[str, Any]:
+        try:
+            from ..sandbox.executor import sandbox_status
+
+            return dict(sandbox_status())
+        except Exception:
+            return {"tier": "unknown", "backend": "none", "error": "unavailable"}
+
     def _metrics_snapshot(self) -> dict[str, Any]:
         try:
             from . import runtime_metrics
@@ -210,6 +219,7 @@ class DiagnosticService:
             "database": self._database_snapshot(),
             "audit_chain": self._audit_chain_snapshot(),
             "metrics": self._metrics_snapshot(),
+            "sandbox": self._sandbox_snapshot(),
             "runtime": {
                 "automation": self._automation_snapshot(automation),
                 "run_dispatcher": self._dispatcher_snapshot(run_dispatcher),

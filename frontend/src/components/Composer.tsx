@@ -4,6 +4,7 @@ import { ArrowUp, AtSign, AudioLines, Clapperboard, Code2, FileText, Image as Im
 import type { KnowledgeAttachment } from '../types';
 import { asArray, fetchJson } from '../api/client';
 import { useI18n } from '../i18n';
+import { Button } from '../ui';
 import { useSessionStore } from '../stores/sessionStore';
 import {
   buildReferenceCandidates,
@@ -640,23 +641,21 @@ export const Composer = ({
                 </button>
               )}
               {providers.length === 0 ? (
-                <button
-                  type="button"
-                  onClick={onConfigureModels}
-                  className="h-8 rounded-full bg-[#2f2a24] px-3 text-xs font-medium text-white transition hover:bg-[#433a32]"
-                >
+                <Button type="button" size="sm" variant="primary" onClick={onConfigureModels} className="rounded-pill">
                   {t('configureModels')}
-                </button>
+                </Button>
               ) : (
-                <button
+                <Button
                   type="button"
+                  size="sm"
+                  variant="primary"
                   disabled={uploading || (!input.trim() && attachments.length === 0 && references.length === 0 && intent === 'chat')}
                   onClick={send}
                   aria-label={t('send')}
-                  className="flex h-8 w-8 items-center justify-center rounded-full bg-[#2f2a24] text-white transition hover:bg-[#433a32] disabled:cursor-not-allowed disabled:opacity-35"
+                  className="flex h-8 w-8 items-center justify-center rounded-pill p-0 disabled:opacity-35"
                 >
                   <ArrowUp size={16} />
-                </button>
+                </Button>
               )}
             </div>
           </div>

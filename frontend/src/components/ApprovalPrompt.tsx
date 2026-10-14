@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useI18n } from '../i18n';
 import type { ApprovalRequest } from '../types';
 import { compactToolName } from './toolDisplay';
+import { Button } from '../ui';
 
 type ApprovalDecision = NonNullable<ApprovalRequest['decision']>;
 
@@ -104,7 +105,7 @@ export const ApprovalPrompt = ({
   return (
     <article
       aria-label={t('approvalLabel')}
-      className="rounded-2xl border border-[#e4dbd0] bg-[#fffdf9] px-4 py-3"
+      className="rounded-card border border-border bg-paper-raised px-4 py-3 shadow-card"
     >
       <div className="min-w-0">
         <h2 className="text-sm font-medium text-[#2f2a24]">
@@ -187,7 +188,7 @@ export const ApprovalPrompt = ({
                 const selected = index === selectedIndex;
                 const danger = option.decision === 'deny';
                 return (
-                  <button
+                  <Button
                     id={`approval-option-${approval.id}-${index}`}
                     key={option.decision}
                     type="button"
@@ -196,18 +197,12 @@ export const ApprovalPrompt = ({
                     tabIndex={-1}
                     disabled={submitting}
                     onClick={() => activate(option)}
-                    className={`h-8 rounded-full px-3 text-[13px] font-medium transition disabled:cursor-wait disabled:opacity-60 ${
-                      selected
-                        ? danger
-                          ? 'bg-[#8f352c] text-white'
-                          : 'bg-[#2f2a24] text-white'
-                        : danger
-                          ? 'border border-[#e4dbd0] bg-white text-[#8f352c] hover:bg-[#f8ece9]'
-                          : 'border border-[#e4dbd0] bg-white text-[#2f2a24] hover:bg-[#f3ece3]'
-                    }`}
+                    size="sm"
+                    variant={danger ? (selected ? 'danger' : 'ghost') : (selected ? 'primary' : 'secondary')}
+                    className={`rounded-pill ${selected ? '' : ''} ${danger && !selected ? 'text-danger' : ''}`}
                   >
                     {option.label}
-                  </button>
+                  </Button>
                 );
               })}
             </div>
@@ -244,22 +239,12 @@ export const ApprovalPrompt = ({
                 {submitting ? t('approvalSubmitting') : t('approvalFeedbackHint')}
               </span>
               <div className="flex shrink-0 gap-2">
-                <button
-                  type="button"
-                  disabled={submitting}
-                  onClick={returnToMenu}
-                  className="rounded-md border border-[#cdb99f] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#5a4633] disabled:opacity-60"
-                >
+                <Button type="button" size="sm" variant="secondary" disabled={submitting} onClick={returnToMenu}>
                   {t('approvalBack')}
-                </button>
-                <button
-                  type="button"
-                  disabled={submitting}
-                  onClick={() => void submit('deny', feedback)}
-                  className="rounded-md bg-[#8f352c] px-2.5 py-1.5 text-xs font-semibold text-white disabled:cursor-wait disabled:opacity-60"
-                >
+                </Button>
+                <Button type="button" size="sm" variant="danger" disabled={submitting} onClick={() => void submit('deny', feedback)}>
                   {t('approvalDenySubmit')}
-                </button>
+                </Button>
               </div>
             </div>
           </div>

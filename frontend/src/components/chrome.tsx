@@ -15,6 +15,7 @@ import {
   Users,
 } from 'lucide-react';
 import { DegradedInstallBanner } from './DegradedInstallBanner';
+import { Tabs } from '../ui';
 import { useDialogFocus } from './useDialogFocus';
 import { API_BASE, formatDateTime, taskStatusLabel } from './shared';
 import { fetchJson } from '../api/client';
@@ -60,7 +61,7 @@ export function ActivityRail({
 }: ActivityRailProps) {
   const { t } = useI18n();
   return (
-    <aside className="flex min-h-0 flex-col items-center border-r border-[#d8cfc3] bg-[#2f2a24] py-2 text-[#d8cfc3]">
+    <aside className="flex min-h-0 flex-col items-center border-r border-border bg-rail py-2 text-rail-fg">
       <button
         type="button"
         title={t('chat')}
@@ -70,7 +71,7 @@ export function ActivityRail({
           onOpenChat?.();
           setActivePanel(null);
         }}
-        className={`flex h-8 w-8 items-center justify-center rounded-md transition ${!settingsOpen ? 'bg-[#8d5f35] text-white' : 'hover:bg-[#443b32]'}`}
+        className={`flex h-8 w-8 items-center justify-center rounded-md transition ${!settingsOpen ? 'bg-accent text-accent-contrast' : 'hover:bg-rail-hover'}`}
       >
         <MessageSquare size={15} />
       </button>
@@ -83,7 +84,7 @@ export function ActivityRail({
           onOpenSettings?.();
           setActivePanel('settings');
         }}
-        className={`mt-auto flex h-8 w-8 items-center justify-center rounded-md transition ${settingsOpen ? 'bg-[#8d5f35] text-white' : 'hover:bg-[#443b32]'}`}
+        className={`mt-auto flex h-8 w-8 items-center justify-center rounded-md transition ${settingsOpen ? 'bg-accent text-accent-contrast' : 'hover:bg-rail-hover'}`}
       >
         <Settings size={15} />
       </button>
@@ -113,31 +114,18 @@ interface MainViewTabsProps {
 
 export function MainViewTabs({ value, onChange }: MainViewTabsProps) {
   const { t } = useI18n();
-  const tabs = [
-    { id: 'chat' as const, label: t('currentChat'), icon: MessageSquare },
-    { id: 'history' as const, label: t('chatHistory'), icon: Archive },
-    { id: 'tasks' as const, label: t('taskRecords'), icon: ListTodo },
+  const items = [
+    { id: 'chat' as const, label: t('currentChat'), icon: <MessageSquare size={13} /> },
+    { id: 'history' as const, label: t('chatHistory'), icon: <Archive size={13} /> },
+    { id: 'tasks' as const, label: t('taskRecords'), icon: <ListTodo size={13} /> },
   ];
   return (
-    <nav role="tablist" aria-label={t('sessionViews')} className="flex items-center gap-0.5">
-      {tabs.map((tab) => {
-        const Icon = tab.icon;
-        const selected = tab.id === value;
-        return (
-          <button
-            key={tab.id}
-            type="button"
-            aria-selected={selected}
-            role="tab"
-            onClick={() => onChange(tab.id)}
-            className={`inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs ${selected ? 'bg-[#efe6db] font-medium text-[#5d3b20]' : 'text-[#766b60] hover:bg-[#f3ece3] hover:text-[#2f2a24]'}`}
-          >
-            <Icon size={13} />
-            {tab.label}
-          </button>
-        );
-      })}
-    </nav>
+    <Tabs
+      value={value}
+      items={items}
+      onChange={onChange}
+      ariaLabel={t('sessionViews')}
+    />
   );
 }
 

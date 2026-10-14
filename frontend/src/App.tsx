@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Composer } from './components/Composer';
 import { VoiceModeOverlay } from './components/VoiceModeOverlay';
-import { isSettingsTab } from './components/settingsTabs';
+import { isSettingsTab, isAdvancedPanel} from './components/settingsTabs';
 import { ModelWorkingStrip, type AgentActivityItem } from './components/ModelWorkingStrip';
 import { UnifiedFeed } from './components/UnifiedFeed';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -482,8 +482,13 @@ function App() {
   useEffect(() => {
     if (!workspaceSettings.developerMode && (activePanel === 'tools' || activePanel === 'governance')) {
       setActivePanel('settings');
+      return;
     }
-  }, [activePanel, setActivePanel, workspaceSettings.developerMode]);
+    const mode = workspaceSettings.workspaceMode || 'simple';
+    if (mode === 'simple' && activePanel && isAdvancedPanel(activePanel)) {
+      setActivePanel('settings');
+    }
+  }, [activePanel, setActivePanel, workspaceSettings.developerMode, workspaceSettings.workspaceMode]);
 
   const commandItems = useMemo(() => buildCommandItems({
     conversations,
@@ -679,6 +684,7 @@ function App() {
           <SettingsPage
             activeTab={activePanel}
             developerMode={Boolean(workspaceSettings.developerMode)}
+            workspaceMode={workspaceSettings.workspaceMode || 'simple'}
             onChangeTab={setActivePanel}
             onBackToChat={() => setActivePanel(null)}
           >

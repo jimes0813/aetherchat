@@ -458,6 +458,8 @@ export interface WorkspaceSettings {
   uiLocale: 'zh-CN' | 'en-US';
   reasoningDisplay: '显示' | '隐藏';
   developerMode?: boolean;
+  /** Simple: chat + approvals + basic settings. Advanced: full rails/panels. */
+  workspaceMode?: 'simple' | 'advanced';
   /** Preferred WP-8 governance project for newly created sessions. */
   preferredProjectId?: string | null;
 }

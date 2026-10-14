@@ -5,7 +5,9 @@ from .executor import (
     docker_available,
     execute_in_sandbox,
     normalize_container_cwd,
+    sandbox_status,
     select_sandbox_backend,
+    select_sandbox_tier,
     validate_command,
 )
 
@@ -15,6 +17,8 @@ __all__ = [
     "docker_available",
     "execute_in_sandbox",
     "normalize_container_cwd",
+    "sandbox_status",
     "select_sandbox_backend",
+    "select_sandbox_tier",
     "validate_command",
 ]

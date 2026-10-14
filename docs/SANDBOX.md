@@ -21,3 +21,14 @@ Install on Debian/Ubuntu: `sudo apt install bubblewrap`.
 ## Network
 
 Default deny. Callers must pass `allow_net=True` for allowlisted networked jobs (still sandboxed).
+
+## Isolation tiers (`AETHERCHAT_SANDBOX_TIER`)
+
+| Tier | Behavior |
+|------|----------|
+| *(unset)* / `auto` | Prefer Docker; else bwrap |
+| `bwrap` | Force bubblewrap |
+| `docker` | Force Docker |
+| `strong` | Best hardened tier available today = Docker with current `cap_drop`/read-only settings. Fail closed if Docker is missing. Future: Firecracker/Kata behind the same tier flag. |
+
+Diagnostics expose `sandbox.tier` / `sandbox.backend` / availability flags.

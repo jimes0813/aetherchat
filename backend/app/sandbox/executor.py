@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 SANDBOX_IMAGE = os.environ.get("AETHERCHAT_SANDBOX_IMAGE", "aether-sandbox:latest")
 SandboxBackend = Literal["docker", "bwrap", "auto"]
+SandboxTier = Literal["bwrap", "docker", "strong"]
 
 # Re-export for callers/tests.
 __all__ = [
@@ -26,6 +27,8 @@ __all__ = [
     "execute_in_sandbox",
     "normalize_container_cwd",
     "select_sandbox_backend",
+    "select_sandbox_tier",
+    "sandbox_status",
     "validate_command",
 ]
 
@@ -44,6 +47,50 @@ def docker_available() -> bool:
     except Exception:
         return False
 
+
+
+def select_sandbox_tier(tier: SandboxTier | None = None) -> SandboxBackend:
+    """Map configured isolation tier to a concrete backend.
+
+    - bwrap: OS bubblewrap only
+    - docker: Docker hardened container only
+    - strong: best available hardened tier (Docker today; future Firecracker/Kata).
+      Fail closed if Docker is unavailable — do not silently fall back to bwrap.
+    """
+    chosen = (tier or os.environ.get("AETHERCHAT_SANDBOX_TIER", "").strip().lower() or None)
+    if chosen not in {"bwrap", "docker", "strong", None}:
+        chosen = None
+    if chosen == "bwrap":
+        return select_sandbox_backend(prefer="bwrap")
+    if chosen == "docker":
+        return select_sandbox_backend(prefer="docker")
+    if chosen == "strong":
+        if docker_available():
+            return "docker"
+        raise SandboxUnavailableError(
+            "sandbox_tier=strong requires Docker (hardened image); "
+            "Firecracker/Kata is not yet wired. Refusing unsandboxed execution. "
+            "See docs/SANDBOX.md."
+        )
+    return select_sandbox_backend(prefer="auto")
+
+
+def sandbox_status() -> dict[str, object]:
+    tier = os.environ.get("AETHERCHAT_SANDBOX_TIER", "").strip().lower() or "auto"
+    try:
+        backend = select_sandbox_tier(tier if tier in {"bwrap", "docker", "strong"} else None)  # type: ignore[arg-type]
+        error = None
+    except SandboxUnavailableError as exc:
+        backend = "none"
+        error = str(exc)
+    return {
+        "tier": tier,
+        "backend": backend,
+        "docker_available": docker_available(),
+        "bwrap_available": bwrap_available(),
+        "error": error,
+        "strong_provider": "docker" if docker_available() else None,
+    }
 
 def select_sandbox_backend(
     *,
@@ -147,7 +194,10 @@ async def execute_in_sandbox(
 
     workspace = Path(workspace_path).resolve(strict=True)
     try:
-        chosen = select_sandbox_backend(prefer=backend, allow_net=allow_net)
+        if backend is None and os.environ.get("AETHERCHAT_SANDBOX_TIER", "").strip():
+            chosen = select_sandbox_tier()
+        else:
+            chosen = select_sandbox_backend(prefer=backend, allow_net=allow_net)
     except SandboxUnavailableError as exc:
         from ..services import runtime_metrics
 

@@ -118,3 +118,4 @@ Prefer the Debian install at `/opt/AetherChat` (`chrome-sandbox` root:root 4755)
 - Crash dumps: Electron `crashReporter` (disable with `AETHERCHAT_CRASH_REPORTER=0`; optional upload via `AETHERCHAT_CRASH_SUBMIT_URL`).
 - Backend counters in diagnostics (`AETHERCHAT_METRICS=0` to disable).
 
+See also [`docs/THREAT_MODEL.md`](THREAT_MODEL.md) for the public threat model.

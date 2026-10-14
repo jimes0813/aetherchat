@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useI18n } from '../i18n';
+import { Banner } from '../ui';
 
 const ACK_KEY = 'aetherchat.degraded-install-banner.ack';
 
@@ -29,22 +30,17 @@ export function DegradedInstallBanner() {
   };
 
   return (
-    <div
+    <Banner
+      tone="warning"
       role="status"
-      className="relative z-10 flex shrink-0 items-start justify-between gap-3 border-b border-[#e2b8b0] bg-[#fff5f2] px-4 py-2 text-xs leading-5 text-[#8a4036]"
+      actionLabel={ui('知道了')}
+      onAction={dismiss}
     >
       <p>
         {ui('Chromium 沙箱已关闭（降级模式）。当前安装通道：{channel}。请重新安装正式 Deb；在此之前不要处理不可信内容。', {
           channel: window.aetherRuntime?.installChannel || 'unknown',
         })}
       </p>
-      <button
-        type="button"
-        onClick={dismiss}
-        className="rounded border border-[#e2b8b0] bg-white px-2 py-1 text-[11px] text-[#8a4036]"
-      >
-        {ui('知道了')}
-      </button>
-    </div>
+    </Banner>
   );
 }

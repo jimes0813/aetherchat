@@ -13,6 +13,7 @@ type SettingsPageProps = {
   onBackToChat: () => void;
   children: ReactNode;
   developerMode?: boolean;
+  workspaceMode?: 'simple' | 'advanced';
 };
 
 export function SettingsPage({
@@ -21,6 +22,7 @@ export function SettingsPage({
   onBackToChat,
   children,
   developerMode = false,
+  workspaceMode = 'simple',
 }: SettingsPageProps) {
   const { t } = useI18n();
   const dialogFocus = useDialogFocus<HTMLDivElement>(true, onBackToChat);
@@ -58,7 +60,7 @@ export function SettingsPage({
             aria-label={t('settingsGroups')}
             className="min-h-0 flex-1 overflow-auto px-2 pb-3"
           >
-            {visibleSettingsNav(developerMode).map((group) => {
+            {visibleSettingsNav(developerMode, workspaceMode).map((group) => {
               const selected = (group.panels as readonly string[]).includes(activeTab);
               return (
                 <button
