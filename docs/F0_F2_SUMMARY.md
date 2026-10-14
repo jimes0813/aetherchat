@@ -8,7 +8,7 @@ Implemented on the box at `/workspace/aetherchat` (local commits, not pushed).
 |-------|------|---------|
 | F0 | `e9fda77` | sandboxed launch, electron fuses, durable approvals, audit chain |
 | F1 | `30524b6` | os sandbox, mcp reapproval, cu gate, metrics, virtual feed |
-| F2 | `df5c63e` | design tokens, simple mode, threat model, sandbox tiers |
+| F2 | `9f4436f` (`9f4436f1b2fae5998d9f91cb63d1e8dc9d2c9c08`) | design tokens, simple mode, threat model, sandbox tiers |
 
 ## What shipped
 
