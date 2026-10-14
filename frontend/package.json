@@ -1,7 +1,7 @@
 {
   "name": "aetherchat-frontend",
   "version": "0.2.1-rc.4",
-  "description": "AetherChat \u591a\u6a21\u578b\u534f\u4f5c\u684c\u9762\u5de5\u4f5c\u53f0",
+  "description": "AetherChat 多模型协作桌面工作台",
   "desktopName": "aetherchat.desktop",
   "homepage": "https://github.com/jimes0813/AetherChat",
   "author": {
@@ -28,6 +28,7 @@
     "check:fuses": "node ../scripts/check-electron-fuses.mjs"
   },
   "dependencies": {
+    "@tanstack/react-virtual": "^3.14.19",
     "lucide-react": "^0.400.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

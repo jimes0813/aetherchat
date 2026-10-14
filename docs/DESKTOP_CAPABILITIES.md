@@ -65,3 +65,8 @@ Windows UI Automation / 截图 / SendInput / 文档服务
 这些措施不是 Windows 账户隔离。AetherChat 以当前用户权限运行；允许会话控制后，模型能看到并操作该账户当前可访问的界面。不要以管理员身份运行普通会话，也不要在包含密码、付款、发送或删除操作的界面盲目批准。
 
 Windows 打包依赖和发布检查见 [WINDOWS_PACKAGING.md](../frontend/WINDOWS_PACKAGING.md)。
+
+## F1 Computer Use policy
+
+Computer Use is **disabled by default**. Enable via `PUT /desktop/computer-use/policy` `{ "enabled": true }` or `AETHERCHAT_COMPUTER_USE_ENABLED=1`. Enterprise hard-disable: `AETHERCHAT_DISABLE_COMPUTER_USE=1`.
+

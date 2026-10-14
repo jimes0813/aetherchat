@@ -107,6 +107,8 @@ async def test_chat_approval_does_not_skip_high_risk_native_consent(monkeypatch)
     monkeypatch.delenv("AETHERCHAT_TEST_AUTO_APPROVE_COMPUTER_USE", raising=False)
     monkeypatch.delenv("AETHERCHAT_COMPUTER_CONSENT_URL", raising=False)
     monkeypatch.delenv("AETHERCHAT_COMPUTER_CONSENT_TOKEN", raising=False)
+    monkeypatch.delenv("AETHERCHAT_DISABLE_COMPUTER_USE", raising=False)
+    monkeypatch.setenv("AETHERCHAT_COMPUTER_USE_ENABLED", "1")
     with conversation_computer_use_approval():
         await require_computer_use_consent("观察屏幕", "screenshot", risk="screen_read")
         with pytest.raises(ComputerUseConsentError, match="未获授权"):

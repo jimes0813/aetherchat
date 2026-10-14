@@ -89,6 +89,15 @@ class DiagnosticService:
         self._now = now
 
 
+
+    def _metrics_snapshot(self) -> dict[str, Any]:
+        try:
+            from . import runtime_metrics
+
+            return runtime_metrics.snapshot()
+        except Exception:
+            return {"enabled": False, "counters": {}, "error": "unavailable"}
+
     def _audit_chain_snapshot(self) -> dict[str, Any]:
         try:
             from .platform_governance import platform_governance
@@ -200,6 +209,7 @@ class DiagnosticService:
             },
             "database": self._database_snapshot(),
             "audit_chain": self._audit_chain_snapshot(),
+            "metrics": self._metrics_snapshot(),
             "runtime": {
                 "automation": self._automation_snapshot(automation),
                 "run_dispatcher": self._dispatcher_snapshot(run_dispatcher),

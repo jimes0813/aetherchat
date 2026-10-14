@@ -113,3 +113,8 @@ stat -c '%U:%G %a %n' /opt/AetherChat/chrome-sandbox
 
 Prefer the Debian install at `/opt/AetherChat` (`chrome-sandbox` root:root 4755). User AppImage/unpacked launchers must not inject `--no-sandbox` unless `AETHERCHAT_ALLOW_NO_SANDBOX=1` or an explicit `--no-sandbox` / `--aether-allow-no-sandbox` flag is provided; the launcher prints a stderr warning when degraded.
 
+### F1 observability
+
+- Crash dumps: Electron `crashReporter` (disable with `AETHERCHAT_CRASH_REPORTER=0`; optional upload via `AETHERCHAT_CRASH_SUBMIT_URL`).
+- Backend counters in diagnostics (`AETHERCHAT_METRICS=0` to disable).
+

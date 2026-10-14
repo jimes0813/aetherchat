@@ -99,6 +99,11 @@ async def ws_endpoint(
             await websocket.close(code=1008, reason="Invalid event cursor")
             return
     await websocket.accept(subprotocol=selected_protocol)
+    try:
+        from ..services import runtime_metrics
+        runtime_metrics.incr("ws_connections")
+    except Exception:
+        pass
     tenant_id = "demo-tenant"
     send_lock = asyncio.Lock()
     pending_desktop_actions: dict[
@@ -906,7 +911,11 @@ async def ws_endpoint(
             finally:
                 reset_request_id(request_token)
     except WebSocketDisconnect:
-        pass
+        try:
+            from ..services import runtime_metrics
+            runtime_metrics.incr("ws_disconnects")
+        except Exception:
+            pass
     finally:
         if event_stream is not None:
             _release_event_stream(session_id, stream_id, websocket)

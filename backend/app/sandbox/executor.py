@@ -1,39 +1,80 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from contextlib import suppress
-from pathlib import Path, PurePosixPath
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal
 
-import docker
+from .bwrap_executor import SandboxUnavailableError, bwrap_available, execute_with_bwrap
+from .executor_common import (
+    MAX_TIMEOUT_SECONDS,
+    normalize_container_cwd,
+    validate_command,
+)
+
+logger = logging.getLogger(__name__)
 
 SANDBOX_IMAGE = os.environ.get("AETHERCHAT_SANDBOX_IMAGE", "aether-sandbox:latest")
-MAX_COMMAND_LENGTH = 20_000
-MAX_TIMEOUT_SECONDS = 300
+SandboxBackend = Literal["docker", "bwrap", "auto"]
+
+# Re-export for callers/tests.
+__all__ = [
+    "MAX_TIMEOUT_SECONDS",
+    "SandboxUnavailableError",
+    "execute_in_sandbox",
+    "normalize_container_cwd",
+    "select_sandbox_backend",
+    "validate_command",
+]
 
 
-def normalize_container_cwd(cwd: str) -> str:
-    value = str(cwd or ".").strip() or "."
-    if "\x00" in value or "\\" in value:
-        raise ValueError("Sandbox cwd must be a relative POSIX path")
-    path = PurePosixPath(value)
-    if path.is_absolute() or ".." in path.parts:
-        raise ValueError("Sandbox cwd must stay inside /workspace")
-    normalized = path.as_posix().lstrip("./")
-    return "/workspace" if not normalized else f"/workspace/{normalized}"
+def docker_available() -> bool:
+    try:
+        import docker
+
+        client = docker.from_env()
+        try:
+            client.ping()
+            return True
+        finally:
+            with suppress(Exception):
+                client.close()
+    except Exception:
+        return False
 
 
-def validate_command(command: str, timeout: int) -> tuple[str, int]:
-    value = str(command or "").strip()
-    if not value:
-        raise ValueError("Sandbox command is required")
-    if len(value) > MAX_COMMAND_LENGTH or "\x00" in value:
-        raise ValueError("Sandbox command is too large or invalid")
-    bounded_timeout = int(timeout)
-    if not 1 <= bounded_timeout <= MAX_TIMEOUT_SECONDS:
-        raise ValueError(f"Sandbox timeout must be between 1 and {MAX_TIMEOUT_SECONDS} seconds")
-    return value, bounded_timeout
+def select_sandbox_backend(
+    *,
+    prefer: SandboxBackend | None = None,
+    allow_net: bool = False,
+) -> SandboxBackend:
+    """Choose docker or bwrap. Never returns a bare-host backend."""
+    forced = (prefer or os.environ.get("AETHERCHAT_SANDBOX_BACKEND", "auto")).strip().lower()
+    if forced not in {"docker", "bwrap", "auto"}:
+        forced = "auto"
+    if forced == "docker":
+        if docker_available():
+            return "docker"
+        raise SandboxUnavailableError(
+            "AETHERCHAT_SANDBOX_BACKEND=docker but Docker is unavailable; refusing unsandboxed execution"
+        )
+    if forced == "bwrap":
+        if bwrap_available():
+            return "bwrap"
+        raise SandboxUnavailableError(
+            "AETHERCHAT_SANDBOX_BACKEND=bwrap but bubblewrap is missing; refusing unsandboxed execution"
+        )
+    # auto: prefer Docker for stronger isolation when present; else bwrap.
+    if docker_available():
+        return "docker"
+    if bwrap_available():
+        return "bwrap"
+    raise SandboxUnavailableError(
+        "Neither Docker nor bubblewrap (bwrap) is available; refusing to run unsandboxed. "
+        "Install bubblewrap or the aether-sandbox Docker image. See docs/SANDBOX.md."
+    )
 
 
 def _run_container(
@@ -43,12 +84,12 @@ def _run_container(
     timeout: int,
     allow_net: bool,
 ) -> dict[str, Any]:
+    import docker
+
     client = docker.from_env()
     container = None
     run_options: dict[str, Any] = {
         "image": SANDBOX_IMAGE,
-        # The only shell is inside the isolated container. No user text is
-        # interpolated into a host command line.
         "command": ["timeout", "--signal=KILL", f"{timeout}s", "bash", "-lc", command],
         "working_dir": working_dir,
         "detach": True,
@@ -78,6 +119,7 @@ def _run_container(
             "exit_code": status_code,
             "timed_out": status_code == 124,
             "network": "bridge" if allow_net else "none",
+            "backend": "docker",
         }
     finally:
         if container is not None:
@@ -95,18 +137,38 @@ async def execute_in_sandbox(
     tenant_id: str = "",
     allow_net: bool = False,
     workspace_path: str | os.PathLike[str] | None = None,
+    backend: SandboxBackend | None = None,
 ) -> dict[str, Any]:
+    """Run a command in Docker or bubblewrap. Never executes on a bare host shell."""
+    del session_id, tenant_id  # reserved for future tenancy labels
     command, bounded_timeout = validate_command(cmd, timeout)
-    working_dir = normalize_container_cwd(cwd)
     if workspace_path is None:
         raise ValueError("Sandbox workspace was not prepared")
 
     workspace = Path(workspace_path).resolve(strict=True)
-    requested_cwd = workspace / PurePosixPath(working_dir).relative_to("/workspace")
-    if not requested_cwd.resolve().is_relative_to(workspace) or not requested_cwd.is_dir():
-        raise ValueError("Sandbox cwd does not exist inside the workspace")
+    try:
+        chosen = select_sandbox_backend(prefer=backend, allow_net=allow_net)
+    except SandboxUnavailableError as exc:
+        from ..services import runtime_metrics
+
+        runtime_metrics.incr("sandbox_failures")
+        return {"error": str(exc), "exit_code": 1, "timed_out": False, "backend": "none"}
 
     try:
+        if chosen == "bwrap":
+            return await execute_with_bwrap(
+                command,
+                cwd=cwd,
+                timeout=bounded_timeout,
+                allow_net=bool(allow_net),
+                workspace_path=workspace,
+            )
+        from pathlib import PurePosixPath
+
+        working_dir = normalize_container_cwd(cwd)
+        requested_cwd = workspace / PurePosixPath(working_dir).relative_to("/workspace")
+        if not requested_cwd.resolve().is_relative_to(workspace) or not requested_cwd.is_dir():
+            raise ValueError("Sandbox cwd does not exist inside the workspace")
         return await asyncio.to_thread(
             _run_container,
             workspace,
@@ -115,5 +177,14 @@ async def execute_in_sandbox(
             bounded_timeout,
             bool(allow_net),
         )
+    except SandboxUnavailableError as exc:
+        from ..services import runtime_metrics
+
+        runtime_metrics.incr("sandbox_failures")
+        return {"error": str(exc), "exit_code": 1, "timed_out": False, "backend": chosen}
     except Exception as exc:
-        return {"error": str(exc), "exit_code": 1, "timed_out": False}
+        from ..services import runtime_metrics
+
+        runtime_metrics.incr("sandbox_failures")
+        logger.exception("sandbox execution failed via %s", chosen)
+        return {"error": str(exc), "exit_code": 1, "timed_out": False, "backend": chosen}

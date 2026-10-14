@@ -1,4 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { ChevronRight, ExternalLink, Eye, FileText, FolderOpen } from 'lucide-react';
 import { useSessionStore } from '../stores/sessionStore';
 import type { ApprovalRequest, GeneratedFile, GeneratedFileView, Message, ReasoningStep } from '../types';
@@ -357,18 +358,23 @@ export const UnifiedFeed = memo(function UnifiedFeed({
     )), [messages]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const { t, ui } = useI18n();
-  const stickToBottom = useStickToBottom(scrollRef, approvals.length, visibleMessages.length);
+  useStickToBottom(scrollRef, approvals.length, visibleMessages.length);
 
-  const [showEarlier, setShowEarlier] = useState(false);
   const isEmpty = visibleMessages.length === 0;
-  const hiddenCount = visibleMessages.length > 80 && !showEarlier ? visibleMessages.length - 80 : 0;
-  const renderedMessages = hiddenCount ? visibleMessages.slice(hiddenCount) : visibleMessages;
+
+  const rowVirtualizer = useVirtualizer({
+    count: visibleMessages.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 128,
+    overscan: 8,
+    getItemKey: (index) => visibleMessages[index]?.id ?? index,
+  });
 
   return (
     <div ref={scrollRef} className={`aether-chat-scroll flex-1 overflow-auto px-4 ${isEmpty ? 'flex flex-col' : 'py-6'}`}>
       <h1 className="sr-only">{t('feedTitle')}</h1>
       <p className="sr-only">{t('feedDescription')}</p>
-      <div className={`mx-auto w-full max-w-2xl ${isEmpty ? 'm-auto' : 'space-y-6'}`}>
+      <div className={`mx-auto w-full max-w-2xl ${isEmpty ? 'm-auto' : ''}`}>
         {isEmpty && (
           <ChatEmptyState
             hasConfiguredModel={hasConfiguredModel}
@@ -377,83 +383,81 @@ export const UnifiedFeed = memo(function UnifiedFeed({
           />
         )}
 
-        {hiddenCount > 0 && (
-          <button
-            type="button"
-            onClick={() => {
-              stickToBottom.release();
-              setShowEarlier(true);
-            }}
-            className="mx-auto mb-2 block text-xs text-[#8b8176] hover:text-[#5d3b20]"
+        {!isEmpty && (
+          <div
+            className="relative w-full"
+            style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
           >
-            {ui('显示更早的 {count} 条消息', { count: hiddenCount })}
-          </button>
-        )}
-
-        {renderedMessages.map((msg) => {
-          const isUser = msg.role === 'user' || msg.author_model === 'user';
-          return (
-          <article
-            key={msg.id}
-            className={isUser ? 'flex justify-end' : 'block'}
-            style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 8rem' }}
-          >
-            {isUser ? (
-              <div className="max-w-[min(36rem,85%)] rounded-2xl bg-[#ece4d8] px-4 py-2.5 text-[15px] leading-6 text-[#2f2a24]">
-                <SafeMarkdown content={msg.content} />
-                {msg.attachments && msg.attachments.length > 0 && (
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    {msg.attachments.map((attachment) => (
-                      <span key={attachment.id} className="inline-flex max-w-48 items-center gap-1 rounded-md bg-white/70 px-1.5 py-0.5 text-[11px] text-[#5b4532]" title={t('chunks', { count: attachment.chunk_count })}>
-                        <FileText size={12} className="shrink-0" />
-                        <span className="truncate">{attachment.name}</span>
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div>
-                <div className="mb-1.5 text-[12px] text-[#8b8176]">{msg.author_model}</div>
-                <div className="text-[15px] leading-7 text-[#2f2a24]">
-                  <SafeMarkdown content={msg.content} />
-                </div>
-                <ExecutionReceipt
-                  steps={msg.reasoning_summary || []}
-                  files={msg.generated_files || []}
-                  onOpenRunHistory={onOpenRunHistory}
-                />
-                {visibleGeneratedFiles(msg.generated_files).length > 0 && (
-                  <div className="mt-3 space-y-2" aria-label={ui('本次生成的文件')}>
-                    <div className="text-[11px] font-semibold text-[#796b5e]">
-                      {ui('本次生成的文件')}
-                    </div>
-                    {visibleGeneratedFiles(msg.generated_files).map((file, index) => (
-                      <GeneratedFileCard
-                        key={`${file.path || file.url || file.name}-${index}`}
-                        file={file}
-                        onInspect={onInspectGeneratedFile}
-                        onResolve={onResolveGeneratedFile}
-                        onOpen={onOpenGeneratedFile}
-                      />
-                    ))}
-                    {technicalGeneratedFiles(msg.generated_files).length > 0 && (
-                      <details className="text-[11px] text-[#8b8176]">
-                        <summary className="cursor-pointer">{ui('技术细节')}</summary>
-                        <ul className="mt-1 list-disc pl-4">
-                          {technicalGeneratedFiles(msg.generated_files).map((file) => (
-                            <li key={file.path || file.name}>{displayGeneratedFileName(file)}</li>
+            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+              const msg = visibleMessages[virtualRow.index];
+              if (!msg) return null;
+              const isUser = msg.role === 'user' || msg.author_model === 'user';
+              return (
+                <article
+                  key={msg.id}
+                  data-index={virtualRow.index}
+                  ref={rowVirtualizer.measureElement}
+                  className={`${isUser ? 'flex justify-end' : 'block'} absolute left-0 top-0 w-full pb-6`}
+                  style={{ transform: `translateY(${virtualRow.start}px)` }}
+                >
+                  {isUser ? (
+                    <div className="max-w-[min(36rem,85%)] rounded-2xl bg-[#ece4d8] px-4 py-2.5 text-[15px] leading-6 text-[#2f2a24]">
+                      <SafeMarkdown content={msg.content} />
+                      {msg.attachments && msg.attachments.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {msg.attachments.map((attachment) => (
+                            <span key={attachment.id} className="inline-flex max-w-48 items-center gap-1 rounded-md bg-white/70 px-1.5 py-0.5 text-[11px] text-[#5b4532]" title={t('chunks', { count: attachment.chunk_count })}>
+                              <FileText size={12} className="shrink-0" />
+                              <span className="truncate">{attachment.name}</span>
+                            </span>
                           ))}
-                        </ul>
-                      </details>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-          </article>
-          );
-        })}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div>
+                      <div className="mb-1.5 text-[12px] text-[#8b8176]">{msg.author_model}</div>
+                      <div className="text-[15px] leading-7 text-[#2f2a24]">
+                        <SafeMarkdown content={msg.content} />
+                      </div>
+                      <ExecutionReceipt
+                        steps={msg.reasoning_summary || []}
+                        files={msg.generated_files || []}
+                        onOpenRunHistory={onOpenRunHistory}
+                      />
+                      {visibleGeneratedFiles(msg.generated_files).length > 0 && (
+                        <div className="mt-3 space-y-2" aria-label={ui('本次生成的文件')}>
+                          <div className="text-[11px] font-semibold text-[#796b5e]">
+                            {ui('本次生成的文件')}
+                          </div>
+                          {visibleGeneratedFiles(msg.generated_files).map((file, index) => (
+                            <GeneratedFileCard
+                              key={`${file.path || file.url || file.name}-${index}`}
+                              file={file}
+                              onInspect={onInspectGeneratedFile}
+                              onResolve={onResolveGeneratedFile}
+                              onOpen={onOpenGeneratedFile}
+                            />
+                          ))}
+                          {technicalGeneratedFiles(msg.generated_files).length > 0 && (
+                            <details className="text-[11px] text-[#8b8176]">
+                              <summary className="cursor-pointer">{ui('技术细节')}</summary>
+                              <ul className="mt-1 list-disc pl-4">
+                                {technicalGeneratedFiles(msg.generated_files).map((file) => (
+                                  <li key={file.path || file.name}>{displayGeneratedFileName(file)}</li>
+                                ))}
+                              </ul>
+                            </details>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+        )}
 
         <StreamBubbles />
 

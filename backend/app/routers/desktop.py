@@ -4,6 +4,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from ..services.computer_use_policy import computer_use_policy
 from ..services.computer_use_service import ComputerUseError, computer_use_service
 from ..services.desktop_service import (
     DesktopCapabilityError,
@@ -14,6 +15,14 @@ from ..services.desktop_service import (
 
 router = APIRouter()
 
+
+
+def _require_computer_use_enabled() -> None:
+    if not computer_use_policy.is_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail="Computer Use 未启用：请先在设置中开启，或确认未设置 AETHERCHAT_DISABLE_COMPUTER_USE=1",
+        )
 
 def _require_token(token: str | None) -> None:
     if not desktop_token_is_valid(token):
@@ -74,6 +83,8 @@ class ComputerActionPayload(BaseModel):
 async def desktop_status(x_aether_desktop_token: str | None = Header(default=None)):
     _require_token(x_aether_desktop_token)
     computer_automation = mouse_service.available()
+    cu_policy = computer_use_policy.status()
+    cu_enabled = bool(cu_policy.get("enabled"))
     return {
         "available": True,
         "file_read": True,
@@ -81,11 +92,13 @@ async def desktop_status(x_aether_desktop_token: str | None = Header(default=Non
         "document_formats": ["txt", "md", "json", "csv", "tsv", "docx", "xlsx", "pptx", "pdf"],
         "platform": "windows" if os.name == "nt" else "linux",
         "session_type": "win32" if os.name == "nt" else os.environ.get("XDG_SESSION_TYPE", "unknown"),
-        "mouse": computer_automation,
-        "keyboard": computer_automation,
-        "window_observation": computer_automation,
-        "accessibility_tree": os.name == "nt",
-        "model_computer_use": computer_automation,
+        "mouse": computer_automation and cu_enabled,
+        "keyboard": computer_automation and cu_enabled,
+        "window_observation": computer_automation and cu_enabled,
+        "accessibility_tree": os.name == "nt" and cu_enabled,
+        "model_computer_use": computer_automation and cu_enabled,
+        "computer_use_enabled": cu_enabled,
+        "computer_use_policy": cu_policy,
         "computer_protocol": "computer_20251124",
         "computer_actions": computer_use_service.supported_actions(),
         "enable_zoom": True,
@@ -122,6 +135,7 @@ async def write_document(payload: DocumentWritePayload, x_aether_desktop_token: 
 @router.post("/mouse")
 async def control_mouse(payload: MousePayload, x_aether_desktop_token: str | None = Header(default=None)):
     _require_token(x_aether_desktop_token)
+    _require_computer_use_enabled()
     try:
         return await mouse_service.execute(
             payload.action,
@@ -139,6 +153,7 @@ async def run_computer_action(
     x_aether_desktop_token: str | None = Header(default=None),
 ):
     _require_token(x_aether_desktop_token)
+    _require_computer_use_enabled()
     try:
         return await computer_use_service.execute_action(
             payload.action,
@@ -167,3 +182,25 @@ async def computer_action_history(
 ):
     _require_token(x_aether_desktop_token)
     return computer_use_service.action_history(after)
+
+
+class ComputerUsePolicyPayload(BaseModel):
+    enabled: bool
+
+
+@router.get("/computer-use/policy")
+async def get_computer_use_policy(x_aether_desktop_token: str | None = Header(default=None)):
+    _require_token(x_aether_desktop_token)
+    return computer_use_policy.status()
+
+
+@router.put("/computer-use/policy")
+async def put_computer_use_policy(
+    payload: ComputerUsePolicyPayload,
+    x_aether_desktop_token: str | None = Header(default=None),
+):
+    _require_token(x_aether_desktop_token)
+    try:
+        return computer_use_policy.set_enabled(payload.enabled)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc

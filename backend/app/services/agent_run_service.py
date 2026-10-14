@@ -1314,6 +1314,11 @@ class AgentRunService:
         statuses = {step["status"] for step in steps}
         if current["status"] == "failed" or "failed" in statuses:
             status = "failed"
+            try:
+                from . import runtime_metrics
+                runtime_metrics.incr("run_failures")
+            except Exception:
+                pass
             error = current.get("error") or next((step.get("error") for step in steps if step["status"] == "failed"), None)
         elif "interrupted" in statuses:
             status, error = "interrupted", "运行被中断"

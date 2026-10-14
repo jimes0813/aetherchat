@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import builtins
 import json
 import os
@@ -41,6 +42,53 @@ def _tool_segment(value: str) -> str:
     normalized = re.sub(r"[^a-zA-Z0-9_]+", "_", value).strip("_")
     return normalized[:80] or "tool"
 
+
+
+def mcp_config_fingerprint(connection: dict[str, Any]) -> str:
+    """Stable hash of MCP server launch/connect config (not tool allowances)."""
+    payload = {
+        "transport": connection.get("transport"),
+        "command": connection.get("command"),
+        "args": connection.get("args") or [],
+        "cwd": connection.get("cwd"),
+        "url": connection.get("url"),
+        "auth_type": connection.get("auth_type"),
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _invalidate_grants_for_config_change(connection: dict[str, Any], *, reason: str) -> bool:
+    """Clear prior tool allowances when config fingerprint drifts. Returns True if cleared."""
+    current = mcp_config_fingerprint(connection)
+    granted = str(connection.get("granted_config_fingerprint") or "")
+    connection["config_fingerprint"] = current
+    if granted and granted == current:
+        connection.pop("reapproval_required", None)
+        connection.pop("reapproval_reason", None)
+        return False
+    if connection.get("reapproval_required") and not granted:
+        # Already invalidated; keep reason unless caller wants to refresh it.
+        connection["reapproval_reason"] = connection.get("reapproval_reason") or reason
+        connection["allowed_tools"] = []
+        return False
+    if not granted and connection.get("allowed_tools") is None:
+        # Never granted a whitelist — nothing to revoke.
+        connection.pop("reapproval_required", None)
+        connection.pop("reapproval_reason", None)
+        return False
+    # Prior grant exists (or legacy whitelist) but fingerprint drifted / missing.
+    connection["allowed_tools"] = []
+    connection["reapproval_required"] = True
+    connection["reapproval_reason"] = reason
+    connection["granted_config_fingerprint"] = None
+    try:
+        from . import runtime_metrics
+
+        runtime_metrics.incr("mcp_reapprovals")
+    except Exception:
+        pass
+    return True
 
 class MCPConnectionCreate(BaseModel):
     id: str | None = None
@@ -162,6 +210,10 @@ class MCPRegistry:
             if isinstance(row, dict) and row.get("id"):
                 row["status"] = "ready" if row.get("enabled") and row.get("tools") else "disabled" if not row.get("enabled") else "disconnected"
                 row["error"] = None
+                _invalidate_grants_for_config_change(
+                    row,
+                    reason="mcp_config_changed_on_load",
+                )
                 self._connections[str(row["id"])] = row
 
     def _save(self) -> None:
@@ -183,6 +235,10 @@ class MCPRegistry:
         oauth_tokens = self.vault.get_key(VaultOAuthStorage(self.vault, item["id"]).tokens_ref)
         item["has_token"] = bool(self.vault.get_key(item["token_ref"]) or oauth_tokens)
         item.pop("token", None)
+        item["config_fingerprint"] = item.get("config_fingerprint") or mcp_config_fingerprint(item)
+        item["reapproval_required"] = bool(item.get("reapproval_required"))
+        if item["reapproval_required"] and not item.get("reapproval_reason"):
+            item["reapproval_reason"] = "mcp_config_changed"
         return item
 
     def list(self) -> list[dict[str, Any]]:
@@ -215,6 +271,13 @@ class MCPRegistry:
             "created_at": now,
             "updated_at": now,
         }
+        item["config_fingerprint"] = mcp_config_fingerprint(item)
+        if payload.allowed_tools is not None:
+            item["granted_config_fingerprint"] = item["config_fingerprint"]
+            item["reapproval_required"] = False
+            item["reapproval_reason"] = None
+        else:
+            item["granted_config_fingerprint"] = None
         with self._lock:
             self._connections[connection_id] = item
             self._save()
@@ -233,6 +296,21 @@ class MCPRegistry:
             patch = payload.model_dump(exclude_none=True, exclude={"token", "clear_token"})
             item.update(patch)
             item["updated_at"] = _utc_now()
+            item["config_fingerprint"] = mcp_config_fingerprint(item)
+            if "allowed_tools" in patch:
+                if patch["allowed_tools"] is None:
+                    item["granted_config_fingerprint"] = None
+                    item["reapproval_required"] = True
+                    item["reapproval_reason"] = "mcp_allowance_cleared"
+                else:
+                    item["granted_config_fingerprint"] = item["config_fingerprint"]
+                    item["reapproval_required"] = False
+                    item["reapproval_reason"] = None
+            else:
+                _invalidate_grants_for_config_change(
+                    item,
+                    reason="mcp_config_changed",
+                )
             if not item["enabled"]:
                 item["status"] = "disabled"
             self._save()
@@ -240,6 +318,40 @@ class MCPRegistry:
             self.vault.set_key(item["token_ref"], payload.token)
         if payload.clear_token:
             self.vault.delete_key(item["token_ref"])
+        return self.get(connection_id)
+
+
+    def replace_launch_config(
+        self,
+        connection_id: str,
+        *,
+        command: str | None = None,
+        args: list[str] | None = None,
+        cwd: str | None = None,
+        url: str | None = None,
+        auth_type: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Update launch/connect fields and invalidate prior tool grants."""
+        with self._lock:
+            item = self._connections.get(str(connection_id))
+            if item is None:
+                return None
+            if command is not None:
+                item["command"] = command
+            if args is not None:
+                item["args"] = list(args)
+            if cwd is not None:
+                item["cwd"] = cwd
+            if url is not None:
+                item["url"] = url
+            if auth_type is not None:
+                item["auth_type"] = auth_type
+            item["updated_at"] = _utc_now()
+            _invalidate_grants_for_config_change(
+                item,
+                reason="mcp_config_changed",
+            )
+            self._save()
         return self.get(connection_id)
 
     def delete(self, connection_id: str) -> dict[str, Any] | None:
@@ -254,7 +366,13 @@ class MCPRegistry:
 
     def _connection(self, connection_id: str) -> dict[str, Any]:
         with self._lock:
-            item = deepcopy(self._connections.get(str(connection_id)))
+            raw = self._connections.get(str(connection_id))
+            if raw is not None and _invalidate_grants_for_config_change(
+                raw,
+                reason="mcp_config_changed",
+            ):
+                self._save()
+            item = deepcopy(raw)
         if item is None:
             raise KeyError(connection_id)
         if not item.get("enabled"):
@@ -465,6 +583,8 @@ class MCPRegistry:
         for connection in self.list():
             if not connection["enabled"] or connection["status"] != "ready":
                 continue
+            if connection.get("reapproval_required"):
+                continue
             allowed = connection.get("allowed_tools")
             for tool in connection.get("tools") or []:
                 if allowed is not None and tool["name"] not in allowed:
@@ -507,6 +627,11 @@ class MCPRegistry:
         )
         connection_id, remote_name = match
         connection = self._connection(connection_id)
+        if connection.get("reapproval_required"):
+            raise PermissionError(
+                "MCP 配置已变更，先前授权已失效，需重新批准工具白名单"
+                f"（{connection.get('reapproval_reason') or 'mcp_config_changed'}）"
+            )
         allowed = connection.get("allowed_tools")
         if allowed is not None and remote_name not in allowed:
             raise PermissionError("此 MCP 工具未获准暴露给模型")

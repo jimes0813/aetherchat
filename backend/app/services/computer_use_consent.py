@@ -38,11 +38,27 @@ async def require_computer_use_consent(
     model-driven Computer Use.
     """
 
+
+    from .computer_use_policy import computer_use_policy
+    from . import runtime_metrics
+
+    if computer_use_policy.is_hard_disabled():
+        runtime_metrics.incr("computer_use_rejects")
+        raise ComputerUseConsentError(
+            "Computer Use 已被企业策略禁用（AETHERCHAT_DISABLE_COMPUTER_USE=1）。"
+        )
+
     if (
         os.environ.get("PYTEST_CURRENT_TEST")
         and os.environ.get("AETHERCHAT_TEST_AUTO_APPROVE_COMPUTER_USE") == "1"
     ):
         return
+
+    if not computer_use_policy.is_enabled():
+        runtime_metrics.incr("computer_use_rejects")
+        raise ComputerUseConsentError(
+            "Computer Use 未启用：请在桌面设置中显式开启，或设置 AETHERCHAT_COMPUTER_USE_ENABLED=1。"
+        )
     # Chat-card approval may skip native prompts only for low-risk observation.
     # Keyboard/mouse, file writes and app launches always go through Electron.
     if _conversation_approval.get() and risk in {"screen_read", "file_read"}:

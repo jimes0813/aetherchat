@@ -11,6 +11,7 @@ const {
   nativeImage,
   screen,
   shell,
+  crashReporter,
 } = require('electron');
 const { spawn } = require('child_process');
 const { createHash, randomBytes, randomUUID, timingSafeEqual } = require('crypto');
@@ -44,6 +45,7 @@ const {
   detectInstallChannel,
   isChromiumSandboxDegraded,
 } = require('./install-channel.cjs');
+const { createComputerConsentBroker } = require('./computer-consent.cjs');
 
 const isDev = !app.isPackaged;
 let backendProcess = null;
@@ -57,11 +59,8 @@ const computerConsentToken = randomBytes(32).toString('hex');
 const desktopFileHandles = new Map();
 const desktopHandleOwners = new Set();
 const MAX_DESKTOP_FILE_HANDLES = 256;
-let computerConsentServer = null;
-let computerConsentUrl = '';
-let computerUseSessionApproved = false;
 let interactiveComputerPermissionMode = 'manual';
-let computerConsentQueue = Promise.resolve();
+let computerConsentBroker = null;
 let gracefulShutdownPromise = null;
 let gracefulShutdownComplete = false;
 let pendingLaunchIntent = launchIntentFromArgv(process.argv);
@@ -510,113 +509,30 @@ async function confirmInteractiveComputerAction(event, action, value) {
   return result.response === 0 || result.response === 1;
 }
 
-function secureTokenMatches(candidate) {
-  const actual = Buffer.from(String(candidate || ''), 'utf8');
-  const expected = Buffer.from(computerConsentToken, 'utf8');
-  return actual.length === expected.length && timingSafeEqual(actual, expected);
-}
-
-async function confirmModelComputerUse(payload) {
-  const risk = String(payload?.risk || 'computer_control');
-  const alwaysConfirm = new Set(['file_write', 'app_launch']).has(risk);
-  if (computerUseSessionApproved && !alwaysConfirm) return { approved: true, scope: 'session' };
-
-  const owner = BrowserWindow.getAllWindows().find((window) => !window.isDestroyed());
-  const action = String(payload?.action || '电脑操作').slice(0, 80);
-  const detail = String(payload?.detail || '').slice(0, 2000);
-  const buttons = alwaysConfirm
-    ? ['允许本次操作', '取消']
-    : ['允许本次操作', '允许本次会话', '拒绝'];
-  const cancelId = buttons.length - 1;
-  const result = await dialog.showMessageBox(owner || undefined, {
-    type: 'warning',
-    title: 'AetherChat 模型电脑控制',
-    message: `模型请求执行：${action}`,
-    detail: `${detail}\n\n“允许本次会话”会授权模型观察屏幕并操作键鼠，直到退出 AetherChat。所有操作都会记录在工具运行日志中。`,
-    buttons,
-    defaultId: cancelId,
-    cancelId,
-    noLink: true,
-  });
-  if (!alwaysConfirm && result.response === 1) {
-    computerUseSessionApproved = true;
-    return { approved: true, scope: 'session' };
+function ensureComputerConsentBroker() {
+  if (!computerConsentBroker) {
+    computerConsentBroker = createComputerConsentBroker({
+      dialog,
+      BrowserWindow,
+      token: computerConsentToken,
+    });
   }
-  return { approved: result.response === 0, scope: result.response === 0 ? 'once' : 'denied' };
+  return computerConsentBroker;
 }
 
 function startComputerConsentServer() {
-  if (computerConsentServer && computerConsentUrl) return Promise.resolve(computerConsentUrl);
-  return new Promise((resolve, reject) => {
-    const server = http.createServer((request, response) => {
-      const send = (statusCode, payload) => {
-        const body = Buffer.from(JSON.stringify(payload), 'utf8');
-        response.writeHead(statusCode, {
-          'Content-Type': 'application/json; charset=utf-8',
-          'Content-Length': body.length,
-          'Cache-Control': 'no-store',
-        });
-        response.end(body);
-      };
-      if (request.method !== 'POST' || request.url !== '/consent') {
-        send(404, { approved: false, error: 'not_found' });
-        return;
-      }
-      if (!secureTokenMatches(request.headers['x-aether-consent-token'])) {
-        send(403, { approved: false, error: 'forbidden' });
-        return;
-      }
-      const chunks = [];
-      let size = 0;
-      request.on('data', (chunk) => {
-        size += chunk.length;
-        if (size > 64 * 1024) {
-          request.destroy();
-          return;
-        }
-        chunks.push(chunk);
-      });
-      request.on('end', async () => {
-        if (size > 64 * 1024) return;
-        let payload;
-        try {
-          payload = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
-        } catch {
-          send(400, { approved: false, error: 'invalid_json' });
-          return;
-        }
-        computerConsentQueue = computerConsentQueue
-          .catch(() => undefined)
-          .then(() => confirmModelComputerUse(payload));
-        try {
-          send(200, await computerConsentQueue);
-        } catch (error) {
-          send(500, { approved: false, error: String(error?.message || error) });
-        }
-      });
-    });
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      if (!address || typeof address === 'string') {
-        server.close();
-        reject(new Error('Unable to bind the model consent broker'));
-        return;
-      }
-      computerConsentServer = server;
-      computerConsentUrl = `http://127.0.0.1:${address.port}/consent`;
-      resolve(computerConsentUrl);
-    });
-  });
+  return ensureComputerConsentBroker().start();
 }
 
 function stopComputerConsentServer() {
-  computerUseSessionApproved = false;
   interactiveComputerPermissionMode = 'manual';
-  computerConsentUrl = '';
-  if (computerConsentServer) computerConsentServer.close();
-  computerConsentServer = null;
+  if (computerConsentBroker) computerConsentBroker.stop();
 }
+
+function computerConsentUrlValue() {
+  return computerConsentBroker ? computerConsentBroker.getUrl() : '';
+}
+
 
 function backendExecutablePath() {
   const executable = process.platform === 'win32' ? 'aetherchat-backend.exe' : 'aetherchat-backend';
@@ -661,7 +577,7 @@ function startBackend(port) {
     AETHERCHAT_PACKAGE_HASH: buildIdentity.packageHash,
     AETHERCHAT_DESKTOP_TOKEN: desktopBridgeToken,
     AETHERCHAT_API_TOKEN: apiAccessToken,
-    AETHERCHAT_COMPUTER_CONSENT_URL: computerConsentUrl,
+    AETHERCHAT_COMPUTER_CONSENT_URL: computerConsentUrlValue(),
     AETHERCHAT_COMPUTER_CONSENT_TOKEN: computerConsentToken,
     NO_PROXY: noProxy,
     no_proxy: noProxy,
@@ -1342,7 +1258,7 @@ ipcMain.handle('aether-desktop:set-computer-permission', async (event, requested
 ipcMain.handle('aether-desktop:cancel-computer', async (event) => {
   assertTrustedDesktopSender(event);
   interactiveComputerPermissionMode = 'manual';
-  computerUseSessionApproved = false;
+  if (computerConsentBroker) computerConsentBroker.resetSessionApproval();
   const result = await backendRequest('/desktop/computer/cancel', {
     method: 'POST',
     timeoutMs: 5000,
@@ -1375,7 +1291,33 @@ app.on('open-url', (event, url) => {
   if (intent) activateLaunchIntent(intent);
 });
 
+
+function startCrashReporter() {
+  if (process.env.AETHERCHAT_CRASH_REPORTER === '0') {
+    return;
+  }
+  try {
+    const dumps = path.join(app.getPath('userData'), 'Crashpad');
+    crashReporter.start({
+      productName: 'AetherChat',
+      companyName: 'AetherChat',
+      submitURL: process.env.AETHERCHAT_CRASH_SUBMIT_URL || '',
+      uploadToServer: Boolean(process.env.AETHERCHAT_CRASH_SUBMIT_URL),
+      compress: true,
+      ignoreSystemCrashHandler: false,
+      extra: {
+        channel: currentInstallChannel(),
+      },
+    });
+    // Local dumps land under userData/Crashpad (Electron default).
+    void dumps;
+  } catch (error) {
+    console.error('crashReporter failed to start', error);
+  }
+}
+
 app.whenReady().then(async () => {
+  startCrashReporter();
   if (!hasSingleInstanceLock) return;
   if (app.isPackaged && !app.setAsDefaultProtocolClient('aetherchat')) {
     console.warn('Unable to register the aetherchat:// protocol handler');
