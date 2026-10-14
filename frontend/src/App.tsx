@@ -32,12 +32,14 @@ import { fetchJson, setApiAuthToken } from './api/client';
 import { MODE_TO_SETTING, SETTING_TO_MODE } from './app/collaborationModes';
 import { useI18n } from './i18n';
 import { useWorkbenchSession } from './stores/useWorkbenchSession';
+import { useSessionStore } from './stores/sessionStore';
 import { useSessionEvents } from './hooks/useSessionEvents';
 import { useSessionLoaders, type StoredSession } from './hooks/useSessionLoaders';
 import { useAgentActions } from './hooks/useAgentActions';
 import { useEntityActions } from './hooks/useEntityActions';
 import { useGeneratedFiles } from './hooks/useGeneratedFiles';
 import { useVoiceSession } from './hooks/useVoiceSession';
+import { useTtsPlayback } from './hooks/useTtsPlayback';
 import type { LaunchIntent } from './types/desktop';
 import type { AgentRun, ApprovalRequest, GitRepository, Message, TaskEvent } from './types';
 import './types/desktop';
@@ -471,6 +473,15 @@ function App() {
     },
     hasApproval: approvals.some((item) => item.session_id === sessionId && !item.decision),
   });
+  const tts = useTtsPlayback();
+  const feedMessages = useSessionStore((state) => state.messages);
+
+  useEffect(() => {
+    if (voice.open || !tts.autoSpeak) return;
+    const latest = [...feedMessages].reverse().find((item) => item.author_model !== 'user' && item.content.trim());
+    if (!latest) return;
+    tts.maybeAutoSpeak(latest.id, latest.content);
+  }, [feedMessages, tts.autoSpeak, tts.maybeAutoSpeak, voice.open]);
 
   useAppKeyboardShortcuts({
     activePanel,
@@ -630,6 +641,9 @@ function App() {
                 });
                 setMainView('chat');
               }}
+              onSpeakMessage={(messageId, content) => { void tts.speak(content, messageId); }}
+              speakingMessageId={tts.speakingMessageId}
+              onStopSpeak={tts.stop}
             />
           )}
           {mainView === 'history' && (
@@ -667,6 +681,12 @@ function App() {
                 void voice.start();
               }}
               voiceActive={voice.open}
+              tts={{
+                autoSpeak: tts.autoSpeak,
+                isSpeaking: tts.isSpeaking,
+                toggleAutoSpeak: tts.toggleAutoSpeak,
+                stop: tts.stop,
+              }}
             />
             </div>
           )}
@@ -731,6 +751,10 @@ function App() {
               onVoiceSilenceMs={voice.setSilenceMs}
               voiceTtsEngine={voice.ttsEngine}
               onVoiceTtsEngine={voice.setTtsEngine}
+              voiceInputMode={voice.inputMode}
+              onVoiceInputMode={voice.setInputMode}
+              voiceAutoSpeak={tts.autoSpeak}
+              onVoiceAutoSpeak={tts.setAutoSpeak}
               onStartCosyVoice={voice.startCosyVoice}
             />
           </SettingsPage>
@@ -755,10 +779,14 @@ function App() {
         assistantText={voice.assistantText}
         sttLabel={voice.sttLabel}
         ttsLabel={voice.ttsLabel}
+        inputMode={voice.inputMode}
         onClose={() => { void voice.stop(); }}
         onToggleMute={voice.toggleMute}
         onToggleTranscript={voice.toggleTranscript}
         onInterrupt={voice.interrupt}
+        onHoldStart={voice.holdStart}
+        onHoldEnd={voice.holdEnd}
+        onRetry={() => { void voice.start(); }}
       />
 
       {notice && (

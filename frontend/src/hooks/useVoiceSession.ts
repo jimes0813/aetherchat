@@ -20,11 +20,12 @@ import {
   shouldCommitUtterance,
   shouldResetShortUtterance,
   takeSpeakableSentences,
+  type VoiceInputMode,
   type VoicePhase,
 } from '../components/voiceSession';
 import { useSessionStore } from '../stores/sessionStore';
 
-export type VoiceTtsEngine = 'auto' | 'piper' | 'cosyvoice';
+export type VoiceTtsEngine = 'auto' | 'piper' | 'cosyvoice' | 'network';
 
 type VoiceEngineStatus = {
   ready?: boolean;
@@ -48,21 +49,31 @@ type UseVoiceSessionOptions = {
 type VoicePreferences = {
   silenceMs: number;
   ttsEngine: VoiceTtsEngine;
+  inputMode: VoiceInputMode;
+  autoSpeakReplies: boolean;
 };
 
 const VOICE_PREFERENCES_KEY = 'aetherchat-voice-preferences-v1';
 
 function loadVoicePreferences(): VoicePreferences {
-  const fallback = { silenceMs: DEFAULT_SILENCE_MS, ttsEngine: 'auto' as const };
+  const fallback: VoicePreferences = {
+    silenceMs: DEFAULT_SILENCE_MS,
+    ttsEngine: 'auto',
+    inputMode: 'conversation',
+    autoSpeakReplies: false,
+  };
   try {
     const parsed = JSON.parse(window.localStorage.getItem(VOICE_PREFERENCES_KEY) || '{}') as Partial<VoicePreferences>;
     const silenceMs = Number(parsed.silenceMs);
     const ttsEngine = parsed.ttsEngine;
+    const inputMode = parsed.inputMode;
     return {
       silenceMs: Number.isFinite(silenceMs)
         ? Math.min(1600, Math.max(700, Math.round(silenceMs / 100) * 100))
         : fallback.silenceMs,
-      ttsEngine: ttsEngine === 'piper' || ttsEngine === 'cosyvoice' ? ttsEngine : 'auto',
+      ttsEngine: ttsEngine === 'piper' || ttsEngine === 'cosyvoice' || ttsEngine === 'network' ? ttsEngine : 'auto',
+      inputMode: inputMode === 'push_to_talk' ? 'push_to_talk' : 'conversation',
+      autoSpeakReplies: Boolean(parsed.autoSpeakReplies),
     };
   } catch {
     return fallback;
@@ -89,6 +100,9 @@ function ttsSelection(status: VoiceEngineStatus, engine: VoiceTtsEngine) {
   }
   if (engine === 'cosyvoice') {
     return { ready: Boolean(cosy?.ready), label: cosy?.label || 'Jarvis · CosyVoice 2' };
+  }
+  if (engine === 'network') {
+    return { ready: Boolean(status.tts?.ready), label: status.tts?.label || '网络朗读' };
   }
   return { ready: Boolean(status.tts?.ready), label: status.tts?.label || '本地语音' };
 }
@@ -118,6 +132,7 @@ export function useVoiceSession({
   const [cosyReady, setCosyReady] = useState(false);
   const [cosyStartable, setCosyStartable] = useState(false);
   const [silenceMs, setSilenceMsState] = useState(initialPreferences.silenceMs);
+  const [inputMode, setInputModeState] = useState<VoiceInputMode>(initialPreferences.inputMode);
 
   const phaseRef = useRef<VoicePhase>('idle');
   const mutedRef = useRef(false);
@@ -125,6 +140,8 @@ export function useVoiceSession({
   const lifecycleRef = useRef(0);
   const startingRef = useRef(false);
   const silenceMsRef = useRef(initialPreferences.silenceMs);
+  const inputModeRef = useRef<VoiceInputMode>(initialPreferences.inputMode);
+  const holdingRef = useRef(false);
   const ttsEngineRef = useRef<VoiceTtsEngine>(initialPreferences.ttsEngine);
   const ttsReadyRef = useRef(false);
   const speechMsRef = useRef(0);
@@ -430,6 +447,7 @@ export function useVoiceSession({
       return;
     }
     if (phaseRef.current !== 'listening' || committingRef.current) return;
+    if (inputModeRef.current === 'push_to_talk' && !holdingRef.current) return;
 
     const copy = frame.slice();
     if (speechMsRef.current <= 0) {
@@ -574,6 +592,7 @@ export function useVoiceSession({
     mutedRef.current = false;
     openRef.current = true;
     setOpen(true);
+    holdingRef.current = inputModeRef.current === 'conversation';
     resetCaptureBuffers();
     cancelSpeech(true);
     move({ type: 'start' });
@@ -609,11 +628,13 @@ export function useVoiceSession({
     } catch (captureError) {
       if (generation !== lifecycleRef.current || isAbortError(captureError)) return;
       setError(microphoneErrorHint(captureError));
-      await stop();
+      move({ type: 'error' });
+      await teardownCapture();
+      setLevel(0);
     } finally {
       if (generation === lifecycleRef.current) startingRef.current = false;
     }
-  }, [cancelSpeech, move, resetCaptureBuffers, startCapture, stop]);
+  }, [cancelSpeech, move, resetCaptureBuffers, startCapture, teardownCapture]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -696,18 +717,51 @@ export function useVoiceSession({
     move({ type: 'barge_in' });
   }, [abandonAssistantTurn, cancelSpeech, move, onInterrupt, resetCaptureBuffers]);
 
-  const setSilenceMs = useCallback((value: number) => {
-    const next = Math.min(1600, Math.max(700, Math.round(value / 100) * 100));
-    silenceMsRef.current = next;
-    setSilenceMsState(next);
-    saveVoicePreferences({ silenceMs: next, ttsEngine: ttsEngineRef.current });
+  const persistPreferences = useCallback((patch: Partial<VoicePreferences>) => {
+    const next = {
+      silenceMs: silenceMsRef.current,
+      ttsEngine: ttsEngineRef.current,
+      inputMode: inputModeRef.current,
+      autoSpeakReplies: false,
+      ...patch,
+    };
+    silenceMsRef.current = next.silenceMs;
+    ttsEngineRef.current = next.ttsEngine;
+    inputModeRef.current = next.inputMode;
+    saveVoicePreferences(next);
   }, []);
 
+  const setSilenceMs = useCallback((value: number) => {
+    const next = Math.min(1600, Math.max(700, Math.round(value / 100) * 100));
+    setSilenceMsState(next);
+    persistPreferences({ silenceMs: next });
+  }, [persistPreferences]);
+
   const setTtsEngine = useCallback((value: VoiceTtsEngine) => {
-    ttsEngineRef.current = value;
     setTtsEngineState(value);
-    saveVoicePreferences({ silenceMs: silenceMsRef.current, ttsEngine: value });
-  }, []);
+    persistPreferences({ ttsEngine: value });
+  }, [persistPreferences]);
+
+  const setInputMode = useCallback((value: VoiceInputMode) => {
+    setInputModeState(value);
+    persistPreferences({ inputMode: value });
+    holdingRef.current = value === 'conversation';
+  }, [persistPreferences]);
+
+  const holdStart = useCallback(() => {
+    if (!openRef.current) return;
+    holdingRef.current = true;
+    if (phaseRef.current === 'error') move({ type: 'start' });
+    else if (phaseRef.current === 'idle') move({ type: 'start' });
+  }, [move]);
+
+  const holdEnd = useCallback(() => {
+    if (!openRef.current) return;
+    holdingRef.current = false;
+    if (inputModeRef.current === 'push_to_talk' && phaseRef.current === 'listening' && pcmRef.current.length) {
+      void commitUtterance();
+    }
+  }, [commitUtterance]);
 
   const startCosyVoice = useCallback(async () => {
     setError('');
@@ -736,10 +790,14 @@ export function useVoiceSession({
     ttsLabel,
     silenceMs,
     ttsEngine,
+    inputMode,
     cosyReady,
     cosyStartable,
     setSilenceMs,
     setTtsEngine,
+    setInputMode,
+    holdStart,
+    holdEnd,
     startCosyVoice,
     start,
     stop,

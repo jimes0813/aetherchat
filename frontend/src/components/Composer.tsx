@@ -1,6 +1,6 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowUp, AtSign, AudioLines, Clapperboard, Code2, FileText, Image as ImageIcon, LoaderCircle, Paperclip, Square, X } from 'lucide-react';
+import { ArrowUp, AtSign, AudioLines, Clapperboard, Code2, FileText, Image as ImageIcon, LoaderCircle, Mic, MicOff, Paperclip, Square, Volume2, VolumeX, X } from 'lucide-react';
 import type { KnowledgeAttachment } from '../types';
 import { asArray, fetchJson } from '../api/client';
 import { useI18n } from '../i18n';
@@ -18,6 +18,7 @@ import {
   type ChatReferenceCandidate,
   type MentionQuery,
 } from './chatReferences';
+import { useComposerDictation } from '../hooks/useComposerDictation';
 import {
   REMIX_HIGH_MODEL,
   REMIX_LOW_MODEL,
@@ -47,6 +48,12 @@ interface ComposerProps {
   onStartVoice?: () => void;
   voiceActive?: boolean;
   onConfigureModels?: () => void;
+  tts?: {
+    autoSpeak: boolean;
+    isSpeaking: boolean;
+    toggleAutoSpeak: () => void;
+    stop: () => void;
+  } | null;
 }
 
 const INTENTS: Array<{ id: Exclude<ComposerIntent, 'chat'>; icon: typeof Code2 }> = [
@@ -75,6 +82,7 @@ export const Composer = ({
   onStartVoice,
   voiceActive = false,
   onConfigureModels,
+  tts = null,
 }: ComposerProps) => {
   const initialSessionId = useSessionStore.getState().sessionId;
   const [input, setInput] = useState(
@@ -109,6 +117,13 @@ export const Composer = ({
   const mentionMenuRef = useRef<HTMLDivElement>(null);
   const hoverCloseTimer = useRef<number | null>(null);
   const { t, ui } = useI18n();
+  const appendDictation = useCallback((text: string) => {
+    setInput((current) => {
+      const base = current.trim();
+      return base ? `${base} ${text}` : text;
+    });
+  }, []);
+  const dictation = useComposerDictation({ onTranscript: appendDictation });
   const sessionId = useSessionStore((state) => state.sessionId);
   const messages = useSessionStore((state) => state.messages);
   const setComposerDraft = useSessionStore((state) => state.setComposerDraft);
@@ -453,6 +468,20 @@ export const Composer = ({
       }}
     >
       <div className="mx-auto max-w-2xl">
+        {(dictation.partial || dictation.error || dictation.phase === 'listening' || dictation.phase === 'processing') && (
+          <div className="mb-2 flex flex-wrap items-center gap-2 text-xs" aria-live="polite">
+            {dictation.phase === 'listening' && (
+              <span className="rounded-full bg-[#c45c26]/15 px-2 py-1 text-[#8a3f12]">{ui('正在听…松开结束')}</span>
+            )}
+            {dictation.phase === 'processing' && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-[#f4ece2] px-2 py-1 text-[#5b4532]">
+                <LoaderCircle size={12} className="animate-spin" />{ui('正在识别')}
+              </span>
+            )}
+            {dictation.partial && <span className="text-[#5b4532]">{dictation.partial}</span>}
+            {dictation.error && <span role="alert" className="text-red-700">{dictation.error}</span>}
+          </div>
+        )}
         {(references.length > 0 || attachments.length > 0 || uploading || uploadError) && (
           <div className="mb-2 flex flex-wrap items-center gap-2" aria-live="polite">
             {references.map((ref) => (
@@ -625,12 +654,64 @@ export const Composer = ({
                   <Square size={11} fill="currentColor" />
                 </button>
               )}
+              {dictation && (
+                <button
+                  type="button"
+                  onMouseDown={(event) => { event.preventDefault(); dictation.beginHold(); }}
+                  onMouseUp={() => dictation.endHold()}
+                  onMouseLeave={() => { if (dictation.phase === 'listening') dictation.endHold(); }}
+                  onTouchStart={(event) => { event.preventDefault(); dictation.beginHold(); }}
+                  onTouchEnd={() => dictation.endHold()}
+                  onClick={(event) => {
+                    // Keyboard / accessibility: click toggles tap-to-talk.
+                    if (event.detail === 0) dictation.toggle();
+                  }}
+                  aria-label={
+                    dictation.phase === 'listening' ? ui('松开结束说话')
+                      : dictation.phase === 'processing' ? ui('正在识别')
+                        : ui('按住说话，填入输入框')
+                  }
+                  aria-pressed={dictation.isActive}
+                  title={ui('按住说话 · 松手识别')}
+                  className={`flex h-8 w-8 items-center justify-center rounded-full transition ${
+                    dictation.phase === 'listening'
+                      ? 'bg-[#c45c26] text-white scale-105'
+                      : dictation.phase === 'processing'
+                        ? 'bg-[#8d5f35] text-white'
+                        : dictation.phase === 'error'
+                          ? 'bg-red-700 text-white'
+                          : 'text-[#6b6259] hover:bg-[#f3ece3]'
+                  }`}
+                >
+                  {dictation.phase === 'processing' ? <LoaderCircle size={16} className="animate-spin" /> : dictation.phase === 'error' ? <MicOff size={16} /> : <Mic size={16} />}
+                </button>
+              )}
+              {tts && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (tts.isSpeaking) tts.stop();
+                    else tts.toggleAutoSpeak();
+                  }}
+                  aria-label={tts.isSpeaking ? ui('停止朗读') : (tts.autoSpeak ? ui('关闭自动朗读') : ui('开启自动朗读'))}
+                  aria-pressed={tts.autoSpeak || tts.isSpeaking}
+                  title={ui('自动朗读回复')}
+                  className={`flex h-8 w-8 items-center justify-center rounded-full transition ${
+                    tts.isSpeaking || tts.autoSpeak
+                      ? 'bg-[#8d5f35] text-white'
+                      : 'text-[#6b6259] hover:bg-[#f3ece3]'
+                  }`}
+                >
+                  {tts.isSpeaking ? <VolumeX size={16} /> : <Volume2 size={16} />}
+                </button>
+              )}
               {onStartVoice && (
                 <button
                   type="button"
                   onClick={onStartVoice}
                   aria-label={voiceActive ? ui('语音对话进行中') : ui('开始语音对话')}
                   aria-pressed={voiceActive}
+                  title={ui('进入实时语音对话')}
                   className={`flex h-8 w-8 items-center justify-center rounded-full transition ${
                     voiceActive
                       ? 'bg-[#8d5f35] text-white'

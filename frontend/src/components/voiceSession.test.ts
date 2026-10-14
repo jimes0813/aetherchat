@@ -76,3 +76,8 @@ describe('voice session helpers', () => {
     expect(phase).toBe('listening');
   });
 });
+
+it('maps hard failures to the error phase', () => {
+  expect(reduceVoicePhase('listening', { type: 'error' })).toBe('error');
+  expect(reduceVoicePhase('speaking', { type: 'stop' })).toBe('idle');
+});

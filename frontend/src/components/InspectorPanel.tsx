@@ -161,8 +161,12 @@ interface InspectorProps {
   onStartVoice?: () => void;
   voiceSilenceMs?: number;
   onVoiceSilenceMs?: (value: number) => void;
-  voiceTtsEngine?: 'auto' | 'piper' | 'cosyvoice';
-  onVoiceTtsEngine?: (value: 'auto' | 'piper' | 'cosyvoice') => void;
+  voiceTtsEngine?: 'auto' | 'piper' | 'cosyvoice' | 'network';
+  onVoiceTtsEngine?: (value: 'auto' | 'piper' | 'cosyvoice' | 'network') => void;
+  voiceInputMode?: 'conversation' | 'push_to_talk';
+  onVoiceInputMode?: (value: 'conversation' | 'push_to_talk') => void;
+  voiceAutoSpeak?: boolean;
+  onVoiceAutoSpeak?: (value: boolean) => void;
   onStartCosyVoice?: () => Promise<unknown>;
   /** Hide the internal tab strip when the parent already provides settings tabs. */
   hideChrome?: boolean;
@@ -1635,6 +1639,10 @@ export function InspectorPanel(props: InspectorProps) {
           onSilenceMs={props.onVoiceSilenceMs ?? (() => undefined)}
           ttsEngine={props.voiceTtsEngine ?? 'auto'}
           onTtsEngine={props.onVoiceTtsEngine ?? (() => undefined)}
+          inputMode={props.voiceInputMode ?? 'conversation'}
+          onInputMode={props.onVoiceInputMode}
+          autoSpeak={props.voiceAutoSpeak}
+          onAutoSpeak={props.onVoiceAutoSpeak}
           onStartCosyVoice={props.onStartCosyVoice}
           onStartLive={() => {
             props.onStartVoice?.();

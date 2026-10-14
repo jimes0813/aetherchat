@@ -2,7 +2,8 @@ import { useEffect, type KeyboardEvent } from 'react';
 import { AudioLines, Mic, MicOff, X } from 'lucide-react';
 import { useI18n } from '../i18n';
 import { useDialogFocus } from './useDialogFocus';
-import type { VoicePhase } from './voiceSession';
+import type { VoiceInputMode, VoicePhase } from './voiceSession';
+import { voicePhaseLabel } from './voiceSession';
 
 type VoiceModeOverlayProps = {
   open: boolean;
@@ -15,19 +16,23 @@ type VoiceModeOverlayProps = {
   assistantText: string;
   sttLabel: string;
   ttsLabel: string;
+  inputMode?: VoiceInputMode;
   onClose: () => void;
   onToggleMute: () => void;
   onToggleTranscript: () => void;
   onInterrupt: () => void;
+  onHoldStart?: () => void;
+  onHoldEnd?: () => void;
+  onRetry?: () => void;
 };
 
-function phaseLabel(phase: VoicePhase, muted: boolean, ui: (text: string) => string) {
-  if (muted) return ui('已静音，随时可以再开口');
-  if (phase === 'listening') return ui('我在听');
-  if (phase === 'transcribing') return ui('正在听清你的话');
-  if (phase === 'thinking') return ui('正在想');
-  if (phase === 'speaking') return ui('正在说 · 开口即可打断');
-  return ui('准备好了，直接说');
+function phaseLabel(phase: VoicePhase, muted: boolean, inputMode: VoiceInputMode, ui: (text: string) => string) {
+  if (phase === 'error') return ui('语音遇到问题');
+  if (inputMode === 'push_to_talk' && phase === 'listening') return ui('按住说话 · 松手发送');
+  if (inputMode === 'push_to_talk' && (phase === 'idle' || phase === 'listening')) {
+    return muted ? ui('已静音') : ui('按住光球说话');
+  }
+  return ui(voicePhaseLabel(phase, muted));
 }
 
 export function VoiceModeOverlay({
@@ -41,10 +46,14 @@ export function VoiceModeOverlay({
   assistantText,
   sttLabel,
   ttsLabel,
+  inputMode = 'conversation',
   onClose,
   onToggleMute,
   onToggleTranscript,
   onInterrupt,
+  onHoldStart,
+  onHoldEnd,
+  onRetry,
 }: VoiceModeOverlayProps) {
   const { ui } = useI18n();
   const dialogFocus = useDialogFocus<HTMLDivElement>(open, onClose);
@@ -76,10 +85,15 @@ export function VoiceModeOverlay({
     phase === 'speaking' ? 'is-speaking' : '',
     phase === 'thinking' || phase === 'transcribing' ? 'is-thinking' : '',
     phase === 'listening' && !muted ? 'is-listening' : '',
+    phase === 'error' ? 'is-muted' : '',
     muted ? 'is-muted' : '',
   ].filter(Boolean).join(' ');
 
   const handleOrb = () => {
+    if (phase === 'error') {
+      onRetry?.();
+      return;
+    }
     if (phase === 'speaking' || phase === 'thinking') onInterrupt();
     else onToggleTranscript();
   };
@@ -96,7 +110,7 @@ export function VoiceModeOverlay({
     >
       <div className="aether-voice-top">
         <div>
-          <div className="aether-voice-kicker">{ui('本地 · Live')}</div>
+          <div className="aether-voice-kicker">{inputMode === 'push_to_talk' ? ui('按住说话') : ui('实时语音')}</div>
           <div className="aether-voice-voice">{ttsLabel}</div>
         </div>
         <button
@@ -115,7 +129,17 @@ export function VoiceModeOverlay({
         className={orbClass}
         style={{ transform: `scale(${scale})` }}
         onClick={handleOrb}
-        aria-label={phase === 'speaking' ? ui('打断回复') : ui('显示或隐藏转写')}
+        onMouseDown={() => { if (inputMode === 'push_to_talk') onHoldStart?.(); }}
+        onMouseUp={() => { if (inputMode === 'push_to_talk') onHoldEnd?.(); }}
+        onMouseLeave={() => { if (inputMode === 'push_to_talk') onHoldEnd?.(); }}
+        onTouchStart={(event) => { if (inputMode === 'push_to_talk') { event.preventDefault(); onHoldStart?.(); } }}
+        onTouchEnd={() => { if (inputMode === 'push_to_talk') onHoldEnd?.(); }}
+        aria-label={
+          phase === 'error' ? ui('重试语音')
+            : phase === 'speaking' ? ui('打断回复')
+              : inputMode === 'push_to_talk' ? ui('按住说话')
+                : ui('显示或隐藏转写')
+        }
       >
         <span className="aether-voice-orb-core" />
         <span className="aether-voice-orb-ring" />
@@ -123,10 +147,16 @@ export function VoiceModeOverlay({
       </button>
 
       <div className="aether-voice-status" aria-live="polite">
-        {error || phaseLabel(phase, muted, ui)}
+        {error || phaseLabel(phase, muted, inputMode, ui)}
       </div>
       <div className="aether-voice-hint">
-        {showTranscript ? ui('再点光球可收起转写') : ui('点光球查看转写，说话即可打断')}
+        {phase === 'error'
+          ? ui('连接麦克风或检查语音引擎后点光球重试')
+          : showTranscript
+            ? ui('再点光球可收起转写')
+            : inputMode === 'push_to_talk'
+              ? ui('按住光球说话，松手发送；点右上角可结束')
+              : ui('点光球查看转写，说话即可打断')}
       </div>
 
       {showTranscript && (

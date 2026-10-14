@@ -3,7 +3,8 @@ export type VoicePhase =
   | 'listening'
   | 'transcribing'
   | 'thinking'
-  | 'speaking';
+  | 'speaking'
+  | 'error';
 
 export type VoiceEvent =
   | { type: 'start' }
@@ -179,7 +180,8 @@ export function markdownToSpeech(text: string): string {
 }
 
 export function reduceVoicePhase(phase: VoicePhase, event: VoiceEvent): VoicePhase {
-  if (event.type === 'stop' || event.type === 'error') return 'idle';
+  if (event.type === 'stop') return 'idle';
+  if (event.type === 'error') return 'error';
   if (event.type === 'start' || event.type === 'barge_in' || event.type === 'playback_done' || event.type === 'empty_transcript' || event.type === 'approval') {
     return 'listening';
   }
@@ -192,13 +194,25 @@ export function reduceVoicePhase(phase: VoicePhase, event: VoiceEvent): VoicePha
 export function microphoneErrorHint(error: unknown): string {
   const name = error instanceof DOMException ? error.name : '';
   if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
-    return '麦克风权限被拒绝。可在系统设置里允许 AetherChat 使用麦克风。';
+    return '麦克风权限被拒绝。请在系统设置里允许 AetherChat 使用麦克风后重试。';
   }
   if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
-    return '没有检测到麦克风。当前机器只有播放设备时，请连接蓝牙耳机或 USB 麦。';
+    return '没有检测到麦克风。本机若只有 HDMI/扬声器输出，请连接 USB 或蓝牙麦克风后再试；朗读回复仍可使用。';
   }
   if (name === 'NotReadableError') {
     return '麦克风被其他应用占用，请关闭后再试。';
   }
   return error instanceof Error ? error.message : '无法打开麦克风';
+}
+
+export type VoiceInputMode = 'conversation' | 'push_to_talk';
+
+export function voicePhaseLabel(phase: VoicePhase, muted: boolean): string {
+  if (phase === 'error') return '语音遇到问题';
+  if (muted) return '已静音，随时可以再开口';
+  if (phase === 'listening') return '我在听';
+  if (phase === 'transcribing') return '正在听清你的话';
+  if (phase === 'thinking') return '正在想';
+  if (phase === 'speaking') return '正在说 · 开口即可打断';
+  return '准备好了，直接说';
 }

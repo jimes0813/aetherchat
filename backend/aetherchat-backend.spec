@@ -13,6 +13,7 @@ hiddenimports = [
     'app.main',
     'app.routers.voice',
     'app.services.voice_runtime',
+    'app.services.voice_network',
     'app.services.rate_limit',
     'app.services.chat_references',
     'app.services.x11_desktop',

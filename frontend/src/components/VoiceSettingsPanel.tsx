@@ -3,25 +3,32 @@ import { AudioLines, Mic, RefreshCw } from 'lucide-react';
 import { fetchJson } from '../api/client';
 import { useI18n } from '../i18n';
 import { API_BASE } from './shared';
-import { microphoneErrorHint } from './voiceSession';
+import { microphoneErrorHint, type VoiceInputMode } from './voiceSession';
 
 type VoiceStatus = {
   ready?: boolean;
-  stt?: { ready?: boolean; label?: string };
+  privacy?: string;
+  stt?: { ready?: boolean; label?: string; local_ready?: boolean; network_ready?: boolean };
   tts?: {
     ready?: boolean;
     label?: string;
     piper?: { ready?: boolean; label?: string };
     cosyvoice?: { ready?: boolean; label?: string; startable?: boolean };
+    network?: { ready?: boolean; label?: string };
   };
+  network?: { ready?: boolean; label?: string; provider?: string | null };
   hints?: string[];
 };
 
 type VoiceSettingsPanelProps = {
   silenceMs: number;
   onSilenceMs: (value: number) => void;
-  ttsEngine: 'auto' | 'piper' | 'cosyvoice';
-  onTtsEngine: (value: 'auto' | 'piper' | 'cosyvoice') => void;
+  ttsEngine: 'auto' | 'piper' | 'cosyvoice' | 'network';
+  onTtsEngine: (value: 'auto' | 'piper' | 'cosyvoice' | 'network') => void;
+  inputMode?: VoiceInputMode;
+  onInputMode?: (value: VoiceInputMode) => void;
+  autoSpeak?: boolean;
+  onAutoSpeak?: (value: boolean) => void;
   onStartLive: () => void;
   onStartCosyVoice?: () => Promise<unknown>;
 };
@@ -31,6 +38,10 @@ export function VoiceSettingsPanel({
   onSilenceMs,
   ttsEngine,
   onTtsEngine,
+  inputMode = 'conversation',
+  onInputMode,
+  autoSpeak = false,
+  onAutoSpeak,
   onStartLive,
   onStartCosyVoice,
 }: VoiceSettingsPanelProps) {
@@ -50,7 +61,7 @@ export function VoiceSettingsPanel({
       setStatusError(error instanceof Error ? error.message : t('couldNotReadTheVoice'));
       return null;
     }
-  }, [ui]);
+  }, [t]);
 
   useEffect(() => {
     let cancelled = false;
@@ -65,7 +76,7 @@ export function VoiceSettingsPanel({
         if (!cancelled) setStatusError(error instanceof Error ? error.message : t('couldNotReadTheVoice'));
       });
     return () => { cancelled = true; };
-  }, [ui]);
+  }, [t]);
 
   const probeMic = async () => {
     setDeviceLabel('');
@@ -78,7 +89,7 @@ export function VoiceSettingsPanel({
       const listed = await navigator.mediaDevices.enumerateDevices();
       const inputs = listed.filter((device) => device.kind === 'audioinput');
       if (inputs.length === 0) {
-        setDeviceLabel(t('noMicrophoneFoundIfThis'));
+        setDeviceLabel(ui('没有检测到麦克风。本机若只有 HDMI/扬声器输出，请连接 USB 或蓝牙麦克风后再试；朗读回复仍可使用。'));
         return;
       }
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -98,7 +109,7 @@ export function VoiceSettingsPanel({
         {t('voiceConversation')}
       </div>
       <p className="mb-4 text-xs leading-5 text-[#7a7065]">
-        {t('chatgptLiveStyleConversationTap')}
+        {ui('对标 ChatGPT：输入框按住麦克风听写、消息可朗读、实时语音可打断；本地 Whisper/Piper 优先，网络智谱/OpenAI 软回退。')}
       </p>
       <section className="mb-4 rounded-xl border border-[#ded6ca] bg-[#fbfaf7] p-3 text-xs text-[#574a3e]" aria-live="polite">
         <div className="flex items-center justify-between gap-2">
@@ -116,6 +127,11 @@ export function VoiceSettingsPanel({
           {status?.stt?.ready ? t('readyStatus') : t('notFound')}
           {status?.stt?.label ? ` · ${status.stt.label}` : ''}
         </div>
+        <div className="mt-1 text-[#7a7065]">
+          {status?.network?.ready
+            ? ui(`网络语音可用 · ${status.network.label || status.network.provider || ''}`)
+            : ui('网络语音未配置（可在模型设置里放入 OpenAI / 智谱密钥）')}
+        </div>
         <div className="mt-3 font-semibold">{t('speechPlayback')}</div>
         <div className="mt-1 text-[#7a7065]">
           {status?.tts?.piper?.ready ? t('huayanPiperIsReady') : t('huayanPiperWasNotFound')}
@@ -123,6 +139,14 @@ export function VoiceSettingsPanel({
         <div className="mt-1 text-[#7a7065]">
           {status?.tts?.cosyvoice?.ready ? t('jarvisCosyVoiceIsReady') : t('jarvisCosyVoiceIsNotRunning')}
         </div>
+        <div className="mt-1 text-[#7a7065]">
+          {status?.tts?.network?.ready ? (status.tts.network.label || ui('网络朗读就绪')) : ui('网络朗读未就绪')}
+        </div>
+        {status?.privacy && (
+          <div className="mt-2 text-[#7a7065]">
+            {status.privacy === 'audio_stays_local' ? ui('隐私：当前优先本机，音频可留在设备内') : ui('隐私：网络引擎启用时，音频会离开本机')}
+          </div>
+        )}
         {(status?.hints?.length || statusError) && (
           <p className="mt-2 text-[#8a4b2b]">{statusError || status?.hints?.join('；')}</p>
         )}
@@ -130,14 +154,38 @@ export function VoiceSettingsPanel({
           {t('defaultVoice')}
           <select
             value={ttsEngine}
-            onChange={(event) => onTtsEngine(event.target.value as 'auto' | 'piper' | 'cosyvoice')}
+            onChange={(event) => onTtsEngine(event.target.value as 'auto' | 'piper' | 'cosyvoice' | 'network')}
             className="mt-1 h-8 w-full rounded-md border border-[#ded6ca] bg-white px-2 font-normal"
           >
             <option value="auto">{t('autoUseJarvisWhenIt')}</option>
             <option value="cosyvoice">{t('jarvisCosyVoice2')}</option>
             <option value="piper">{t('huayanPiper')}</option>
+            <option value="network">{ui('网络朗读（OpenAI / 智谱）')}</option>
           </select>
         </label>
+        {onInputMode && (
+          <label className="mt-3 block font-semibold">
+            {ui('实时语音模式')}
+            <select
+              value={inputMode}
+              onChange={(event) => onInputMode(event.target.value as VoiceInputMode)}
+              className="mt-1 h-8 w-full rounded-md border border-[#ded6ca] bg-white px-2 font-normal"
+            >
+              <option value="conversation">{ui('连续对话（开口即说）')}</option>
+              <option value="push_to_talk">{ui('按住说话')}</option>
+            </select>
+          </label>
+        )}
+        {onAutoSpeak && (
+          <label className="mt-3 flex items-center gap-2 font-semibold">
+            <input
+              type="checkbox"
+              checked={autoSpeak}
+              onChange={(event) => onAutoSpeak(event.target.checked)}
+            />
+            <span>{ui('自动朗读助手回复（文字对话）')}</span>
+          </label>
+        )}
         {onStartCosyVoice && status?.tts?.cosyvoice?.startable && !status.tts.cosyvoice.ready && (
           <button
             type="button"

@@ -18,6 +18,14 @@ from urllib.parse import urlparse
 
 import httpx
 
+from .voice_network import (
+    VoiceNetworkError,
+    network_synthesize,
+    network_transcribe,
+    resolve_voice_network_config,
+    voice_provider_preference,
+)
+
 MAX_AUDIO_BYTES = 10 * 1024 * 1024
 MAX_TTS_CHARS = 800
 PCM_ACTIVITY_RMS = 0.006
@@ -194,7 +202,7 @@ def pcm_wav_has_speech(data: bytes) -> bool:
     return False
 
 
-TtsEngine = Literal["auto", "piper", "cosyvoice"]
+TtsEngine = Literal["auto", "piper", "cosyvoice", "network"]
 
 
 def default_cosyvoice_url() -> str:
@@ -298,31 +306,85 @@ class VoiceRuntimeService:
         piper_voice = default_piper_voice()
         espeak = default_espeak_data()
         cosy = await self._cosy_health()
-        stt_ready = bool(whisper_cli and whisper_model)
+        stt_local = bool(whisper_cli and whisper_model)
         piper_ready = bool(piper_cli and piper_voice)
-        tts_ready = piper_ready or bool(cosy)
+        network = resolve_voice_network_config()
+        stt_pref = voice_provider_preference("stt")
+        tts_pref = voice_provider_preference("tts")
+        stt_network = network.ready
+        tts_network = network.ready
+        stt_ready = (
+            stt_network if stt_pref == "network"
+            else stt_local if stt_pref == "local"
+            else (stt_local or stt_network)
+        )
+        tts_local = piper_ready or bool(cosy)
+        tts_ready = (
+            tts_network if tts_pref == "network"
+            else tts_local if tts_pref == "local"
+            else (tts_local or tts_network)
+        )
+        if cosy:
+            tts_active = "cosyvoice"
+            tts_label = "Jarvis · CosyVoice 2"
+        elif piper_ready:
+            tts_active = "piper"
+            tts_label = "华严 · 本地 Piper"
+        elif tts_network:
+            tts_active = "network"
+            tts_label = f"网络 · {network.label}"
+        else:
+            tts_active = None
+            tts_label = "未就绪"
+        if stt_local and stt_pref != "network":
+            stt_engine = "whisper.cpp"
+            stt_label = "Whisper Small · 本地"
+        elif stt_network:
+            stt_engine = "network"
+            stt_label = f"网络识别 · {network.stt_model}"
+        else:
+            stt_engine = "none"
+            stt_label = "未就绪"
         hints: list[str] = []
         if not stt_ready:
-            hints.append("未找到 whisper-cli 或 ggml 模型，识别会不可用")
-        if not piper_ready and not cosy:
-            hints.append("未找到 Piper 或 CosyVoice，回复将只显示文字")
-        elif not cosy:
+            hints.append("未找到本地 Whisper，也没有可用的网络识别密钥")
+        elif not stt_local and stt_network:
+            hints.append("本地 Whisper 未就绪，识别将走网络（音频会离开本机）")
+        if not tts_ready:
+            hints.append("未找到 Piper/CosyVoice，也没有可用的网络朗读密钥")
+        elif not tts_local and tts_network:
+            hints.append("本地朗读未就绪，回复朗读将走网络")
+        elif not cosy and piper_ready:
             hints.append("CosyVoice 未运行时会用 Piper；可在语音设置里启动自然音色")
+        if not stt_local and not stt_network:
+            hints.append("可连接 USB/蓝牙麦克风，并配置 OpenAI 或智谱语音密钥")
+        privacy = "audio_may_leave_device" if (
+            (stt_pref != "local" and stt_network and not stt_local)
+            or (tts_pref != "local" and tts_network and not tts_local)
+            or stt_pref == "network"
+            or tts_pref == "network"
+        ) else "audio_stays_local"
         return {
             "ready": stt_ready,
             "mode": "live",
             "stt": {
                 "ready": stt_ready,
-                "engine": "whisper.cpp",
+                "engine": stt_engine,
                 "executable": str(whisper_cli) if whisper_cli else None,
-                "model": str(whisper_model) if whisper_model else None,
-                "label": "Whisper Small · 本地",
+                "model": str(whisper_model) if whisper_model else (network.stt_model if stt_network else None),
+                "label": stt_label,
                 "acceleration": "cpu" if _env_enabled("AETHERCHAT_WHISPER_NO_GPU") else "gpu_if_available",
+                "local_ready": stt_local,
+                "network_ready": stt_network,
+                "preference": stt_pref,
             },
             "tts": {
                 "ready": tts_ready,
-                "active": "cosyvoice" if cosy else ("piper" if piper_ready else None),
-                "label": "Jarvis · CosyVoice 2" if cosy else ("华严 · 本地 Piper" if piper_ready else "未就绪"),
+                "active": tts_active,
+                "label": tts_label,
+                "local_ready": tts_local,
+                "network_ready": tts_network,
+                "preference": tts_pref,
                 "piper": {
                     "ready": piper_ready,
                     "engine": "piper",
@@ -341,9 +403,31 @@ class VoiceRuntimeService:
                     "managed": bool(self._cosy_process and self._cosy_process.returncode is None),
                     "log": str(_cosy_log_path()),
                 },
+                "network": {
+                    "ready": tts_network,
+                    "engine": "network",
+                    "provider": network.provider if network.ready else None,
+                    "model": network.tts_model if network.ready else None,
+                    "label": f"网络 · {network.label}" if network.ready else "网络未配置",
+                    "source": network.source,
+                },
+            },
+            "network": {
+                "ready": network.ready,
+                "provider": network.provider if network.ready else None,
+                "label": network.label,
+                "source": network.source,
+                "stt_model": network.stt_model if network.ready else None,
+                "tts_model": network.tts_model if network.ready else None,
             },
             "hints": hints,
-            "privacy": "audio_stays_local",
+            "privacy": privacy,
+            "ux": {
+                "dictation": True,
+                "push_to_talk": True,
+                "barge_in": True,
+                "reply_speak": True,
+            },
         }
 
     async def transcribe(self, audio: bytes, *, language: str = "zh", filename: str = "utterance.wav") -> dict[str, Any]:
@@ -366,59 +450,107 @@ class VoiceRuntimeService:
                 "bytes": len(audio),
                 "no_speech": True,
             }
+        pref = voice_provider_preference("stt")
         whisper_cli = default_whisper_cli()
         whisper_model = default_whisper_model()
-        if whisper_cli is None or whisper_model is None:
-            raise VoiceRuntimeError(
-                "本机识别引擎未就绪",
-                code="stt_unavailable",
-                hints=[
-                    "把 whisper-cli 放到 ~/whisper.cpp/build/bin/whisper-cli",
-                    "或设置 AETHERCHAT_WHISPER_CLI 与 AETHERCHAT_WHISPER_MODEL",
-                ],
-                status_code=503,
-            )
-        if whisper_cli.name not in WHISPER_NAMES:
-            raise VoiceRuntimeError("识别程序文件名必须是 whisper-cli", code="bad_stt_executable")
+        local_ready = bool(whisper_cli and whisper_model)
+        network = resolve_voice_network_config()
 
-        suffix = Path(filename).suffix.lower() if filename else ".wav"
-        if suffix != ".wav":
-            suffix = ".wav"
-        with tempfile.NamedTemporaryFile(prefix="aether-stt-", suffix=suffix, dir=_tmp_dir(), delete=False) as tmp:
-            tmp.write(audio)
-            tmp_path = Path(tmp.name)
-        try:
-            command = [
-                str(whisper_cli),
-                "-m",
-                str(whisper_model),
-                "-f",
-                str(tmp_path),
-                "-l",
-                "auto" if lang == "auto" else lang,
-                "-nt",
-                "-np",
-                "-sns",
-            ]
-            if _env_enabled("AETHERCHAT_WHISPER_NO_GPU"):
-                command.append("-ng")
-            stdout, stderr, code = await self._run(command, timeout=90)
-            if code != 0:
+        async def _via_network() -> dict[str, Any]:
+            try:
+                result = await network_transcribe(audio, filename=filename, language=lang, config=network)
+            except VoiceNetworkError as exc:
                 raise VoiceRuntimeError(
-                    "识别失败",
-                    code="stt_failed",
-                    hints=[stderr.strip()[:280] or "查看 whisper-cli 是否匹配当前架构"],
+                    str(exc),
+                    code=exc.code,
+                    hints=["检查 OpenAI / 智谱语音余额与密钥", "或安装本地 whisper.cpp"],
+                    status_code=exc.status_code,
+                ) from exc
+            result["text"] = clean_transcript(str(result.get("text") or ""))
+            return result
+
+        async def _via_local() -> dict[str, Any]:
+            if whisper_cli is None or whisper_model is None:
+                raise VoiceRuntimeError(
+                    "本机识别引擎未就绪",
+                    code="stt_unavailable",
+                    hints=[
+                        "把 whisper-cli 放到 ~/whisper.cpp/build/bin/whisper-cli",
+                        "或设置 AETHERCHAT_WHISPER_CLI 与 AETHERCHAT_WHISPER_MODEL",
+                        "也可配置 OpenAI / 智谱网络识别",
+                    ],
+                    status_code=503,
                 )
-            stdout_text = cast(str, stdout)
-            text = clean_transcript(stdout_text)
-            return {
-                "text": text,
-                "raw_text": stdout_text.strip(),
-                "language": lang,
-                "bytes": len(audio),
-            }
-        finally:
-            tmp_path.unlink(missing_ok=True)
+            if whisper_cli.name not in WHISPER_NAMES:
+                raise VoiceRuntimeError("识别程序文件名必须是 whisper-cli", code="bad_stt_executable")
+            suffix = Path(filename).suffix.lower() if filename else ".wav"
+            if suffix != ".wav":
+                suffix = ".wav"
+            with tempfile.NamedTemporaryFile(prefix="aether-stt-", suffix=suffix, dir=_tmp_dir(), delete=False) as tmp:
+                tmp.write(audio)
+                tmp_path = Path(tmp.name)
+            try:
+                command = [
+                    str(whisper_cli),
+                    "-m",
+                    str(whisper_model),
+                    "-f",
+                    str(tmp_path),
+                    "-l",
+                    "auto" if lang == "auto" else lang,
+                    "-nt",
+                    "-np",
+                    "-sns",
+                ]
+                if _env_enabled("AETHERCHAT_WHISPER_NO_GPU"):
+                    command.append("-ng")
+                stdout, stderr, code = await self._run(command, timeout=90)
+                if code != 0:
+                    raise VoiceRuntimeError(
+                        "识别失败",
+                        code="stt_failed",
+                        hints=[stderr.strip()[:280] or "查看 whisper-cli 是否匹配当前架构"],
+                    )
+                stdout_text = cast(str, stdout)
+                text = clean_transcript(stdout_text)
+                return {
+                    "text": text,
+                    "raw_text": stdout_text.strip(),
+                    "language": lang,
+                    "bytes": len(audio),
+                    "engine": "whisper.cpp",
+                }
+            finally:
+                tmp_path.unlink(missing_ok=True)
+
+        if pref == "network":
+            return await _via_network()
+        if pref == "local":
+            return await _via_local()
+        # auto: local first, soft-fallback to network
+        if local_ready:
+            try:
+                return await _via_local()
+            except VoiceRuntimeError as local_exc:
+                if network.ready:
+                    try:
+                        result = await _via_network()
+                        result["fallback_from"] = local_exc.code or "local_stt_failed"
+                        return result
+                    except VoiceRuntimeError:
+                        raise local_exc from None
+                raise
+        if network.ready:
+            return await _via_network()
+        raise VoiceRuntimeError(
+            "识别引擎未就绪",
+            code="stt_unavailable",
+            hints=[
+                "安装本地 whisper.cpp，或在模型设置中配置 OpenAI / 智谱密钥",
+                "确认本机已连接麦克风（当前若只有 HDMI 输出将无法采集）",
+            ],
+            status_code=503,
+        )
 
     async def synthesize(self, text: str, *, engine: TtsEngine = "auto") -> bytes:
         spoken = clean_transcript(text)
@@ -426,7 +558,7 @@ class VoiceRuntimeService:
             raise VoiceRuntimeError("没有可朗读的文本", code="empty_text")
         if len(spoken) > MAX_TTS_CHARS:
             spoken = spoken[:MAX_TTS_CHARS].rstrip()
-        if engine not in {"auto", "piper", "cosyvoice"}:
+        if engine not in {"auto", "piper", "cosyvoice", "network"}:
             engine = "auto"
         # Local speech engines are expensive and some are not re-entrant. A
         # bounded, ordered lane prevents a burst of streamed sentences from
@@ -435,7 +567,24 @@ class VoiceRuntimeService:
             return await self._synthesize_locked(spoken, engine=engine)
 
     async def _synthesize_locked(self, spoken: str, *, engine: TtsEngine) -> bytes:
-        if engine in {"auto", "cosyvoice"}:
+        pref = voice_provider_preference("tts")
+        network = resolve_voice_network_config()
+
+        async def _via_network() -> bytes:
+            try:
+                return await network_synthesize(spoken, config=network)
+            except VoiceNetworkError as exc:
+                raise VoiceRuntimeError(
+                    str(exc),
+                    code=exc.code,
+                    hints=["检查 OpenAI / 智谱朗读余额与密钥", "或安装本地 Piper"],
+                    status_code=exc.status_code,
+                ) from exc
+
+        if engine == "network" or pref == "network":
+            return await _via_network()
+
+        if engine in {"auto", "cosyvoice"} and pref != "local":
             cosy = await self._cosy_health()
             if cosy:
                 try:
@@ -450,7 +599,28 @@ class VoiceRuntimeService:
                     hints=["在语音设置中启动自然音色，或先手动运行 ~/cosyvoice/tts_server.py"],
                     status_code=503,
                 )
-        return await self._synthesize_piper(spoken)
+        if engine == "piper" or pref == "local":
+            try:
+                return await self._synthesize_piper(spoken)
+            except VoiceRuntimeError:
+                if pref == "local" or engine == "piper":
+                    raise
+                if network.ready:
+                    return await _via_network()
+                raise
+
+        # auto: piper then network
+        try:
+            return await self._synthesize_piper(spoken)
+        except VoiceRuntimeError as local_exc:
+            if network.ready and pref == "auto":
+                try:
+                    return await _via_network()
+                except VoiceRuntimeError:
+                    raise local_exc from None
+            if network.ready and not default_piper_cli():
+                return await _via_network()
+            raise
 
     async def _synthesize_cosyvoice(self, spoken: str, base: str) -> bytes:
         try:

@@ -257,7 +257,8 @@ export const useSessionStore = create<SessionState>()(persist((set) => ({
   name: 'aetherchat-workspace',
   version: 2,
   partialize: (state) => ({
-    settings: state.settings,
+    // Persist middleware expects an indexable bag; WorkspaceSettings is a closed interface.
+    settings: state.settings as WorkspaceSettings & Record<string, unknown>,
     sessionId: state.sessionId,
     conversations: state.conversations,
     composerDrafts: state.composerDrafts,

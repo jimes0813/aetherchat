@@ -113,6 +113,10 @@ async def test_transcribe_reports_missing_engine(monkeypatch):
     runtime = VoiceRuntimeService()
     monkeypatch.setattr("app.services.voice_runtime.default_whisper_cli", lambda: None)
     monkeypatch.setattr("app.services.voice_runtime.default_whisper_model", lambda: None)
+    monkeypatch.setattr(
+        "app.services.voice_runtime.resolve_voice_network_config",
+        lambda: type("Cfg", (), {"ready": False})(),
+    )
     with pytest.raises(VoiceRuntimeError, match="识别引擎"):
         await runtime.transcribe(_pcm_wav(amplitude=0.02))
 

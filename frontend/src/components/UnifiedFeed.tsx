@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { ChevronRight, ExternalLink, Eye, FileText, FolderOpen } from 'lucide-react';
+import { ChevronRight, ExternalLink, Eye, FileText, FolderOpen, Volume2, Square } from 'lucide-react';
 import { useSessionStore } from '../stores/sessionStore';
 import type { ApprovalRequest, GeneratedFile, GeneratedFileView, Message, ReasoningStep } from '../types';
 import { SafeMarkdown } from './SafeMarkdown';
@@ -30,6 +30,9 @@ interface UnifiedFeedProps {
     decision: NonNullable<ApprovalRequest['decision']>,
     feedback?: string,
   ) => void | Promise<void>;
+  onSpeakMessage?: (messageId: string, content: string) => void;
+  speakingMessageId?: string | null;
+  onStopSpeak?: () => void;
 }
 
 const fileSize = (value?: number) => {
@@ -342,6 +345,9 @@ export const UnifiedFeed = memo(function UnifiedFeed({
   onOpenRunHistory,
   onPickExample,
   onApprovalDecision,
+  onSpeakMessage,
+  speakingMessageId = null,
+  onStopSpeak,
 }: UnifiedFeedProps) {
   const messages = useSessionStore((state) => state.messages);
   const visibleMessages = useMemo(() => messages
@@ -420,6 +426,22 @@ export const UnifiedFeed = memo(function UnifiedFeed({
                       <div className="text-[15px] leading-7 text-[#2f2a24]">
                         <SafeMarkdown content={msg.content} />
                       </div>
+                      {onSpeakMessage && msg.content.trim() && (
+                        <div className="mt-2">
+                          <button
+                            type="button"
+                            className="inline-flex items-center gap-1 rounded-full border border-[#e4d8c8] bg-[#fffaf4] px-2 py-1 text-[11px] text-[#5b4532] hover:bg-[#f3ece3]"
+                            onClick={() => {
+                              if (speakingMessageId === msg.id) onStopSpeak?.();
+                              else onSpeakMessage(msg.id, msg.content);
+                            }}
+                            aria-label={speakingMessageId === msg.id ? ui('停止朗读') : ui('朗读回复')}
+                          >
+                            {speakingMessageId === msg.id ? <Square size={11} fill="currentColor" /> : <Volume2 size={12} />}
+                            <span>{speakingMessageId === msg.id ? ui('停止') : ui('朗读')}</span>
+                          </button>
+                        </div>
+                      )}
                       <ExecutionReceipt
                         steps={msg.reasoning_summary || []}
                         files={msg.generated_files || []}
