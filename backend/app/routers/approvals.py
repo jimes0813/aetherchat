@@ -1,7 +1,7 @@
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from ..services.approval_service import approval_service
@@ -13,6 +13,18 @@ class ApprovalDecisionPayload(BaseModel):
     session_id: UUID
     decision: Literal["allow_once", "allow_session", "deny"]
     feedback: str = Field(default="", max_length=2000)
+
+
+@router.get("/restart-cancellations")
+async def list_restart_cancellations(limit: int = Query(default=50, ge=1, le=500)):
+    """Pending approvals cancelled because the backend restarted (需重新授权)."""
+    items = approval_service.list_restart_cancellations(limit=limit)
+    return {
+        "items": items,
+        "count": len(items),
+        "message": "需重新授权" if items else "",
+        "reason": "backend_restart",
+    }
 
 
 @router.post("/{approval_id}/decision")

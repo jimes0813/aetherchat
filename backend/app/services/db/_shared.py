@@ -6,7 +6,7 @@ from pathlib import Path
 
 from ...data_dir import ensure_private_data_dir
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 EVENT_STREAM_RETENTION_LIMIT = 4096
 READINESS_TABLES = (
     "agent_runs",

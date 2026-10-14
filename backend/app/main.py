@@ -74,6 +74,12 @@ async def lifespan(app: FastAPI):
     tasks.redis_client = redis_client
     tool_executor.redis_client = redis_client
     agent_run_service.recover()
+    try:
+        from .services.approval_service import approval_service
+
+        approval_service.bootstrap_from_db()
+    except Exception:
+        logger.exception("approval persistence bootstrap failed")
     await run_dispatcher.start()
     await automation_service.start()
     yield

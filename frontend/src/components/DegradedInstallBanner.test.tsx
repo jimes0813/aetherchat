@@ -38,4 +38,15 @@ describe('DegradedInstallBanner', () => {
     const second = render(<DegradedInstallBanner />);
     expect(second.queryByRole('status')).toBeNull();
   });
+
+  it('stays hidden for user-unpacked when Chromium sandbox is on', () => {
+    window.aetherRuntime = {
+      apiBase: 'http://127.0.0.1:8000',
+      backendStatus: 'ready',
+      chromiumSandbox: 'on',
+      installChannel: 'user-unpacked',
+    };
+    render(<DegradedInstallBanner />);
+    expect(screen.queryByRole('status')).toBeNull();
+  });
 });

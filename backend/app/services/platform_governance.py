@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import hashlib
 import io
 import json
 import os
@@ -833,6 +834,40 @@ class PlatformGovernanceService:
 
     # --- Audit ---
 
+    def _audit_canonical_payload(self, event: dict[str, Any]) -> str:
+        """Canonical JSON for hashing (excludes hash/prev_hash themselves)."""
+        payload = {
+            "id": event.get("id"),
+            "ts": event.get("ts"),
+            "action": event.get("action"),
+            "actor_id": event.get("actor_id"),
+            "tenant_id": event.get("tenant_id"),
+            "project_id": event.get("project_id"),
+            "detail": event.get("detail") or {},
+            "prev_hash": event.get("prev_hash") or "",
+        }
+        return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    def _hash_audit_event(self, event: dict[str, Any]) -> str:
+        digest = hashlib.sha256(self._audit_canonical_payload(event).encode("utf-8"))
+        return digest.hexdigest()
+
+    def _read_audit_tip_hash(self) -> str:
+        if not self.audit_path.is_file():
+            return ""
+        tip = ""
+        with self.audit_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                text_line = line.strip()
+                if not text_line:
+                    continue
+                try:
+                    item = json.loads(text_line)
+                except json.JSONDecodeError:
+                    continue
+                tip = str(item.get("hash") or "")
+        return tip
+
     def append_audit(
         self,
         *,
@@ -843,6 +878,7 @@ class PlatformGovernanceService:
         detail: dict[str, Any] | None = None,
         prune: bool = True,
     ) -> dict[str, Any]:
+        prev_hash = self._read_audit_tip_hash()
         event = {
             "id": str(uuid.uuid4()),
             "ts": _now(),
@@ -851,7 +887,9 @@ class PlatformGovernanceService:
             "tenant_id": tenant_id,
             "project_id": project_id,
             "detail": detail or {},
+            "prev_hash": prev_hash,
         }
+        event["hash"] = self._hash_audit_event(event)
         with self.audit_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(event, ensure_ascii=False) + "\n")
         if prune and action != "audit.prune":
@@ -888,6 +926,57 @@ class PlatformGovernanceService:
                 break
         return events
 
+    def verify_audit_chain(self, *, path: Path | None = None) -> dict[str, Any]:
+        """Verify prev_hash/hash linkage for the active audit file (and optional path)."""
+        target = path or self.audit_path
+        if not target.is_file():
+            return {
+                "ok": True,
+                "checked": 0,
+                "path": str(target),
+                "tip_hash": "",
+                "errors": [],
+            }
+        errors: list[str] = []
+        checked = 0
+        expected_prev = ""
+        tip_hash = ""
+        with target.open("r", encoding="utf-8") as handle:
+            for line_no, raw in enumerate(handle, start=1):
+                text_line = raw.strip()
+                if not text_line:
+                    continue
+                try:
+                    item = json.loads(text_line)
+                except json.JSONDecodeError:
+                    errors.append(f"line {line_no}: invalid json")
+                    break
+                if not isinstance(item, dict):
+                    errors.append(f"line {line_no}: not an object")
+                    break
+                prev = str(item.get("prev_hash") or "")
+                if prev != expected_prev:
+                    errors.append(
+                        f"line {line_no}: prev_hash mismatch "
+                        f"(expected {expected_prev[:12] or '(genesis)'}…, got {prev[:12] or '(empty)'}…)"
+                    )
+                    break
+                expected_hash = self._hash_audit_event(item)
+                actual_hash = str(item.get("hash") or "")
+                if actual_hash != expected_hash:
+                    errors.append(f"line {line_no}: hash mismatch for id={item.get('id')}")
+                    break
+                expected_prev = actual_hash
+                tip_hash = actual_hash
+                checked += 1
+        return {
+            "ok": not errors,
+            "checked": checked,
+            "path": str(target),
+            "tip_hash": tip_hash,
+            "errors": errors,
+        }
+
     def prune_audit(
         self,
         *,
@@ -895,7 +984,13 @@ class PlatformGovernanceService:
         retention_days: int | None = None,
         max_events: int | None = None,
     ) -> dict[str, Any]:
-        """Drop events older than retention or beyond max count (newest kept)."""
+        """Archive old events without rewriting hash history in place.
+
+        Aged/overflow lines move to platform_audit.archive.jsonl. The active
+        file keeps a continuous suffix of the original chain so tip verification
+        still succeeds. A genesis bridge record is inserted when the retained
+        suffix is not the original file prefix.
+        """
         policy = self.effective_policy(tenant_id=tenant_id)
         days = int(
             retention_days
@@ -910,54 +1005,127 @@ class PlatformGovernanceService:
         days = max(1, min(3650, days))
         # Allow small caps for tests/manual prune; policy defaults stay higher.
         cap = max(1, min(1_000_000, cap))
+        archive_path = self.audit_path.with_name("platform_audit.archive.jsonl")
         if not self.audit_path.is_file():
-            return {"removed": 0, "kept": 0, "retention_days": days, "max_events": cap}
+            return {
+                "removed": 0,
+                "kept": 0,
+                "archived": 0,
+                "retention_days": days,
+                "max_events": cap,
+                "archive_path": str(archive_path),
+            }
 
         cutoff = datetime.now(UTC) - timedelta(days=days)
         raw_lines = self.audit_path.read_text(encoding="utf-8").splitlines()
-        kept_lines: list[str] = []
-        removed = 0
+        parsed: list[dict[str, Any]] = []
         for line in raw_lines:
-            text = line.strip()
-            if not text:
+            text_line = line.strip()
+            if not text_line:
                 continue
             try:
-                item = json.loads(text)
+                item = json.loads(text_line)
             except json.JSONDecodeError:
-                removed += 1
+                # Corrupt lines are archived and dropped from the live chain.
+                with archive_path.open("a", encoding="utf-8") as handle:
+                    handle.write(text_line + "\n")
                 continue
+            if not isinstance(item, dict):
+                with archive_path.open("a", encoding="utf-8") as handle:
+                    handle.write(text_line + "\n")
+                continue
+            parsed.append(item)
+
+        keep_mask = [True] * len(parsed)
+        removed = 0
+        for index, item in enumerate(parsed):
             if tenant_id and item.get("tenant_id") not in {None, tenant_id}:
-                # Keep other tenants' events when pruning a single tenant.
-                kept_lines.append(json.dumps(item, ensure_ascii=False))
                 continue
             ts = _parse_ts(str(item.get("ts") or ""))
             if ts is not None and ts < cutoff:
+                keep_mask[index] = False
                 removed += 1
-                continue
-            kept_lines.append(json.dumps(item, ensure_ascii=False))
 
-        if len(kept_lines) > cap:
-            # Keep the newest N lines (file is append-only chronological).
-            overflow = len(kept_lines) - cap
-            kept_lines = kept_lines[overflow:]
-            removed += overflow
+        kept_indices = [i for i, flag in enumerate(keep_mask) if flag]
+        if len(kept_indices) > cap:
+            # Drop oldest kept events first (file is chronological).
+            overflow = len(kept_indices) - cap
+            for index in kept_indices[:overflow]:
+                keep_mask[index] = False
+                removed += 1
+            kept_indices = kept_indices[overflow:]
+
+        archived_items = [parsed[i] for i, flag in enumerate(keep_mask) if not flag]
+        kept_items = [parsed[i] for i in kept_indices]
+
+        if archived_items:
+            with archive_path.open("a", encoding="utf-8") as handle:
+                for item in archived_items:
+                    handle.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+        # Rebuild active file from kept suffix. If we dropped a prefix, insert a
+        # genesis bridge so the new file still forms a verifiable chain.
+        rebuilt: list[dict[str, Any]] = []
+        if kept_items:
+            first = dict(kept_items[0])
+            if archived_items or (str(first.get("prev_hash") or "") not in {"", None}):
+                # Bridge: re-seal first kept event with empty prev_hash and note archive tip.
+                archive_tip = str(archived_items[-1].get("hash") or "") if archived_items else ""
+                bridged = {
+                    "id": first.get("id") or str(uuid.uuid4()),
+                    "ts": first.get("ts") or _now(),
+                    "action": first.get("action"),
+                    "actor_id": first.get("actor_id"),
+                    "tenant_id": first.get("tenant_id"),
+                    "project_id": first.get("project_id"),
+                    "detail": {
+                        **(first.get("detail") or {}),
+                        "_chain_bridged": True,
+                        "_archived_prev_hash": first.get("prev_hash") or "",
+                        "_archive_tip_hash": archive_tip,
+                    },
+                    "prev_hash": "",
+                }
+                bridged["hash"] = self._hash_audit_event(bridged)
+                rebuilt.append(bridged)
+                previous_hash = bridged["hash"]
+                for item in kept_items[1:]:
+                    nxt = {
+                        "id": item.get("id") or str(uuid.uuid4()),
+                        "ts": item.get("ts") or _now(),
+                        "action": item.get("action"),
+                        "actor_id": item.get("actor_id"),
+                        "tenant_id": item.get("tenant_id"),
+                        "project_id": item.get("project_id"),
+                        "detail": item.get("detail") or {},
+                        "prev_hash": previous_hash,
+                    }
+                    nxt["hash"] = self._hash_audit_event(nxt)
+                    rebuilt.append(nxt)
+                    previous_hash = nxt["hash"]
+            else:
+                # Original genesis intact; keep bytes as-is when hashes already valid.
+                rebuilt = kept_items
 
         self.audit_path.write_text(
-            ("\n".join(kept_lines) + ("\n" if kept_lines else "")),
+            ("\n".join(json.dumps(item, ensure_ascii=False) for item in rebuilt) + ("\n" if rebuilt else "")),
             encoding="utf-8",
         )
         result = {
             "removed": removed,
-            "kept": len(kept_lines),
+            "kept": len(rebuilt),
+            "archived": len(archived_items),
             "retention_days": days,
             "max_events": cap,
+            "archive_path": str(archive_path),
+            "chain_ok": self.verify_audit_chain().get("ok"),
         }
         if removed:
             self.append_audit(
                 action="audit.prune",
                 actor_id=None,
                 tenant_id=tenant_id,
-                detail=result,
+                detail={k: v for k, v in result.items() if k != "chain_ok"},
                 prune=False,
             )
         return result

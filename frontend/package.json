@@ -1,7 +1,7 @@
 {
   "name": "aetherchat-frontend",
   "version": "0.2.1-rc.4",
-  "description": "AetherChat 多模型协作桌面工作台",
+  "description": "AetherChat \u591a\u6a21\u578b\u534f\u4f5c\u684c\u9762\u5de5\u4f5c\u53f0",
   "desktopName": "aetherchat.desktop",
   "homepage": "https://github.com/jimes0813/AetherChat",
   "author": {
@@ -24,7 +24,8 @@
     "test:unit": "vitest run",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
-    "test:e2e:headed": "playwright test --headed"
+    "test:e2e:headed": "playwright test --headed",
+    "check:fuses": "node ../scripts/check-electron-fuses.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.400.0",
@@ -34,6 +35,7 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "4.12.1",
+    "@electron/fuses": "^1.8.0",
     "@playwright/test": "^1.48.0",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",
@@ -109,6 +111,7 @@
       "deleteAppDataOnUninstall": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
-    }
+    },
+    "afterPack": "./scripts/after-pack-fuses.cjs"
   }
 }

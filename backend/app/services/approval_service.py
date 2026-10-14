@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from threading import RLock
@@ -8,6 +10,21 @@ from typing import Any, Literal
 from uuid import uuid4
 
 ApprovalDecision = Literal["allow_once", "allow_session", "deny"]
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_PENDING_TTL_SECONDS = 6 * 60 * 60
+DEFAULT_GRANT_TTL_SECONDS = 12 * 60 * 60
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
 
 
 def _resolve_future(future: asyncio.Future[str], decision: str) -> None:
@@ -46,20 +63,93 @@ class PendingApproval:
 
 
 class ApprovalService:
-    """In-memory, fail-closed approvals for model-initiated side effects.
+    """Fail-closed approvals for model-initiated side effects.
 
-    Session grants deliberately disappear on backend restart. Approval IDs are
-    random and decisions must also match the originating session.
+    Pending approvals and session grants are persisted in SQLite. Futures stay
+    in-process only: on backend restart, leftover pending rows are cancelled
+    with reason ``backend_restart`` so the UI can prompt for re-authorization.
     """
 
     def __init__(self) -> None:
         self._pending: dict[str, PendingApproval] = {}
         self._session_grants: set[tuple[str, str]] = set()
         self._lock = RLock()
+        self._pending_ttl = _env_float(
+            "AETHERCHAT_APPROVAL_PENDING_TTL_SECONDS",
+            DEFAULT_PENDING_TTL_SECONDS,
+        )
+        self._grant_ttl = _env_float(
+            "AETHERCHAT_APPROVAL_GRANT_TTL_SECONDS",
+            DEFAULT_GRANT_TTL_SECONDS,
+        )
+        self._restart_cancellations: list[dict[str, Any]] = []
+
+    def _db(self):
+        from .chat_database import chat_database
+
+        return chat_database
+
+    def bootstrap_from_db(self) -> dict[str, int]:
+        """Load grants, expire stale rows, cancel orphaned pending on restart."""
+        db = self._db()
+        # Restart cancels every leftover pending row first (需重新授权), then
+        # TTL cleanup can only affect already-terminal rows if extended later.
+        cancelled: list[dict[str, Any]] = []
+        try:
+            cancelled = db.cancel_all_pending_approvals("backend_restart")
+        except Exception:
+            logger.exception("failed to cancel pending approvals on restart")
+        expired = 0
+        try:
+            expired = db.expire_pending_approvals(self._pending_ttl)
+        except Exception:
+            logger.exception("failed to expire stale pending approvals")
+        grants: set[tuple[str, str]] = set()
+        try:
+            grants = db.list_session_grants()
+        except Exception:
+            logger.exception("failed to load session grants")
+        with self._lock:
+            self._session_grants = set(grants)
+            self._pending.clear()
+            self._restart_cancellations = list(cancelled)
+        if cancelled:
+            logger.warning(
+                "cancelled %s pending approval(s) after backend restart (需重新授权)",
+                len(cancelled),
+            )
+        return {
+            "cancelled_pending": len(cancelled),
+            "expired_pending": int(expired),
+            "session_grants": len(grants),
+        }
+
+    def list_restart_cancellations(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self._lock:
+            items = list(self._restart_cancellations)
+        if not items:
+            try:
+                items = self._db().list_cancelled_approvals(
+                    reason="backend_restart",
+                    limit=limit,
+                )
+            except Exception:
+                items = []
+        return items[: max(1, min(500, int(limit)))]
 
     def is_session_granted(self, session_id: str, risk: str) -> bool:
+        key = (str(session_id), str(risk))
         with self._lock:
-            return (str(session_id), str(risk)) in self._session_grants
+            if key in self._session_grants:
+                return True
+        try:
+            active = self._db().is_session_grant_active(session_id, risk)
+        except Exception:
+            return False
+        if active:
+            with self._lock:
+                self._session_grants.add(key)
+        return active
 
     def create(
         self,
@@ -92,6 +182,25 @@ class ApprovalService:
         )
         with self._lock:
             self._pending[pending.id] = pending
+        try:
+            self._db().upsert_pending_approval(
+                {
+                    **pending.public(),
+                    "status": "pending",
+                    "decision": None,
+                    "feedback": "",
+                    "cancel_reason": None,
+                    "resolved_at": None,
+                }
+            )
+        except Exception:
+            logger.exception("failed to persist pending approval %s", pending.id)
+            with self._lock:
+                self._pending.pop(pending.id, None)
+            if not pending.future.done():
+                pending.future.cancel()
+            # Fail-closed: refuse to proceed without durable pending record.
+            raise RuntimeError("无法持久化授权请求，已拒绝该操作") from None
         return pending
 
     async def wait(self, approval_id: str, timeout: float = 180.0) -> str:
@@ -104,6 +213,15 @@ class ApprovalService:
         except TimeoutError:
             if not pending.future.done():
                 pending.future.cancel()
+            try:
+                self._db().mark_approval_resolved(
+                    pending.id,
+                    decision="deny",
+                    status="cancelled",
+                    cancel_reason="timeout",
+                )
+            except Exception:
+                logger.exception("failed to mark approval timeout %s", pending.id)
             return "deny"
         except asyncio.CancelledError:
             if not pending.future.done():
@@ -123,7 +241,7 @@ class ApprovalService:
         with self._lock:
             pending = self._pending.get(str(approval_id))
             if pending is None:
-                raise KeyError("授权请求不存在、已处理或已过期")
+                raise KeyError("授权请求不存在、已处理或已过期（后端重启后需重新授权）")
             if pending.session_id != str(session_id):
                 raise PermissionError("授权请求不属于当前会话")
             if decision == "allow_session" and not pending.allow_session:
@@ -141,6 +259,24 @@ class ApprovalService:
                     pending.future,
                     decision,
                 )
+        if decision == "allow_session":
+            try:
+                self._db().upsert_session_grant(
+                    pending.session_id,
+                    pending.risk,
+                    ttl_seconds=self._grant_ttl,
+                )
+            except Exception:
+                logger.exception("failed to persist session grant")
+        try:
+            self._db().mark_approval_resolved(
+                pending.id,
+                decision=decision,
+                feedback=pending.feedback,
+                status="resolved",
+            )
+        except Exception:
+            logger.exception("failed to persist approval decision %s", pending.id)
         return {
             "id": pending.id,
             "decision": decision,
@@ -153,6 +289,10 @@ class ApprovalService:
         with self._lock:
             self._session_grants = {grant for grant in self._session_grants if grant[0] != value}
             pending = [item for item in self._pending.values() if item.session_id == value]
+        try:
+            self._db().clear_session_grants(value)
+        except Exception:
+            logger.exception("failed to clear session grants for %s", value)
         for item in pending:
             if not item.future.done():
                 item.future.get_loop().call_soon_threadsafe(
@@ -160,6 +300,15 @@ class ApprovalService:
                     item.future,
                     "deny",
                 )
+            try:
+                self._db().mark_approval_resolved(
+                    item.id,
+                    decision="deny",
+                    status="cancelled",
+                    cancel_reason="session_cleared",
+                )
+            except Exception:
+                logger.exception("failed to cancel approval %s", item.id)
 
     def clear_risks(self, risks: set[str]) -> int:
         """Revoke grants and reject pending prompts for selected risk classes."""
@@ -170,6 +319,12 @@ class ApprovalService:
                 grant for grant in self._session_grants if grant[1] not in normalized
             }
             pending = [item for item in self._pending.values() if item.risk in normalized]
+            revoked_memory = previous - len(self._session_grants)
+        try:
+            revoked_db = self._db().clear_session_grants_for_risks(normalized)
+        except Exception:
+            logger.exception("failed to clear session grants for risks")
+            revoked_db = 0
         for item in pending:
             if not item.future.done():
                 item.future.get_loop().call_soon_threadsafe(
@@ -177,7 +332,16 @@ class ApprovalService:
                     item.future,
                     "deny",
                 )
-        return previous - len(self._session_grants)
+            try:
+                self._db().mark_approval_resolved(
+                    item.id,
+                    decision="deny",
+                    status="cancelled",
+                    cancel_reason="risk_revoked",
+                )
+            except Exception:
+                logger.exception("failed to cancel approval %s", item.id)
+        return max(revoked_memory, revoked_db)
 
 
 approval_service = ApprovalService()

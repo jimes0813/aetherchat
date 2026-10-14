@@ -25,8 +25,10 @@ function detectInstallChannel({
 }
 
 function isChromiumSandboxDegraded(channel, noSandbox = false) {
-  if (noSandbox) return true;
-  return channel === 'user-unpacked' || channel === 'user-appimage';
+  // Only report degraded when Chromium was actually launched with --no-sandbox.
+  // Channel alone (user-unpacked / AppImage) no longer implies sandbox off.
+  void channel;
+  return Boolean(noSandbox);
 }
 
 function describeInstallChannel(channel) {

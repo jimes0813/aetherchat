@@ -128,6 +128,54 @@ class SchemaMixin:
         )
         self._backfill_unbound_projects(connection, "default")
 
+
+    def _migration_5(self, connection: sqlite3.Connection) -> None:
+        """Persist tool approvals and session grants across backend restarts."""
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pending_approvals (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                model TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                risk TEXT NOT NULL,
+                title TEXT NOT NULL,
+                detail TEXT NOT NULL,
+                arguments_json TEXT NOT NULL DEFAULT '{}',
+                allow_session INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                decision TEXT,
+                feedback TEXT NOT NULL DEFAULT '',
+                cancel_reason TEXT,
+                resolved_at TEXT
+            )
+            """
+        )
+        connection.execute(
+            """CREATE INDEX IF NOT EXISTS idx_pending_approvals_status
+               ON pending_approvals(status, created_at)"""
+        )
+        connection.execute(
+            """CREATE INDEX IF NOT EXISTS idx_pending_approvals_session
+               ON pending_approvals(session_id, status)"""
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS session_grants (
+                session_id TEXT NOT NULL,
+                risk TEXT NOT NULL,
+                granted_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                PRIMARY KEY(session_id, risk)
+            )
+            """
+        )
+        connection.execute(
+            """CREATE INDEX IF NOT EXISTS idx_session_grants_expires
+               ON session_grants(expires_at)"""
+        )
+
     def _run_migrations(self, connection: sqlite3.Connection) -> None:
         row = connection.execute("PRAGMA user_version").fetchone()
         version = int(row[0]) if row else 0
@@ -136,6 +184,7 @@ class SchemaMixin:
             2: self._migration_2,
             3: self._migration_3,
             4: self._migration_4,
+            5: self._migration_5,
         }
         for target_version in range(version + 1, CURRENT_SCHEMA_VERSION + 1):
             migration = migrations[target_version]
@@ -562,6 +611,38 @@ class SchemaMixin:
                     ON background_jobs(session_id, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_background_jobs_review
                     ON background_jobs(session_id, reviewed_at, completed_at DESC);
+
+                CREATE TABLE IF NOT EXISTS pending_approvals (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    risk TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    detail TEXT NOT NULL,
+                    arguments_json TEXT NOT NULL DEFAULT '{}',
+                    allow_session INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    decision TEXT,
+                    feedback TEXT NOT NULL DEFAULT '',
+                    cancel_reason TEXT,
+                    resolved_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_pending_approvals_status
+                    ON pending_approvals(status, created_at);
+                CREATE INDEX IF NOT EXISTS idx_pending_approvals_session
+                    ON pending_approvals(session_id, status);
+
+                CREATE TABLE IF NOT EXISTS session_grants (
+                    session_id TEXT NOT NULL,
+                    risk TEXT NOT NULL,
+                    granted_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    PRIMARY KEY(session_id, risk)
+                );
+                CREATE INDEX IF NOT EXISTS idx_session_grants_expires
+                    ON session_grants(expires_at);
                 """
             )
             self._run_migrations(connection)

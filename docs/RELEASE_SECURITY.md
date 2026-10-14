@@ -108,3 +108,8 @@ stat -c '%U:%G %a %n' /opt/AetherChat/chrome-sandbox
 2026-07-16 ARM64 本机终验已通过：安装文件为 `root:root 4755`，正式安装版未使用 `--no-sandbox` 即成功呈现窗口并启动打包后端；Renderer 进程显示 `NoNewPrivs: 1`、`Seccomp: 2`，`/sessions/`、`/models/`、`/tools/` 无 Bearer 令牌均返回 401。
 
 同日重启检查发现用户侧曾再次运行带 `--no-sandbox` 的 AppImage；该进程树已终止并切换到 `/opt/AetherChat/aetherchat-frontend`。当前主进程与 Renderer 命令行均不含 `--no-sandbox`，Renderer 明确包含 `--enable-sandbox`，打包后端状态为 ready。
+
+### F0 launch policy
+
+Prefer the Debian install at `/opt/AetherChat` (`chrome-sandbox` root:root 4755). User AppImage/unpacked launchers must not inject `--no-sandbox` unless `AETHERCHAT_ALLOW_NO_SANDBOX=1` or an explicit `--no-sandbox` / `--aether-allow-no-sandbox` flag is provided; the launcher prints a stderr warning when degraded.
+

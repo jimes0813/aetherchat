@@ -66,3 +66,16 @@ GitHub: Ed25519 secrets configured; Windows CSC secrets still missing
 - RC tags (`v*-rc*`) need Ed25519 only; Windows CSC optional (Linux-first path).
 - Stable tags (`vX.Y.Z`) require all four secrets and fail fast without CSC.
 - Branch/PR builds stay unsigned by design.
+
+## F0 public_1.0 hard gates (2026)
+
+Stable / public_1.0 is **No-Go** until all of the following are true:
+
+1. **Windows Authenticode**: `WINDOWS_CSC_LINK` and `WINDOWS_CSC_KEY_PASSWORD` are configured (GitHub Actions secrets). Local/CI Windows release builds must pass `scripts/check-windows-csc-env.sh` when targeting Windows.
+2. **Chromium sandbox default**: user launch helpers never inject `--no-sandbox` unless `AETHERCHAT_ALLOW_NO_SANDBOX=1` or an explicit CLI flag. Prefer Deb `/opt/AetherChat` with `chrome-sandbox` `root:root` `4755`.
+3. **Electron fuses**: `frontend/package.json` `build.afterPack` runs `scripts/after-pack-fuses.cjs`; `scripts/check-electron-fuses.mjs` is green in CI.
+4. **Approvals**: pending approvals and session grants persist in SQLite; backend restart cancels orphaned pending with reason `backend_restart` (UI: 需重新授权).
+5. **Audit integrity**: `platform_audit.jsonl` records carry `prev_hash`/`hash`; prune archives to `platform_audit.archive.jsonl` instead of silently rewriting history.
+
+Linux-first RC tags (`v*-rc*`) may ship without Windows CSC, but must still satisfy items 2–5.
+

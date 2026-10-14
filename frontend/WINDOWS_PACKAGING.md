@@ -133,3 +133,19 @@ npm run dist:win
 $env:VITE_DEV_SERVER_URL = 'http://127.0.0.1:5173'
 npm run electron:dev
 ```
+
+## public_1.0 / CSC gate
+
+Public stable Windows builds require Authenticode material:
+
+- `WINDOWS_CSC_LINK` (base64 PFX / certificate link material)
+- `WINDOWS_CSC_KEY_PASSWORD`
+
+Before a Windows release package step, run:
+
+```bash
+AETHERCHAT_REQUIRE_WINDOWS_CSC=1 ./scripts/check-windows-csc-env.sh
+```
+
+The script exits non-zero when CSC vars are missing for a Windows target. Skip only for non-Windows builds (default) or with `AETHERCHAT_SKIP_WINDOWS_CSC_CHECK=1` for explicitly unsigned local experiments — never for public_1.0.
+

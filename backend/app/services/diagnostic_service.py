@@ -88,6 +88,21 @@ class DiagnosticService:
             self.telemetry_service = RunTelemetryService(telemetry_path)
         self._now = now
 
+
+    def _audit_chain_snapshot(self) -> dict[str, Any]:
+        try:
+            from .platform_governance import platform_governance
+
+            result = platform_governance.verify_audit_chain()
+            return {
+                "ok": bool(result.get("ok")),
+                "checked": int(result.get("checked") or 0),
+                "tip_hash_prefix": str(result.get("tip_hash") or "")[:16],
+                "error_count": len(result.get("errors") or []),
+            }
+        except Exception:
+            return {"ok": False, "checked": 0, "tip_hash_prefix": "", "error_count": -1}
+
     def _database_snapshot(self) -> dict[str, Any]:
         try:
             raw = self.database.readiness_probe()
@@ -184,6 +199,7 @@ class DiagnosticService:
                 "python": platform.python_version(),
             },
             "database": self._database_snapshot(),
+            "audit_chain": self._audit_chain_snapshot(),
             "runtime": {
                 "automation": self._automation_snapshot(automation),
                 "run_dispatcher": self._dispatcher_snapshot(run_dispatcher),

@@ -44,3 +44,8 @@ scripts/quality_gate.sh
 安装包运行后，在“运行”面板检查后端 API、WebSocket 和桌面能力状态。Wayland 下截图是否可用取决于桌面环境的屏幕共享授权。
 
 2026-07-16 ARM64 验收还使用打包后端生成三种 Office 文件，并由 LibreOffice Writer、Calc 和 Impress 成功无界面打开并转换为 PDF。浏览器跨源下载需要后端暴露 `Content-Disposition`，当前 CORS 配置已经包含该响应头。
+
+### F0 launch policy
+
+Prefer the Debian install at `/opt/AetherChat` (`chrome-sandbox` root:root 4755). User AppImage/unpacked launchers must not inject `--no-sandbox` unless `AETHERCHAT_ALLOW_NO_SANDBOX=1` or an explicit `--no-sandbox` / `--aether-allow-no-sandbox` flag is provided; the launcher prints a stderr warning when degraded.
+

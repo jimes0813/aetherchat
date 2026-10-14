@@ -4,9 +4,8 @@ import { useI18n } from '../i18n';
 const ACK_KEY = 'aetherchat.degraded-install-banner.ack';
 
 function isDegradedRuntime() {
-  return window.aetherRuntime?.chromiumSandbox === 'off'
-    || window.aetherRuntime?.installChannel === 'user-unpacked'
-    || window.aetherRuntime?.installChannel === 'user-appimage';
+  // Banner only when Chromium sandbox is actually off (e.g. explicit --no-sandbox).
+  return window.aetherRuntime?.chromiumSandbox === 'off';
 }
 
 export function DegradedInstallBanner() {
@@ -42,7 +41,7 @@ export function DegradedInstallBanner() {
       <button
         type="button"
         onClick={dismiss}
-        className="shrink-0 rounded border border-[#e2b8b0] bg-white px-2 py-1 text-[11px] text-[#8a4036]"
+        className="rounded border border-[#e2b8b0] bg-white px-2 py-1 text-[11px] text-[#8a4036]"
       >
         {ui('知道了')}
       </button>

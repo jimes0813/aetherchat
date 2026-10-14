@@ -22,7 +22,7 @@ test('system Deb path is sandboxed', () => {
   assert.equal(describeInstallChannel(channel), '系统 Deb（/opt/AetherChat）');
 });
 
-test('user unpacked and --no-sandbox are explicit degraded modes', () => {
+test('user unpacked with --no-sandbox is an explicit degraded mode', () => {
   const unpacked = detectInstallChannel({
     packaged: true,
     execPath: '/home/jimes0813/AetherChat-linux/frontend/release/linux-arm64-unpacked/aetherchat-frontend',
@@ -30,6 +30,7 @@ test('user unpacked and --no-sandbox are explicit degraded modes', () => {
   });
   assert.equal(unpacked, 'user-unpacked');
   assert.equal(isChromiumSandboxDegraded(unpacked, true), true);
+  assert.equal(isChromiumSandboxDegraded(unpacked, false), false);
 
   const localShare = detectInstallChannel({
     packaged: true,
@@ -39,12 +40,13 @@ test('user unpacked and --no-sandbox are explicit degraded modes', () => {
   assert.equal(localShare, 'user-unpacked');
 });
 
-test('AppImage installs are degraded even without the flag', () => {
+test('AppImage channel alone is not degraded without --no-sandbox', () => {
   const channel = detectInstallChannel({
     packaged: true,
     execPath: '/tmp/.mount_AetherXXXX/aetherchat-frontend',
     appImageEnv: '/home/user/.local/share/aetherchat/AetherChat.AppImage',
   });
   assert.equal(channel, 'user-appimage');
-  assert.equal(isChromiumSandboxDegraded(channel, false), true);
+  assert.equal(isChromiumSandboxDegraded(channel, false), false);
+  assert.equal(isChromiumSandboxDegraded(channel, true), true);
 });

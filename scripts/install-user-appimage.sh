@@ -34,6 +34,6 @@ if command -v update-desktop-database >/dev/null 2>&1; then
 fi
 echo "Installed $SRC"
 echo " -> $DEST"
-echo "Launcher $LAUNCHER_DEST (user unpacked/AppImage is degraded: Chromium sandbox off)"
+echo "Launcher $LAUNCHER_DEST (prefer Deb at /opt/AetherChat; --no-sandbox only with AETHERCHAT_ALLOW_NO_SANDBOX=1 or explicit flag)"
 echo "Desktop entry $DESKTOP_DEST"
 echo "Desktop launcher prefers ~/.local/share/aetherchat/current over this AppImage."

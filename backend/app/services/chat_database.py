@@ -19,6 +19,7 @@ from .db._shared import (
     _utc_now as _utc_now,
 )
 from .db.agent_runs import AgentRunsMixin
+from .db.approvals import ApprovalsMixin
 from .db.automation import AutomationMixin
 from .db.connection import ConnectionMixin
 from .db.event_journal import EventJournalMixin
@@ -48,6 +49,7 @@ class ChatDatabase(
     EventJournalMixin,
     WorkspacesMixin,
     AutomationMixin,
+    ApprovalsMixin,
     ConnectionMixin,
 ):
     def __init__(self, path: str | os.PathLike[str] | None = None):

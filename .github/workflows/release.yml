@@ -206,6 +206,15 @@ jobs:
         if: matrix.target == 'linux-x64'
         working-directory: backend
         run: mypy
+      - name: F0 Electron fuses config
+        if: matrix.target == 'linux-x64'
+        run: node scripts/check-electron-fuses.mjs
+      - name: F0 launch scripts (no unconditional --no-sandbox)
+        if: matrix.target == 'linux-x64'
+        run: bash scripts/check-no-unconditional-no-sandbox.sh
+      - name: F0 Windows CSC env gate (skip non-Windows)
+        if: matrix.target == 'linux-x64'
+        run: bash scripts/check-windows-csc-env.sh
       - name: Backend tests
         run: python -m pytest -q
       - name: Knowledge RAG Recall@K gate

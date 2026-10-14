@@ -188,7 +188,9 @@ def test_prune_audit_by_max_events(service: PlatformGovernanceService):
     result = service.prune_audit(tenant_id="local", retention_days=3650, max_events=100)
     # With max_events=100 and few rows, nothing age-based removed; then tighten:
     result = service.prune_audit(tenant_id="local", retention_days=3650, max_events=5)
-    assert result["kept"] <= 6  # + optional audit.prune line
+    assert result["kept"] <= 8  # retained suffix + optional audit.prune / bridge
     assert result["removed"] >= 1
+    assert result.get("archived", 0) >= 1
+    assert service.verify_audit_chain()["ok"] is True
     events = service.list_audit(limit=50, tenant_id="local")
-    assert len(events) <= 10
+    assert len(events) <= 12
