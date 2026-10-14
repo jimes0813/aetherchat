@@ -35,6 +35,9 @@ hiddenimports = [
     'app.services.orchestrator.receipts',
     'app.services.orchestrator.run',
     'app.services.orchestrator.tools',
+    'app.services.knowledge_service',
+    'app.services.embedding_client',
+    'app.services.knowledge_rag_eval',
     'mcp_servers.aetherchat_local_audit',
 ]
 if sys.platform == 'win32':

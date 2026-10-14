@@ -5,6 +5,7 @@ import csv
 import hashlib
 import io
 import json
+import logging
 import math
 import os
 import re
@@ -29,11 +30,24 @@ from pypdf import PdfReader
 
 from ..data_dir import ensure_private_data_dir, harden_private_file
 from .artifact_service import ArtifactService
+from .embedding_client import (
+    LOCAL_HASH_DIMENSIONS,
+    LOCAL_HASH_MODEL,
+    LOCAL_HASH_PROVIDER,
+    EmbeddingConfig,
+    EmbeddingResult,
+    embed_texts,
+    local_hash_vector,
+    resolve_embedding_config,
+    vectors_to_blob,
+)
+
+_log = logging.getLogger("aetherchat.knowledge")
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 MAX_ARCHIVE_EXPANDED_BYTES = 100 * 1024 * 1024
 MAX_EXTRACTED_CHARS = 500_000
-VECTOR_DIMENSIONS = 256
+VECTOR_DIMENSIONS = LOCAL_HASH_DIMENSIONS  # legacy local-hash width
 TEXT_EXTENSIONS = {
     ".txt", ".md", ".json", ".py", ".js", ".ts", ".tsx", ".jsx", ".css", ".html",
     ".yaml", ".yml", ".toml", ".xml", ".sql", ".sh", ".go", ".rs", ".java", ".c",
@@ -129,23 +143,31 @@ class KnowledgeService:
                     id TEXT PRIMARY KEY,
                     session_id TEXT NOT NULL,
                     attachment_id TEXT NOT NULL,
-                    vector BLOB NOT NULL
+                    vector BLOB NOT NULL,
+                    dimensions INTEGER,
+                    provider TEXT,
+                    model TEXT,
+                    created_at TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_knowledge_vectors_session
                     ON knowledge_vectors(session_id, attachment_id);
                 """
             )
+            self._migrate_vector_schema(connection)
             missing = connection.execute(
                 """SELECT id, session_id, attachment_id, content FROM knowledge_chunks
                    WHERE id NOT IN (SELECT id FROM knowledge_vectors)"""
             ).fetchall()
-            connection.executemany(
-                "INSERT OR IGNORE INTO knowledge_vectors (id, session_id, attachment_id, vector) VALUES (?, ?, ?, ?)",
-                [
-                    (row["id"], row["session_id"], row["attachment_id"], self._vector_blob(row["content"]))
-                    for row in missing
-                ],
-            )
+            if missing:
+                rows = self._embed_chunk_rows(
+                    [(row["id"], row["session_id"], row["attachment_id"], row["content"]) for row in missing]
+                )
+                connection.executemany(
+                    """INSERT OR IGNORE INTO knowledge_vectors
+                       (id, session_id, attachment_id, vector, dimensions, provider, model, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    rows,
+                )
 
     @staticmethod
     def _session_id(session_id: str) -> str:
@@ -247,12 +269,17 @@ class KnowledgeService:
                        VALUES (?, ?, ?, ?, ?, ?)""",
                     indexed_chunks,
                 )
-                connection.executemany(
-                    "INSERT INTO knowledge_vectors (id, session_id, attachment_id, vector) VALUES (?, ?, ?, ?)",
+                vector_rows = self._embed_chunk_rows(
                     [
-                        (chunk_id, chunk_session, chunk_attachment, self._vector_blob(content))
+                        (chunk_id, chunk_session, chunk_attachment, content)
                         for chunk_id, chunk_session, chunk_attachment, _name, _locator, content in indexed_chunks
-                    ],
+                    ]
+                )
+                connection.executemany(
+                    """INSERT INTO knowledge_vectors
+                       (id, session_id, attachment_id, vector, dimensions, provider, model, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    vector_rows,
                 )
             return self.get_attachment(safe_session, attachment_id)
         except Exception:
@@ -423,15 +450,23 @@ class KnowledgeService:
                     (safe_session, *(f"%{term}%" for term in terms[:8])),
                 ).fetchall()
             vector_rows = connection.execute(
-                """SELECT k.id, k.attachment_id, k.source_name, k.locator, k.content, v.vector
+                """SELECT k.id, k.attachment_id, k.source_name, k.locator, k.content,
+                          v.vector, v.dimensions, v.provider, v.model
                    FROM knowledge_vectors v JOIN knowledge_chunks k ON k.id = v.id
                    WHERE v.session_id = ? LIMIT 5000""",
                 (safe_session,),
             ).fetchall()
 
-        query_vector = self._vector(clean_query)
+        query_embed = self._embed_query_vector(clean_query)
+        query_vector = query_embed.vectors[0] if query_embed.vectors else self._vector(clean_query)
+        query_dims = len(query_vector)
+        query_provider = query_embed.provider
+        compatible_rows = [
+            row for row in vector_rows
+            if self._vector_compatible(row, query_dims, query_provider)
+        ]
         vector_ranked = sorted(
-            ((self._cosine_blob(query_vector, row["vector"]), row) for row in vector_rows),
+            ((self._cosine_blob(query_vector, row["vector"]), row) for row in compatible_rows),
             key=lambda item: item[0],
             reverse=True,
         )[:60]
@@ -465,7 +500,7 @@ class KnowledgeService:
             )
             semantic = max(candidate["vector"], bigram_coverage * 0.85)
             if semantic > 0.05:
-                candidate["match_types"].add("哈希相似")
+                candidate["match_types"].add("语义相似" if query_embed.network else "哈希相似")
             if candidate["lexical"] <= 0 and semantic <= 0.05:
                 continue
             score = candidate["lexical"] * 0.50 + semantic * 0.35 + coverage * 0.10 + exact * 0.05
@@ -523,6 +558,50 @@ class KnowledgeService:
             total_bytes += int(row["size_bytes"] or 0)
             if str(row["status"] or "") == "ready":
                 ready += 1
+        cfg = resolve_embedding_config()
+        with self._lock, self._connect() as connection:
+            provider_rows = connection.execute(
+                """SELECT provider, model, dimensions, COUNT(*) AS n
+                   FROM knowledge_vectors WHERE session_id = ?
+                   GROUP BY provider, model, dimensions""",
+                (safe_session,),
+            ).fetchall()
+        by_provider = [
+            {
+                "provider": row["provider"] or LOCAL_HASH_PROVIDER,
+                "model": row["model"] or LOCAL_HASH_MODEL,
+                "dimensions": int(row["dimensions"] or 0),
+                "count": int(row["n"] or 0),
+            }
+            for row in provider_rows
+        ]
+        primary = None
+        for item in by_provider:
+            if item["provider"] != LOCAL_HASH_PROVIDER:
+                primary = item
+                break
+        if primary is None and by_provider:
+            primary = by_provider[0]
+        if primary and primary["provider"] != LOCAL_HASH_PROVIDER:
+            vector_label = f"{primary['provider']}:{primary['model']}:{primary['dimensions']}d"
+            offline = False
+        elif cfg.uses_network:
+            vector_label = cfg.label
+            offline = False
+        else:
+            vector_label = f"{LOCAL_HASH_PROVIDER}-{LOCAL_HASH_DIMENSIONS}d"
+            offline = True
+        stale = 0
+        if cfg.uses_network:
+            stale = sum(
+                item["count"]
+                for item in by_provider
+                if item["provider"] == LOCAL_HASH_PROVIDER
+                or (
+                    cfg.expected_dimensions
+                    and item["dimensions"] not in {0, int(cfg.expected_dimensions)}
+                )
+            )
         return {
             "session_id": safe_session,
             "attachment_count": len(attachments),
@@ -533,10 +612,202 @@ class KnowledgeService:
             "extensions": by_ext,
             "retrieval": {
                 "lexical": "fts5+bm25",
-                "vector": "local-hash-256d",
+                "vector": vector_label,
                 "hybrid": "lexical*0.5 + semantic*0.35 + coverage*0.1 + exact*0.05",
-                "offline": True,
+                "offline": offline,
+                "configured": {
+                    "provider": cfg.provider,
+                    "model": cfg.model,
+                    "base_url": cfg.base_url,
+                    "source": cfg.source,
+                    "uses_network": cfg.uses_network,
+                    "expected_dimensions": cfg.expected_dimensions,
+                    "has_api_key": bool(cfg.api_key),
+                },
+                "stored": by_provider,
+                "stale_or_fallback_count": stale,
             },
+        }
+
+    @staticmethod
+    def _migrate_vector_schema(connection: sqlite3.Connection) -> None:
+        cols = {str(row[1]) for row in connection.execute("PRAGMA table_info(knowledge_vectors)")}
+        for name, typ in (
+            ("dimensions", "INTEGER"),
+            ("provider", "TEXT"),
+            ("model", "TEXT"),
+            ("created_at", "TEXT"),
+        ):
+            if name not in cols:
+                connection.execute(f"ALTER TABLE knowledge_vectors ADD COLUMN {name} {typ}")
+        connection.execute(
+            """UPDATE knowledge_vectors
+               SET dimensions = COALESCE(dimensions, ?),
+                   provider = COALESCE(provider, ?),
+                   model = COALESCE(model, ?),
+                   created_at = COALESCE(created_at, ?)
+               WHERE dimensions IS NULL OR provider IS NULL OR model IS NULL OR created_at IS NULL""",
+            (LOCAL_HASH_DIMENSIONS, LOCAL_HASH_PROVIDER, LOCAL_HASH_MODEL, _utc_now()),
+        )
+        connection.execute(
+            """CREATE INDEX IF NOT EXISTS idx_knowledge_vectors_provider
+               ON knowledge_vectors(provider, model, dimensions)"""
+        )
+
+    def _embed_chunk_rows(
+        self,
+        chunks: list[tuple[str, str, str, str]],
+        *,
+        config: EmbeddingConfig | None = None,
+        batch_size: int = 16,
+    ) -> list[tuple[Any, ...]]:
+        """Return DB rows for knowledge_vectors from (id, session, attachment, content)."""
+        if not chunks:
+            return []
+        cfg = config or resolve_embedding_config()
+        out: list[tuple[Any, ...]] = []
+        now = _utc_now()
+        for start in range(0, len(chunks), max(1, batch_size)):
+            batch = chunks[start : start + batch_size]
+            texts = [content for _id, _sid, _aid, content in batch]
+            result = embed_texts(texts, config=cfg, allow_local_fallback=True)
+            if result.warning:
+                _log.warning("knowledge embed batch fallback: %s", result.warning)
+            for (chunk_id, session_id, attachment_id, _content), vector in zip(batch, result.vectors, strict=True):
+                out.append(
+                    (
+                        chunk_id,
+                        session_id,
+                        attachment_id,
+                        vectors_to_blob(vector),
+                        int(result.dimensions),
+                        result.provider,
+                        result.model,
+                        now,
+                    )
+                )
+        return out
+
+    def _embed_query_vector(self, text: str) -> EmbeddingResult:
+        return embed_texts([text], allow_local_fallback=True)
+
+    @staticmethod
+    def _vector_compatible(row: sqlite3.Row | dict[str, Any], query_dims: int, query_provider: str) -> bool:
+        keys = row.keys() if hasattr(row, "keys") else row
+        dims = row["dimensions"] if "dimensions" in keys else None
+        if dims is None:
+            blob = row["vector"]
+            dims = (len(blob) // 4) if blob else 0
+        try:
+            dims_i = int(dims or 0)
+        except (TypeError, ValueError):
+            dims_i = 0
+        if dims_i and dims_i != query_dims:
+            return False
+        provider = str(row["provider"] if "provider" in keys else "") or LOCAL_HASH_PROVIDER
+        if query_provider == LOCAL_HASH_PROVIDER:
+            return provider == LOCAL_HASH_PROVIDER or dims_i == LOCAL_HASH_DIMENSIONS
+        return True
+
+    def reindex_vectors(
+        self,
+        session_id: str | None = None,
+        *,
+        force_local: bool = False,
+    ) -> dict[str, Any]:
+        """Rebuild vectors for one session or the entire knowledge DB."""
+        cfg = resolve_embedding_config()
+        if force_local:
+            cfg = EmbeddingConfig(
+                provider=LOCAL_HASH_PROVIDER,
+                model=LOCAL_HASH_MODEL,
+                base_url=None,
+                api_key=None,
+                source="force:local-hash",
+                expected_dimensions=LOCAL_HASH_DIMENSIONS,
+            )
+        safe_session = self._session_id(session_id) if session_id else None
+        with self._lock, self._connect() as connection:
+            if safe_session:
+                chunks = connection.execute(
+                    """SELECT id, session_id, attachment_id, content FROM knowledge_chunks
+                       WHERE session_id = ?""",
+                    (safe_session,),
+                ).fetchall()
+            else:
+                chunks = connection.execute(
+                    "SELECT id, session_id, attachment_id, content FROM knowledge_chunks"
+                ).fetchall()
+            chunk_tuples = [
+                (row["id"], row["session_id"], row["attachment_id"], row["content"]) for row in chunks
+            ]
+            if safe_session:
+                connection.execute("DELETE FROM knowledge_vectors WHERE session_id = ?", (safe_session,))
+            else:
+                connection.execute("DELETE FROM knowledge_vectors")
+            rows = self._embed_chunk_rows(chunk_tuples, config=cfg)
+            connection.executemany(
+                """INSERT INTO knowledge_vectors
+                   (id, session_id, attachment_id, vector, dimensions, provider, model, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                rows,
+            )
+        providers: dict[str, int] = {}
+        dims = 0
+        network_count = 0
+        for row in rows:
+            key = f"{row[5]}:{row[6]}:{row[4]}d"
+            providers[key] = providers.get(key, 0) + 1
+            dims = int(row[4] or dims)
+            if row[5] != LOCAL_HASH_PROVIDER:
+                network_count += 1
+        return {
+            "session_id": safe_session,
+            "chunk_count": len(chunk_tuples),
+            "vector_count": len(rows),
+            "network_vector_count": network_count,
+            "dimensions": dims,
+            "providers": providers,
+            "configured": {
+                "provider": cfg.provider,
+                "model": cfg.model,
+                "base_url": cfg.base_url,
+                "source": cfg.source,
+                "uses_network": cfg.uses_network,
+                "has_api_key": bool(cfg.api_key),
+            },
+            "awaiting_network": bool(cfg.uses_network) and network_count == 0 and len(rows) > 0,
+        }
+
+    def embedding_status(self) -> dict[str, Any]:
+        cfg = resolve_embedding_config()
+        with self._lock, self._connect() as connection:
+            total = connection.execute("SELECT COUNT(*) AS n FROM knowledge_vectors").fetchone()["n"]
+            by = connection.execute(
+                """SELECT provider, model, dimensions, COUNT(*) AS n
+                   FROM knowledge_vectors GROUP BY provider, model, dimensions"""
+            ).fetchall()
+        return {
+            "configured": {
+                "provider": cfg.provider,
+                "model": cfg.model,
+                "base_url": cfg.base_url,
+                "source": cfg.source,
+                "uses_network": cfg.uses_network,
+                "expected_dimensions": cfg.expected_dimensions,
+                "has_api_key": bool(cfg.api_key),
+                "label": cfg.label,
+            },
+            "vector_count": int(total or 0),
+            "stored": [
+                {
+                    "provider": row["provider"],
+                    "model": row["model"],
+                    "dimensions": row["dimensions"],
+                    "count": row["n"],
+                }
+                for row in by
+            ],
         }
 
     @staticmethod
@@ -549,18 +820,11 @@ class KnowledgeService:
 
     @classmethod
     def _vector(cls, text: str) -> list[float]:
-        values = [0.0] * VECTOR_DIMENSIONS
-        for feature in cls._vector_features(text):
-            digest = hashlib.blake2b(feature.encode("utf-8"), digest_size=8).digest()
-            number = int.from_bytes(digest, "little")
-            index = number % VECTOR_DIMENSIONS
-            values[index] += 1.0 if number & (1 << 63) else -1.0
-        norm = math.sqrt(sum(value * value for value in values)) or 1.0
-        return [value / norm for value in values]
+        return local_hash_vector(text, VECTOR_DIMENSIONS)
 
     @classmethod
     def _vector_blob(cls, text: str) -> bytes:
-        return array("f", cls._vector(text)).tobytes()
+        return vectors_to_blob(cls._vector(text))
 
     @staticmethod
     def _cosine_blob(query_vector: list[float], blob: bytes) -> float:
@@ -569,6 +833,7 @@ class KnowledgeService:
         if len(stored) != len(query_vector):
             return 0.0
         return sum(left * right for left, right in zip(query_vector, stored, strict=True))
+
 
     def context_for_attachments(
         self, session_id: str, attachment_ids: Iterable[str], query: str, max_chars: int = 12_000
@@ -645,10 +910,11 @@ class KnowledgeService:
         query: str,
         max_chars: int = 8_000,
     ) -> str:
-        """Retrieve relevant evidence from all local session attachments.
+        """Retrieve relevant evidence from session attachments.
 
-        This is intentionally local-only: it uses the existing FTS/hash-vector
-        index and never sends project documents to an embedding service.
+        Uses FTS5 lexical search plus semantic vectors (network embeddings when
+        configured, otherwise local-hash). Chunk text is sent to the embedding
+        provider only when network embeddings are enabled.
         """
 
         candidates = [

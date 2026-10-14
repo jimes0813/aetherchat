@@ -12,6 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "backend"))
 
 os.environ.setdefault("AETHERCHAT_DATA_DIR", tempfile.mkdtemp(prefix="aetherchat-knowledge-"))
+os.environ["AETHERCHAT_EMBEDDING_PROVIDER"] = "local-hash"
 
 from app.services.knowledge_service import KnowledgeService  # noqa: E402
 

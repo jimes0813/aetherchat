@@ -9,6 +9,18 @@ from ..services.knowledge_service import MAX_UPLOAD_BYTES, KnowledgeError, knowl
 router = APIRouter()
 
 
+@router.get("/embedding/status")
+async def embedding_status():
+    """Global embedding configuration and stored vector provider breakdown."""
+    return await asyncio.to_thread(knowledge_service.embedding_status)
+
+
+@router.post("/reindex")
+async def reindex_all(force_local: bool = Query(default=False)):
+    """Rebuild semantic vectors for the entire knowledge database."""
+    return await asyncio.to_thread(knowledge_service.reindex_vectors, None, force_local=force_local)
+
+
 @router.post("/{session_id}/attachments", status_code=status.HTTP_201_CREATED)
 async def upload_attachment(session_id: UUID, file: Annotated[UploadFile, File()]):
     data = bytearray()
@@ -84,7 +96,6 @@ async def search_knowledge(
     if extension:
         ext = extension if extension.startswith(".") else f".{extension}"
         ext = ext.lower()
-        # Filter via attachment list metadata
         attachments = await asyncio.to_thread(knowledge_service.list_attachments, str(session_id))
         allowed = {
             item["id"]
@@ -98,3 +109,11 @@ async def search_knowledge(
 @router.get("/{session_id}/stats")
 async def knowledge_stats(session_id: UUID):
     return await asyncio.to_thread(knowledge_service.session_stats, str(session_id))
+
+
+@router.post("/{session_id}/reindex")
+async def reindex_session(session_id: UUID, force_local: bool = Query(default=False)):
+    """Rebuild semantic vectors for one session (network embeddings when configured)."""
+    return await asyncio.to_thread(
+        knowledge_service.reindex_vectors, str(session_id), force_local=force_local
+    )
